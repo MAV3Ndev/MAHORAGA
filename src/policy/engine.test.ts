@@ -325,6 +325,51 @@ describe("PolicyEngine", () => {
     });
   });
 
+  describe("price and liquidity filters", () => {
+    it("blocks equity buys below the minimum share price", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "PENNY",
+          estimated_price: 0.75,
+          notional: 750,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_price")).toBe(true);
+    });
+
+    it("blocks equity buys below the minimum average volume", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "THIN",
+          avg_volume_20d: 25_000,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_avg_volume")).toBe(true);
+    });
+
+    it("does not apply equity liquidity checks to crypto", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 0.5,
+          avg_volume_20d: 1,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "min_price")).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_avg_volume")).toBe(false);
+    });
+  });
+
   describe("position size limits", () => {
     it("blocks buy orders that would exceed position % of equity", () => {
       const ctx = createTestContext({

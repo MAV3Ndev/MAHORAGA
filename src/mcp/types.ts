@@ -46,6 +46,7 @@ export interface OrderPreview {
   stop_price?: number;
   time_in_force: "day" | "gtc" | "ioc" | "fok";
   estimated_price?: number;
+  avg_volume_20d?: number;
   estimated_cost?: number;
   buying_power_impact?: number;
 }

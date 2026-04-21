@@ -14,6 +14,7 @@ import { createPolicyBroker } from "../core/policy-broker";
 import type {
   AgentState,
   LogEntry,
+  PositionEntry,
   ResearchResult,
   Signal,
   SocialHistoryEntry,
@@ -23,7 +24,8 @@ import type { Env } from "../env.d";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
-import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
+import { computeTechnicals } from "../providers/technicals";
+import type { Account, LLMProvider, MarketClock, Order, Position } from "../providers/types";
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
@@ -34,11 +36,37 @@ import {
   gatherTwitterConfirmation,
   isTwitterEnabled,
 } from "../strategy/default/gatherers/twitter";
-import { isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
-import { tickerCache } from "../strategy/default/helpers/ticker";
+import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import {
+  isBroadMarketProxyTicker,
+  isBuiltInTickerBlacklisted,
+  isCustomTickerBlacklisted,
+  isTickerBlacklisted,
+  shouldRescueBuiltInBlacklistedTicker,
+  tickerCache,
+} from "../strategy/default/helpers/ticker";
 import { runCryptoTrading } from "../strategy/default/rules/crypto-trading";
 import { findBestOptionsContract } from "../strategy/default/rules/options";
 import type { StrategyContext } from "../strategy/types";
+
+interface TechnicalDataCacheEntry {
+  updated_at: number;
+  current_price?: number;
+  rsi?: number;
+  bb_lower?: number;
+  bb_middle?: number;
+  sma_20?: number;
+  sma_50?: number;
+  atr?: number;
+  relative_volume?: number;
+}
+
+interface MomentumDataCacheEntry {
+  updated_at: number;
+  price_change_1h?: number;
+  price_change_24h?: number;
+  volume_change?: number;
+}
 
 // ============================================================================
 // DURABLE OBJECT CLASS
@@ -50,6 +78,16 @@ export class MahoragaHarness extends DurableObject<Env> {
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
   private discordCooldowns: Map<string, number> = new Map();
   private readonly DISCORD_COOLDOWN_MS = 30 * 60 * 1000;
+  private readonly MARKET_CONTEXT_TTL_MS = 10 * 60 * 1000;
+  private readonly MAX_MARKET_CONTEXT_SYMBOLS = 24;
+  private readonly TRANSIENT_RESEARCH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  private readonly SIGNAL_RESEARCH_CACHE_TTL_MS = 180_000;
+  private readonly SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+  private readonly VOLATILE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+  private readonly TWITTER_CONFIRMATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  private readonly MAX_SIGNAL_RESEARCH_COOLDOWNS = 256;
+  private readonly MAX_STATUS_SIGNAL_RESEARCH_ENTRIES = 40;
+  private readonly MAX_STATUS_TWITTER_CONFIRMATIONS = 24;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -63,10 +101,12 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<AgentState>("state");
+      let stateChanged = false;
       if (stored) {
         this.state = { ...DEFAULT_STATE, ...stored };
         this.state.config = { ...DEFAULT_STATE.config, ...this.state.config };
       }
+      stateChanged = this.applyStateHygiene() || stateChanged;
       this.initializeLLM();
 
       if (this.state.enabled) {
@@ -76,17 +116,24 @@ export class MahoragaHarness extends DurableObject<Env> {
           await this.ctx.storage.setAlarm(now + 5_000);
         }
       }
+
+      if (stateChanged) {
+        await this.ctx.storage.put("state", this.state);
+      }
     });
   }
 
   private initializeLLM() {
-    const provider = this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw";
+    const rawProvider = (this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw") as string;
+    const provider = rawProvider === "openai-compatible" ? "openai-raw" : rawProvider;
     const model = this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini";
+    const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL;
 
     const effectiveEnv: Env = {
       ...this.env,
       LLM_PROVIDER: provider as Env["LLM_PROVIDER"],
       LLM_MODEL: model,
+      OPENAI_BASE_URL: openaiBaseUrl || undefined,
     };
 
     this._llm = createLLMProvider(effectiveEnv);
@@ -95,6 +142,18 @@ export class MahoragaHarness extends DurableObject<Env> {
     } else {
       console.log("[MahoragaHarness] WARNING: No valid LLM provider configured");
     }
+  }
+
+  private getDashboardConfig(): AgentConfig {
+    const provider = (((this.state.config.llm_provider as string | undefined) === "openai-compatible"
+      ? "openai-raw"
+      : this.state.config.llm_provider) || "openai-raw") as AgentConfig["llm_provider"];
+
+    return {
+      ...this.state.config,
+      llm_provider: provider,
+      openai_base_url: this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL || "",
+    };
   }
 
   private getEtDayString(epochMs: number): string {
@@ -139,7 +198,18 @@ export class MahoragaHarness extends DurableObject<Env> {
     const self = this;
     const db = createD1Client(this.env.DB);
     const alpaca = createAlpacaProviders(this.env);
-    const policyConfig = getDefaultPolicyConfig(this.env);
+    const policyConfig = getDefaultPolicyConfig(this.env, {
+      max_open_positions: this.state.config.max_positions,
+      options: {
+        options_enabled: this.state.config.options_enabled,
+        max_pct_per_option_trade: this.state.config.options_max_pct_per_trade,
+        min_dte: this.state.config.options_min_dte,
+        max_dte: this.state.config.options_max_dte,
+        min_delta: this.state.config.options_min_delta,
+        max_delta: this.state.config.options_max_delta,
+        min_confidence_for_options: this.state.config.options_min_confidence,
+      },
+    });
 
     const broker = createPolicyBroker({
       alpaca,
@@ -149,9 +219,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       cryptoSymbols: self.state.config.crypto_symbols || [],
       allowedExchanges: self.state.config.allowed_exchanges ?? ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
       onSell: (symbol) => {
-        delete self.state.positionEntries[symbol];
-        delete self.state.socialHistory[symbol];
-        delete self.state.stalenessAnalysis[symbol];
+        self.clearTrackedSymbolState(symbol);
       },
     });
 
@@ -181,10 +249,13 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   async alarm(): Promise<void> {
+    console.log("[Alarm] Alarm triggered");
     if (!this.state.enabled) {
       this.log("System", "alarm_skipped", { reason: "Agent not enabled" });
       return;
     }
+
+    this.applyStateHygiene();
 
     const now = Date.now();
     const RESEARCH_INTERVAL_MS = 120_000;
@@ -209,12 +280,16 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Data gathering
       if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
+        console.log("[Alarm] Starting data gatherers");
         await this.runDataGatherers(ctx);
+        console.log("[Alarm] Data gatherers complete");
       }
 
       // Signal research
       if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
+        console.log("[Alarm] Starting signal research");
         await this.researchTopSignals(ctx, 5);
+        console.log("[Alarm] Signal research complete");
         this.state.lastResearchRun = now;
       }
 
@@ -233,21 +308,27 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       // Pre-market planning window
+      console.log("[Alarm] Checking premarket plan", { isOpen: clock.is_open, hasPlan: !!this.state.premarketPlan });
       if (!clock.is_open && !this.state.premarketPlan) {
         const minutesToOpen = nextOpenValid ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
         const shouldPlan =
           minutesToOpen > 0 &&
           minutesToOpen <= premarketPlanWindowMinutes &&
           this.state.lastPremarketPlanDayEt !== etDay;
+        console.log("[Alarm] Premarket check", { minutesToOpen, shouldPlan });
 
         if (shouldPlan) {
+          console.log("[Alarm] Running premarket analysis");
           await this.runPreMarketAnalysis(ctx);
           if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
         }
       }
 
       // Positions snapshot
+      console.log("[Alarm] Fetching positions");
       const positions = await ctx.broker.getPositions();
+      console.log("[Alarm] Got positions", { count: positions.length });
+      await this.syncTrackedPositionEntries(positions);
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
@@ -317,12 +398,16 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       this.state.lastClockIsOpen = clock.is_open;
+      console.log("[Alarm] Persisting state");
       await this.persist();
+      console.log("[Alarm] State persisted");
     } catch (error) {
       this.log("System", "alarm_error", { error: String(error) });
     }
 
+    console.log("[Alarm] Scheduling next alarm");
     await this.scheduleNextAlarm();
+    console.log("[Alarm] Next alarm scheduled");
   }
 
   private async scheduleNextAlarm(): Promise<void> {
@@ -338,6 +423,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.log("System", "gathering_data", {});
 
     await tickerCache.refreshSecTickersIfNeeded();
+    const positions = await ctx.broker.getPositions().catch(() => []);
 
     const results = await Promise.allSettled(activeStrategy.gatherers.map((g) => g.gather(ctx)));
 
@@ -358,7 +444,8 @@ export class MahoragaHarness extends DurableObject<Env> {
     const MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    const eligibleSignals = allSignals.filter((s) => now - s.timestamp < MAX_AGE_MS);
+    const recentSignals = allSignals.filter((s) => now - s.timestamp < MAX_AGE_MS);
+    const eligibleSignals = await this.filterEligibleSignals(ctx, recentSignals);
 
     const socialSnapshot = this.buildSocialSnapshot(eligibleSignals);
     this.updateSocialHistoryFromSnapshot(socialSnapshot, now);
@@ -379,8 +466,82 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.state.signalCache = freshSignals;
     this.state.lastDataGatherRun = now;
+    await this.refreshMarketContext(ctx, freshSignals, positions);
 
     this.log("System", "data_gathered", { ...counts, total: this.state.signalCache.length });
+  }
+
+  private async filterEligibleSignals(ctx: StrategyContext, signals: Signal[]): Promise<Signal[]> {
+    const alpaca = createAlpacaProviders(this.env);
+    const filtered: Signal[] = [];
+
+    for (const signal of signals) {
+      const symbol = signal.symbol?.toUpperCase().trim();
+      if (!symbol) continue;
+
+      if (isBroadMarketProxyTicker(symbol)) {
+        ctx.log("System", "signal_filtered_broad_market_proxy", { symbol });
+        continue;
+      }
+
+      if (signal.isCrypto || isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
+        if (isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
+          filtered.push({ ...signal, symbol: normalizeCryptoSymbol(symbol), isCrypto: true });
+        } else {
+          ctx.log("System", "signal_filtered_unconfigured_crypto", { symbol });
+        }
+        continue;
+      }
+
+      const customBlacklisted = isCustomTickerBlacklisted(symbol, ctx.config.ticker_blacklist);
+      const builtInBlacklisted = isBuiltInTickerBlacklisted(symbol);
+      const blacklisted = builtInBlacklisted || customBlacklisted;
+
+      if (tickerCache.isKnownSecTicker(symbol)) {
+        if (isTickerBlacklisted(symbol, ctx.config.ticker_blacklist) && !shouldRescueBuiltInBlacklistedTicker(symbol, {
+          customBlacklist: ctx.config.ticker_blacklist,
+          knownSecTicker: true,
+        })) {
+          ctx.log("System", "signal_filtered_blacklist", { symbol });
+          continue;
+        }
+        if (shouldRescueBuiltInBlacklistedTicker(symbol, {
+          customBlacklist: ctx.config.ticker_blacklist,
+          knownSecTicker: true,
+        })) {
+          ctx.log("System", "signal_rescued_builtin_blacklist", { symbol, source: "sec" });
+        }
+        filtered.push({ ...signal, symbol });
+        continue;
+      }
+
+      if (blacklisted && customBlacklisted) {
+        ctx.log("System", "signal_filtered_blacklist", { symbol });
+        continue;
+      }
+
+      const cached = tickerCache.getCachedValidation(symbol);
+      const isValid = cached ?? (await tickerCache.validateWithAlpaca(symbol, alpaca));
+      if (!isValid) {
+        if (blacklisted) {
+          ctx.log("System", "signal_filtered_blacklist", { symbol });
+        } else {
+          ctx.log("System", "signal_filtered_invalid_ticker", { symbol });
+        }
+        continue;
+      }
+
+      if (shouldRescueBuiltInBlacklistedTicker(symbol, {
+        customBlacklist: ctx.config.ticker_blacklist,
+        alpacaValid: true,
+      })) {
+        ctx.log("System", "signal_rescued_builtin_blacklist", { symbol, source: "alpaca" });
+      }
+
+      filtered.push({ ...signal, symbol });
+    }
+
+    return filtered;
   }
 
   private buildSocialSnapshot(
@@ -478,6 +639,684 @@ export class MahoragaHarness extends DurableObject<Env> {
     return out;
   }
 
+  private applyStateHygiene(): boolean {
+    let changed = false;
+
+    if (this.normalizeLegacyLLMConfig()) {
+      changed = true;
+    }
+
+    if (this.pruneTransientResearchState()) {
+      changed = true;
+    }
+
+    if (this.pruneVolatileCaches()) {
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  private normalizeLegacyLLMConfig(): boolean {
+    let changed = false;
+    if ((this.state.config.llm_provider as string | undefined) === "openai-compatible") {
+      this.state.config.llm_provider = "openai-raw";
+      changed = true;
+    }
+
+    const currentModel = (this.state.config.llm_model || this.env.LLM_MODEL || "").trim();
+    const analystModel = this.state.config.llm_analyst_model?.trim();
+    const hasCompatBaseUrl = !!(this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL);
+    const legacyAnalystModels = new Set(["gpt-4o", "gpt-4o-mini"]);
+
+    if (!currentModel || !analystModel || currentModel === analystModel) {
+      return changed;
+    }
+
+    if (!hasCompatBaseUrl || !legacyAnalystModels.has(analystModel)) {
+      return changed;
+    }
+
+    this.state.config.llm_analyst_model = currentModel;
+    console.warn(
+      `[MahoragaHarness] Synced llm_analyst_model to llm_model for OpenAI base URL override (${currentModel})`
+    );
+    return true;
+  }
+
+  private pruneTransientResearchState(now = Date.now()): boolean {
+    let changed = false;
+
+    for (const [symbol, result] of Object.entries(this.state.signalResearch)) {
+      const isExpired = !result?.timestamp || now - result.timestamp > this.TRANSIENT_RESEARCH_MAX_AGE_MS;
+      const isInvalid =
+        !result ||
+        !["BUY", "SKIP", "WAIT"].includes(result.verdict) ||
+        typeof result.confidence !== "number" ||
+        typeof result.reasoning !== "string" ||
+        !Array.isArray(result.red_flags) ||
+        !Array.isArray(result.catalysts);
+
+      if (isExpired || isInvalid) {
+        delete this.state.signalResearch[symbol];
+        changed = true;
+      }
+    }
+
+    for (const [symbol, result] of Object.entries(this.state.positionResearch)) {
+      const timestamp = (result as { timestamp?: number } | undefined)?.timestamp;
+      if (!timestamp || now - timestamp > this.TRANSIENT_RESEARCH_MAX_AGE_MS) {
+        delete this.state.positionResearch[symbol];
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  private getRetainedSymbols(): Set<string> {
+    const retained = new Set<string>();
+    const rememberSymbol = (symbol?: string | null) => {
+      if (!symbol) return;
+      for (const alias of this.getTrackedSymbolAliases(symbol)) {
+        retained.add(alias);
+      }
+    };
+
+    this.state.signalCache.forEach((signal) => rememberSymbol(signal.symbol));
+    Object.keys(this.state.positionEntries).forEach((symbol) => rememberSymbol(symbol));
+    Object.keys(this.state.signalResearch).forEach((symbol) => rememberSymbol(symbol));
+    Object.keys(this.state.positionResearch).forEach((symbol) => rememberSymbol(symbol));
+    Object.keys(this.state.socialSnapshotCache).forEach((symbol) => rememberSymbol(symbol));
+    Object.keys(this.state.socialHistory).forEach((symbol) => rememberSymbol(symbol));
+
+    return retained;
+  }
+
+  private pruneVolatileCaches(now = Date.now()): boolean {
+    let changed = false;
+    const retainedSymbols = this.getRetainedSymbols();
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalCache = dynamicState.technicalDataCache as Record<string, TechnicalDataCacheEntry> | undefined;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
+    const atrCache = dynamicState.atrCache as Record<string, number> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+    const cooldowns = this.getSignalResearchCooldowns();
+    const staleCutoff = now - this.VOLATILE_CACHE_MAX_AGE_MS;
+
+    if (technicalCache) {
+      for (const [symbol, entry] of Object.entries(technicalCache)) {
+        const updatedAt = typeof entry?.updated_at === "number" ? entry.updated_at : 0;
+        if (updatedAt < staleCutoff || !retainedSymbols.has(symbol)) {
+          delete technicalCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (momentumCache) {
+      for (const [symbol, entry] of Object.entries(momentumCache)) {
+        const updatedAt = typeof entry?.updated_at === "number" ? entry.updated_at : 0;
+        if (updatedAt < staleCutoff || !retainedSymbols.has(symbol)) {
+          delete momentumCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (atrCache) {
+      for (const symbol of Object.keys(atrCache)) {
+        if (!retainedSymbols.has(symbol)) {
+          delete atrCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (sectorMap) {
+      for (const symbol of Object.keys(sectorMap)) {
+        if (!retainedSymbols.has(symbol)) {
+          delete sectorMap[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    for (const [symbol, cooldown] of Object.entries(cooldowns)) {
+      const until = typeof cooldown?.until === "number" ? cooldown.until : 0;
+      if (until <= now || !retainedSymbols.has(symbol)) {
+        delete cooldowns[symbol];
+        changed = true;
+      }
+    }
+
+    const cooldownEntries = Object.entries(cooldowns);
+    if (cooldownEntries.length > this.MAX_SIGNAL_RESEARCH_COOLDOWNS) {
+      cooldownEntries
+        .sort(([, a], [, b]) => (b.until || 0) - (a.until || 0))
+        .slice(this.MAX_SIGNAL_RESEARCH_COOLDOWNS)
+        .forEach(([symbol]) => {
+          delete cooldowns[symbol];
+          changed = true;
+        });
+    }
+
+    for (const [symbol, confirmation] of Object.entries(this.state.twitterConfirmations)) {
+      const timestamp = typeof confirmation?.timestamp === "number" ? confirmation.timestamp : 0;
+      if (timestamp < now - this.TWITTER_CONFIRMATION_MAX_AGE_MS || !retainedSymbols.has(symbol)) {
+        delete this.state.twitterConfirmations[symbol];
+        changed = true;
+      }
+    }
+
+    const activePositionSymbols = new Set(Object.keys(this.state.positionEntries));
+    for (const symbol of Object.keys(this.state.stalenessAnalysis)) {
+      if (!activePositionSymbols.has(symbol)) {
+        delete this.state.stalenessAnalysis[symbol];
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  private limitTimestampedRecord<T extends { timestamp?: number }>(
+    records: Record<string, T>,
+    maxEntries: number
+  ): Record<string, T> {
+    return Object.fromEntries(
+      Object.entries(records)
+        .sort(([, a], [, b]) => (b?.timestamp || 0) - (a?.timestamp || 0))
+        .slice(0, maxEntries)
+    );
+  }
+
+  private filterRecordBySymbols<T>(records: Record<string, T>, symbols: Set<string>): Record<string, T> {
+    return Object.fromEntries(Object.entries(records).filter(([symbol]) => symbols.has(symbol)));
+  }
+
+  private getTrackedSymbolAliases(symbol: string): string[] {
+    return isCryptoSymbol(symbol, this.state.config.crypto_symbols || []) ? getCryptoSymbolAliases(symbol) : [symbol];
+  }
+
+  private findTrackedPositionEntry(symbol: string): PositionEntry | undefined {
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      const entry = this.state.positionEntries[alias];
+      if (entry) return entry;
+    }
+    return undefined;
+  }
+
+  private getSocialSnapshotEntry(
+    snapshot: Record<string, SocialSnapshotCacheEntry>,
+    symbol: string
+  ): SocialSnapshotCacheEntry | undefined {
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      const entry = snapshot[alias];
+      if (entry) return entry;
+    }
+    return undefined;
+  }
+
+  private clearTrackedSymbolState(symbol: string): void {
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      delete this.state.positionEntries[alias];
+      delete this.state.socialHistory[alias];
+      delete this.state.stalenessAnalysis[alias];
+    }
+  }
+
+  private getSignalResearchCooldowns(): Record<string, { until: number; reason: string }> {
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const existing = dynamicState.signalResearchCooldowns as Record<string, { until: number; reason: string }> | undefined;
+    if (existing) return existing;
+
+    const created: Record<string, { until: number; reason: string }> = {};
+    dynamicState.signalResearchCooldowns = created;
+    return created;
+  }
+
+  private setSignalResearchCooldown(symbol: string, reason: string, ttlMs = this.SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS): void {
+    const cooldowns = this.getSignalResearchCooldowns();
+    cooldowns[symbol] = {
+      until: Date.now() + ttlMs,
+      reason,
+    };
+  }
+
+  private parseFilledOrderQuantity(order: Order): number {
+    const rawQty = order.filled_qty || order.qty || "0";
+    const qty = Number.parseFloat(rawQty);
+    return Number.isFinite(qty) ? Math.abs(qty) : 0;
+  }
+
+  private shouldRefreshTrackedEntryTime(
+    entry: PositionEntry,
+    inferredEntry: Pick<PositionEntry, "entry_time"> | null | undefined
+  ): boolean {
+    if (!inferredEntry?.entry_time || !Number.isFinite(inferredEntry.entry_time)) {
+      return false;
+    }
+
+    if (!Number.isFinite(entry.entry_time) || entry.entry_time <= 0) {
+      return true;
+    }
+
+    if (entry.entry_reason === "Recovered from broker position") {
+      return true;
+    }
+
+    // Repair legacy entries whose tracked time is much newer than the broker's filled order.
+    return entry.entry_time - inferredEntry.entry_time > 30 * 60 * 1000;
+  }
+
+  private inferPositionEntryFromOrders(symbol: string, orders: Order[]): Pick<PositionEntry, "entry_time" | "entry_price"> | null {
+    const aliases = new Set(this.getTrackedSymbolAliases(symbol).map((alias) => alias.toUpperCase()));
+    const relevantOrders = orders
+      .filter((order) => aliases.has(order.symbol.toUpperCase()) && !!order.filled_at)
+      .sort((a, b) => new Date(a.filled_at || a.submitted_at || a.created_at).getTime() - new Date(b.filled_at || b.submitted_at || b.created_at).getTime());
+
+    if (relevantOrders.length === 0) return null;
+
+    let netQty = 0;
+    let currentEntryOrder: Order | null = null;
+
+    for (const order of relevantOrders) {
+      const qty = this.parseFilledOrderQuantity(order);
+      if (qty <= 0) continue;
+
+      if (order.side === "buy") {
+        if (netQty <= 0) {
+          currentEntryOrder = order;
+        }
+        netQty += qty;
+      } else {
+        netQty -= qty;
+        if (netQty <= 0) {
+          currentEntryOrder = null;
+        }
+      }
+    }
+
+    const fallbackBuyOrder = [...relevantOrders].reverse().find((order) => order.side === "buy") ?? relevantOrders[relevantOrders.length - 1] ?? null;
+    const entryOrder = currentEntryOrder ?? fallbackBuyOrder;
+    if (!entryOrder) return null;
+
+    const entryTimeSource = entryOrder.filled_at || entryOrder.submitted_at || entryOrder.created_at;
+    const entryTime = new Date(entryTimeSource).getTime();
+    const entryPrice = Number.parseFloat(entryOrder.filled_avg_price || "0");
+
+    return {
+      entry_time: Number.isFinite(entryTime) ? entryTime : Date.now(),
+      entry_price: Number.isFinite(entryPrice) ? entryPrice : 0,
+    };
+  }
+
+  private createRecoveredPositionEntry(
+    position: Position,
+    socialSnapshot: Record<string, SocialSnapshotCacheEntry>,
+    inferred?: Pick<PositionEntry, "entry_time" | "entry_price"> | null
+  ): PositionEntry {
+    const originalSignal = this.state.signalCache.find((signal) => signal.symbol === position.symbol);
+    const aggregatedSocial = this.getSocialSnapshotEntry(socialSnapshot, position.symbol);
+    const sentiment = aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0;
+
+    return {
+      symbol: position.symbol,
+      entry_time: inferred?.entry_time ?? Date.now(),
+      entry_price: inferred?.entry_price && inferred.entry_price > 0 ? inferred.entry_price : position.avg_entry_price || 0,
+      entry_sentiment: sentiment,
+      entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+      entry_sources: aggregatedSocial ? aggregatedSocial.sources : originalSignal?.subreddits || [originalSignal?.source || "broker-sync"],
+      entry_reason: "Recovered from broker position",
+      peak_price: position.current_price,
+      peak_sentiment: sentiment,
+    };
+  }
+
+  private isUnknownModelError(error: unknown): boolean {
+    const message = String(error).toLowerCase();
+    return message.includes("unknown model") || message.includes("\"1211\"") || message.includes("code\":\"1211");
+  }
+
+  private isRateLimitError(error: unknown): boolean {
+    const message = String(error).toLowerCase();
+    return (
+      message.includes("429") ||
+      message.includes("rate_limit") ||
+      message.includes("temporarily overloaded") ||
+      message.includes("try again later")
+    );
+  }
+
+  private async completeWithFallback(
+    request: Parameters<LLMProvider["complete"]>[0],
+    preferredModel: string,
+    fallbackModel: string | undefined,
+    logAgent: string
+  ) {
+    if (!this._llm) {
+      throw new Error("LLM provider not initialized");
+    }
+
+    try {
+      const response = await this._llm.complete({
+        ...request,
+        model: preferredModel,
+      });
+      return { response, model: preferredModel };
+    } catch (error) {
+      const shouldRetryWithFallback =
+        !!fallbackModel && fallbackModel !== preferredModel && this.isUnknownModelError(error);
+
+      if (!shouldRetryWithFallback) {
+        throw error;
+      }
+
+      this.log(logAgent, "model_fallback", {
+        preferred_model: preferredModel,
+        fallback_model: fallbackModel,
+        reason: "unknown_model",
+      });
+
+      const response = await this._llm.complete({
+        ...request,
+        model: fallbackModel,
+      });
+      return { response, model: fallbackModel };
+    }
+  }
+
+  private async syncTrackedPositionEntries(positions: Position[], orders?: Order[]): Promise<void> {
+    const socialSnapshot = this.getSocialSnapshotCache();
+    const alpaca = createAlpacaProviders(this.env);
+    const filledOrders =
+      orders ||
+      (await alpaca.trading
+        .listOrders({ status: "closed", limit: 200, direction: "desc" })
+        .then((items) => items.filter((order) => !!order.filled_at))
+        .catch(() => []));
+
+    for (const pos of positions) {
+      const inferredEntry = this.inferPositionEntryFromOrders(pos.symbol, filledOrders);
+      let entry = this.findTrackedPositionEntry(pos.symbol);
+
+      if (!entry) {
+        entry = this.createRecoveredPositionEntry(pos, socialSnapshot, inferredEntry);
+        this.state.positionEntries[pos.symbol] = entry;
+      }
+
+      if (
+        this.shouldRefreshTrackedEntryTime(entry, inferredEntry) &&
+        Math.abs(entry.entry_time - (inferredEntry?.entry_time || 0)) > 60_000
+      ) {
+        entry.entry_time = inferredEntry?.entry_time || entry.entry_time;
+      }
+
+      if ((entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) && inferredEntry?.entry_price && inferredEntry.entry_price > 0) {
+        entry.entry_price = inferredEntry.entry_price;
+      }
+
+      if ((entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) && pos.avg_entry_price > 0) {
+        entry.entry_price = pos.avg_entry_price;
+      }
+
+      if (pos.current_price > entry.peak_price) {
+        entry.peak_price = pos.current_price;
+      }
+
+      const currentSentiment = this.getSocialSnapshotEntry(socialSnapshot, pos.symbol)?.sentiment;
+      if (typeof currentSentiment === "number") {
+        entry.peak_sentiment = Math.max(entry.peak_sentiment, currentSentiment);
+      }
+    }
+  }
+
+  private selectMarketContextSymbols(signals: Signal[], positions: Position[]): string[] {
+    const rankedSignals = signals
+      .slice()
+      .sort((a, b) => {
+        const scoreA = Math.abs(a.sentiment) * (a.volume || 1) * (a.source_weight || 1);
+        const scoreB = Math.abs(b.sentiment) * (b.volume || 1) * (b.source_weight || 1);
+        return scoreB - scoreA;
+      })
+      .map((signal) => signal.symbol);
+
+    const symbols: string[] = [];
+    const seen = new Set<string>();
+
+    const pushSymbol = (symbol: string) => {
+      if (!symbol || seen.has(symbol)) return;
+      seen.add(symbol);
+      symbols.push(symbol);
+    };
+
+    for (const pos of positions) {
+      if (pos.asset_class === "us_option") continue;
+      pushSymbol(pos.symbol);
+    }
+    for (const symbol of rankedSignals) {
+      if (symbols.length >= this.MAX_MARKET_CONTEXT_SYMBOLS) break;
+      pushSymbol(symbol);
+    }
+    pushSymbol("SPY");
+    pushSymbol("QQQ");
+
+    return symbols;
+  }
+
+  private inferSectorFromAssetName(symbol: string, assetName?: string | null): string {
+    const normalized = `${symbol} ${assetName ?? ""}`.toLowerCase();
+
+    const sectorPatterns: Array<{ sector: string; keywords: string[] }> = [
+      { sector: "index_etf", keywords: [" etf", " trust", " fund", " index", "spdr", "invesco", "ishares", "vanguard"] },
+      { sector: "technology", keywords: ["software", "semiconductor", "cloud", "internet", "systems", "technology", "digital"] },
+      { sector: "healthcare", keywords: ["health", "medical", "biotech", "therapeutic", "pharma", "diagnostic"] },
+      { sector: "financials", keywords: ["bank", "capital", "financial", "insurance", "payment", "asset management"] },
+      { sector: "energy", keywords: ["energy", "oil", "gas", "petroleum", "drilling"] },
+      { sector: "industrials", keywords: ["industrial", "aerospace", "defense", "machinery", "airlines", "railroad", "transport"] },
+      { sector: "consumer_cyclical", keywords: ["retail", "automotive", "restaurant", "apparel", "hotel", "travel", "leisure"] },
+      { sector: "consumer_defensive", keywords: ["food", "beverage", "household", "consumer staples", "tobacco"] },
+      { sector: "communication_services", keywords: ["telecom", "media", "entertainment", "streaming", "communications"] },
+      { sector: "utilities", keywords: ["utility", "electric", "water"] },
+      { sector: "real_estate", keywords: ["reit", "realty", "properties", "real estate"] },
+      { sector: "materials", keywords: ["materials", "chemical", "mining", "steel", "copper", "gold", "silver"] },
+    ];
+
+    for (const pattern of sectorPatterns) {
+      if (pattern.keywords.some((keyword) => normalized.includes(keyword))) {
+        return pattern.sector;
+      }
+    }
+
+    return "unknown";
+  }
+
+  private async refreshMarketContext(ctx: StrategyContext, signals: Signal[], positions: Position[]): Promise<void> {
+    const symbols = this.selectMarketContextSymbols(signals, positions);
+    if (symbols.length === 0) return;
+
+    const now = Date.now();
+    const alpaca = createAlpacaProviders(this.env);
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalCache = dynamicState.technicalDataCache as Record<string, TechnicalDataCacheEntry> | undefined;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
+    const atrCache = dynamicState.atrCache as Record<string, number> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+
+    const nextTechnicalCache = { ...(technicalCache ?? {}) };
+    const nextMomentumCache = { ...(momentumCache ?? {}) };
+    const nextAtrCache = { ...(atrCache ?? {}) };
+    const nextSectorMap = { ...(sectorMap ?? {}) };
+
+    await Promise.allSettled(
+      symbols.map(async (symbol) => {
+        try {
+          const techEntry = nextTechnicalCache[symbol];
+          const momentumEntry = nextMomentumCache[symbol];
+          const hasRequiredCache = !!techEntry && !!momentumEntry;
+          const lastUpdated = Math.min(
+            techEntry?.updated_at ?? Number.MAX_SAFE_INTEGER,
+            momentumEntry?.updated_at ?? Number.MAX_SAFE_INTEGER
+          );
+          const isFresh =
+            hasRequiredCache &&
+            lastUpdated !== Number.MAX_SAFE_INTEGER &&
+            now - lastUpdated < this.MARKET_CONTEXT_TTL_MS;
+
+          if (isFresh) return;
+
+          if (isCryptoSymbol(symbol, this.state.config.crypto_symbols || [])) {
+            const snapshot = await alpaca.marketData.getCryptoSnapshot(normalizeCryptoSymbol(symbol));
+            const currentPrice = snapshot.latest_trade.price || snapshot.latest_quote.ask_price;
+            const previousClose = snapshot.prev_daily_bar.c;
+            const dailyClose = snapshot.daily_bar.c;
+
+            nextTechnicalCache[symbol] = {
+              ...(techEntry ?? {}),
+              updated_at: now,
+              current_price: currentPrice,
+            };
+            nextMomentumCache[symbol] = {
+              updated_at: now,
+              price_change_1h: momentumEntry?.price_change_1h,
+              price_change_24h:
+                previousClose > 0
+                  ? ((dailyClose - previousClose) / previousClose) * 100
+                  : momentumEntry?.price_change_24h,
+              volume_change: momentumEntry?.volume_change,
+            };
+            return;
+          }
+
+          const [dailyBars, hourlyBars, snapshot] = await Promise.all([
+            alpaca.marketData.getBars(symbol, "1Day", { limit: 250 }).catch(() => []),
+            alpaca.marketData.getBars(symbol, "1Hour", { limit: 30 }).catch(() => []),
+            alpaca.marketData.getSnapshot(symbol).catch(() => null),
+          ]);
+
+          if (dailyBars.length === 0 && !snapshot) return;
+
+          if (!nextSectorMap[symbol] || nextSectorMap[symbol] === "unknown") {
+            const asset = await alpaca.trading.getAsset(symbol).catch(() => null);
+            nextSectorMap[symbol] = this.inferSectorFromAssetName(symbol, asset?.name);
+          }
+
+          const technicals = dailyBars.length > 0 ? computeTechnicals(symbol, dailyBars) : null;
+          const currentPrice =
+            snapshot?.latest_trade?.price ||
+            snapshot?.latest_quote?.ask_price ||
+            technicals?.price ||
+            techEntry?.current_price ||
+            0;
+          const priceChange24h =
+            snapshot?.prev_daily_bar?.c && snapshot.prev_daily_bar.c > 0
+              ? ((snapshot.daily_bar.c - snapshot.prev_daily_bar.c) / snapshot.prev_daily_bar.c) * 100
+              : dailyBars.length >= 2
+                ? ((dailyBars[dailyBars.length - 1]!.c - dailyBars[dailyBars.length - 2]!.c) /
+                    dailyBars[dailyBars.length - 2]!.c) *
+                  100
+                : momentumEntry?.price_change_24h;
+          const priceChange1h =
+            hourlyBars.length >= 2 && hourlyBars[hourlyBars.length - 2]!.c > 0
+              ? ((hourlyBars[hourlyBars.length - 1]!.c - hourlyBars[hourlyBars.length - 2]!.c) /
+                  hourlyBars[hourlyBars.length - 2]!.c) *
+                100
+              : momentumEntry?.price_change_1h;
+
+          if (technicals) {
+            nextTechnicalCache[symbol] = {
+              updated_at: now,
+              current_price: currentPrice,
+              rsi: technicals.rsi_14 ?? undefined,
+              bb_lower: technicals.bollinger?.lower,
+              bb_middle: technicals.bollinger?.middle,
+              sma_20: technicals.sma_20 ?? undefined,
+              sma_50: technicals.sma_50 ?? undefined,
+              atr: technicals.atr_14 ?? undefined,
+              relative_volume: technicals.relative_volume ?? undefined,
+            };
+            if (technicals.atr_14 !== null) {
+              nextAtrCache[symbol] = technicals.atr_14;
+            }
+          } else {
+            nextTechnicalCache[symbol] = {
+              ...(techEntry ?? {}),
+              updated_at: now,
+              current_price: currentPrice,
+            };
+          }
+
+          nextMomentumCache[symbol] = {
+            updated_at: now,
+            price_change_1h: priceChange1h,
+            price_change_24h: priceChange24h,
+            volume_change: technicals?.relative_volume ?? momentumEntry?.volume_change,
+          };
+        } catch (error) {
+          ctx.log("System", "market_context_refresh_failed", {
+            symbol,
+            error: String(error),
+          });
+        }
+      })
+    );
+
+    dynamicState.technicalDataCache = nextTechnicalCache;
+    dynamicState.momentumDataCache = nextMomentumCache;
+    dynamicState.atrCache = nextAtrCache;
+    dynamicState.sectorMap = nextSectorMap;
+
+    const spyTech = nextTechnicalCache.SPY;
+    const qqqTech = nextTechnicalCache.QQQ;
+    if (spyTech || qqqTech) {
+      dynamicState.marketRegimeCache = {
+        vix: (dynamicState.marketRegimeCache as Record<string, unknown> | undefined)?.vix as number | undefined,
+        spyPrice: spyTech?.current_price,
+        spySma20: spyTech?.sma_20,
+        spySma50: spyTech?.sma_50,
+        qqqPrice: qqqTech?.current_price,
+        qqqSma20: qqqTech?.sma_20,
+        qqqSma50: qqqTech?.sma_50,
+      };
+    }
+
+    ctx.log("System", "market_context_refreshed", {
+      symbols: symbols.length,
+      technicals: Object.keys(nextTechnicalCache).length,
+      momentum: Object.keys(nextMomentumCache).length,
+      sectors: Object.values(nextSectorMap).filter((sector) => sector !== "unknown").length,
+      has_regime: !!spyTech || !!qqqTech,
+    });
+  }
+
+  private createPositionEntry(
+    symbol: string,
+    reason: string,
+    fallbackSentiment: number,
+    socialSnapshot: Record<string, SocialSnapshotCacheEntry>,
+    sourceLabel: string
+  ): PositionEntry {
+    const originalSignal = this.state.signalCache.find((signal) => signal.symbol === symbol);
+    const aggregatedSocial = this.getSocialSnapshotEntry(socialSnapshot, symbol);
+    const research = this.state.signalResearch[symbol];
+
+    return {
+      symbol,
+      entry_time: Date.now(),
+      entry_price: 0,
+      entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
+      entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+      entry_sources: aggregatedSocial ? aggregatedSocial.sources : originalSignal?.subreddits || [originalSignal?.source || sourceLabel],
+      entry_reason: reason,
+      peak_price: 0,
+      peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
+      recommended_entry_zone: research?.recommended_entry_zone,
+      recommended_stop_loss_pct: research?.stop_loss_pct,
+      recommended_take_profit_pct: research?.take_profit_pct,
+    };
+  }
+
   // ============================================================================
   // LLM RESEARCH — uses strategy prompt builders
   // ============================================================================
@@ -492,16 +1331,27 @@ export class MahoragaHarness extends DurableObject<Env> {
     const candidates = aboveThreshold.sort((a, b) => b.sentiment - a.sentiment).slice(0, limit);
 
     if (candidates.length === 0) {
+      // Log sentiment distribution to help diagnose why no candidates passed
+      const sampleSignals = allSignals.slice(0, 10).map((s) => ({
+        symbol: s.symbol,
+        raw_sentiment: s.raw_sentiment?.toFixed(3),
+        sentiment: s.sentiment?.toFixed(3),
+        source: s.source,
+      }));
       this.log("SignalResearch", "no_candidates", {
         total_signals: allSignals.length,
         not_held: notHeld.length,
         above_threshold: aboveThreshold.length,
         min_sentiment: this.state.config.min_sentiment_score,
+        sample_signals: sampleSignals,
       });
       return [];
     }
 
-    this.log("SignalResearch", "researching_signals", { count: candidates.length });
+    this.log("SignalResearch", "researching_signals", {
+      count: candidates.length,
+      candidate_sentiments: candidates.map((c) => ({ symbol: c.symbol, raw_sentiment: c.raw_sentiment?.toFixed(3) })),
+    });
 
     const aggregated = new Map<string, { symbol: string; sentiment: number; sources: string[] }>();
     for (const sig of candidates) {
@@ -531,8 +1381,17 @@ export class MahoragaHarness extends DurableObject<Env> {
     if (!this._llm || !activeStrategy.prompts.researchSignal) return null;
 
     const cached = this.state.signalResearch[symbol];
-    const CACHE_TTL_MS = 180_000;
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached;
+    if (cached && Date.now() - cached.timestamp < this.SIGNAL_RESEARCH_CACHE_TTL_MS) return cached;
+
+    const cooldown = this.getSignalResearchCooldowns()[symbol];
+    if (cooldown && cooldown.until > Date.now()) {
+      this.log("SignalResearch", "cooldown_skip", {
+        symbol,
+        retry_in_ms: cooldown.until - Date.now(),
+        reason: cooldown.reason,
+      });
+      return null;
+    }
 
     try {
       const alpaca = createAlpacaProviders(this.env);
@@ -547,9 +1406,9 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const prompt = activeStrategy.prompts.researchSignal(symbol, sentiment, sources, price, ctx);
-
-      const response = await this._llm.complete({
-        model: prompt.model || this.state.config.llm_model,
+      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
+      const fallbackModel = this.state.config.llm_model;
+      const { response, model } = await this.completeWithFallback({
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -557,14 +1416,10 @@ export class MahoragaHarness extends DurableObject<Env> {
         max_tokens: prompt.maxTokens || 250,
         temperature: 0.3,
         response_format: { type: "json_object" },
-      });
+      }, preferredModel, fallbackModel, "SignalResearch");
 
       if (response.usage) {
-        this.trackLLMCost(
-          prompt.model || this.state.config.llm_model,
-          response.usage.prompt_tokens,
-          response.usage.completion_tokens
-        );
+        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
       }
 
       const content = response.content || "{}";
@@ -575,6 +1430,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         reasoning: string;
         red_flags: string[];
         catalysts: string[];
+        recommended_entry_zone?: string;
+        stop_loss_pct?: number;
+        take_profit_pct?: number;
       };
 
       const result: ResearchResult = {
@@ -585,7 +1443,11 @@ export class MahoragaHarness extends DurableObject<Env> {
         reasoning: analysis.reasoning,
         red_flags: analysis.red_flags || [],
         catalysts: analysis.catalysts || [],
+        sentiment,
         timestamp: Date.now(),
+        recommended_entry_zone: analysis.recommended_entry_zone,
+        stop_loss_pct: analysis.stop_loss_pct,
+        take_profit_pct: analysis.take_profit_pct,
       };
 
       this.state.signalResearch[symbol] = result;
@@ -612,6 +1474,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       return result;
     } catch (error) {
+      if (this.isRateLimitError(error) || this.isUnknownModelError(error)) {
+        this.setSignalResearchCooldown(symbol, this.isUnknownModelError(error) ? "unknown_model" : "rate_limit");
+      }
       this.log("SignalResearch", "error", { symbol, message: String(error) });
       return null;
     }
@@ -624,8 +1489,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     const prompt = activeStrategy.prompts.researchPosition(position.symbol, position, plPct, ctx);
 
     try {
-      const response = await this._llm.complete({
-        model: prompt.model || this.state.config.llm_model,
+      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
+      const fallbackModel = this.state.config.llm_model;
+      const { response, model } = await this.completeWithFallback({
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -633,14 +1499,10 @@ export class MahoragaHarness extends DurableObject<Env> {
         max_tokens: prompt.maxTokens || 200,
         temperature: 0.3,
         response_format: { type: "json_object" },
-      });
+      }, preferredModel, fallbackModel, "PositionResearch");
 
       if (response.usage) {
-        this.trackLLMCost(
-          prompt.model || this.state.config.llm_model,
-          response.usage.prompt_tokens,
-          response.usage.completion_tokens
-        );
+        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
       }
 
       const content = response.content || "{}";
@@ -679,8 +1541,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     const prompt = activeStrategy.prompts.analyzeSignals(signals, positions, account, ctx);
 
     try {
-      const response = await this._llm.complete({
-        model: prompt.model || this.state.config.llm_analyst_model,
+      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
+      const fallbackModel = this.state.config.llm_model;
+      const { response, model } = await this.completeWithFallback({
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },
@@ -688,14 +1551,10 @@ export class MahoragaHarness extends DurableObject<Env> {
         max_tokens: prompt.maxTokens || 800,
         temperature: 0.4,
         response_format: { type: "json_object" },
-      });
+      }, preferredModel, fallbackModel, "Analyst");
 
       if (response.usage) {
-        this.trackLLMCost(
-          prompt.model || this.state.config.llm_analyst_model,
-          response.usage.prompt_tokens,
-          response.usage.completion_tokens
-        );
+        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
       }
 
       const content = response.content || "{}";
@@ -742,6 +1601,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       return;
     }
 
+    await this.syncTrackedPositionEntries(positions);
     const heldSymbols = new Set(positions.map((p) => p.symbol));
     const socialSnapshot = this.getSocialSnapshotCache();
 
@@ -752,15 +1612,35 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (result) heldSymbols.delete(exit.symbol);
     }
 
-    if (positions.length >= this.state.config.max_positions || this.state.signalCache.length === 0) return;
+    let currentOpenPositions = heldSymbols.size;
+
+    if (currentOpenPositions >= this.state.config.max_positions) {
+      this.log("Analyst", "skipped_max_positions", {
+        positions: currentOpenPositions,
+        max: this.state.config.max_positions,
+      });
+      return;
+    }
+
+    if (this.state.signalCache.length === 0) {
+      this.log("Analyst", "skipped_no_signals", { signal_cache_size: 0 });
+      return;
+    }
 
     // Strategy entry decisions from cached research
     const research = Object.values(this.state.signalResearch);
+    if (research.length === 0) {
+      this.log("Analyst", "skipped_no_research", {
+        signal_cache_size: this.state.signalCache.length,
+        last_research_run: this.state.lastResearchRun,
+        research_interval_ms: 120_000,
+      });
+    }
     const entries = activeStrategy.selectEntries(ctx, research, positions, account);
 
     for (const entry of entries) {
       if (heldSymbols.has(entry.symbol)) continue;
-      if (positions.length >= this.state.config.max_positions) break;
+      if (currentOpenPositions >= this.state.config.max_positions) break;
 
       let finalConfidence = entry.confidence;
 
@@ -787,29 +1667,37 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (entry.useOptions) {
         const contract = await findBestOptionsContract(ctx, entry.symbol, "bullish", account.equity);
         if (contract) {
-          await this.executeOptionsOrder(contract, 1, account.equity);
+          const optionsReason = `${entry.reason} (options on ${entry.symbol})`;
+          const result = await ctx.broker.buyOption(contract.symbol, Math.min(1, contract.max_contracts), optionsReason);
+          if (result) {
+            heldSymbols.add(contract.symbol);
+            currentOpenPositions = heldSymbols.size;
+            this.state.positionEntries[contract.symbol] = this.createPositionEntry(
+              contract.symbol,
+              optionsReason,
+              finalConfidence,
+              socialSnapshot,
+              "research_options"
+            );
+          }
+        } else {
+          this.log("Options", "contract_selection_failed", { symbol: entry.symbol });
         }
+        continue;
       }
 
       // Execute buy via policy broker
       const result = await ctx.broker.buy(entry.symbol, entry.notional, entry.reason);
       if (result) {
         heldSymbols.add(entry.symbol);
-        const originalSignal = this.state.signalCache.find((s) => s.symbol === entry.symbol);
-        const aggregatedSocial = socialSnapshot[entry.symbol];
-        this.state.positionEntries[entry.symbol] = {
-          symbol: entry.symbol,
-          entry_time: Date.now(),
-          entry_price: 0,
-          entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? finalConfidence,
-          entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
-          entry_sources: aggregatedSocial
-            ? aggregatedSocial.sources
-            : originalSignal?.subreddits || [originalSignal?.source || "research"],
-          entry_reason: entry.reason,
-          peak_price: 0,
-          peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? finalConfidence,
-        };
+        currentOpenPositions = heldSymbols.size;
+        this.state.positionEntries[entry.symbol] = this.createPositionEntry(
+          entry.symbol,
+          entry.reason,
+          finalConfidence,
+          socialSnapshot,
+          "research"
+        );
       }
     }
 
@@ -817,11 +1705,26 @@ export class MahoragaHarness extends DurableObject<Env> {
     const analysis = await this.callAnalystLLM(ctx, this.state.signalCache, positions, account);
     const entrySymbols = new Set(entries.map((e) => e.symbol));
 
+    this.log("Analyst", "llm_recommendations", {
+      total: analysis.recommendations.length,
+      buys: analysis.recommendations.filter((r) => r.action === "BUY").length,
+      sells: analysis.recommendations.filter((r) => r.action === "SELL").length,
+      holds: analysis.recommendations.filter((r) => r.action === "HOLD").length,
+      min_confidence: this.state.config.min_analyst_confidence,
+    });
+
     for (const rec of analysis.recommendations) {
-      if (rec.confidence < this.state.config.min_analyst_confidence) continue;
+      if (rec.confidence < this.state.config.min_analyst_confidence) {
+        this.log("Analyst", "llm_rec_filtered_confidence", {
+          action: rec.action,
+          symbol: rec.symbol,
+          confidence: rec.confidence,
+        });
+        continue;
+      }
 
       if (rec.action === "SELL" && heldSymbols.has(rec.symbol)) {
-        const posEntry = this.state.positionEntries[rec.symbol];
+        const posEntry = this.findTrackedPositionEntry(rec.symbol);
         const holdMinutes = posEntry ? (Date.now() - posEntry.entry_time) / (1000 * 60) : 0;
         const minHold = this.state.config.llm_min_hold_minutes ?? 30;
 
@@ -848,80 +1751,46 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       if (rec.action === "BUY") {
-        if (positions.length >= this.state.config.max_positions) continue;
-        if (heldSymbols.has(rec.symbol)) continue;
-        if (entrySymbols.has(rec.symbol)) continue;
+        if (currentOpenPositions >= this.state.config.max_positions) {
+          this.log("Analyst", "llm_buy_blocked_max_positions", {
+            symbol: rec.symbol,
+            positions: currentOpenPositions,
+            max: this.state.config.max_positions,
+          });
+          continue;
+        }
+        if (heldSymbols.has(rec.symbol)) {
+          this.log("Analyst", "llm_buy_blocked_held", { symbol: rec.symbol });
+          continue;
+        }
+        if (entrySymbols.has(rec.symbol)) {
+          this.log("Analyst", "llm_buy_blocked_already_selected", { symbol: rec.symbol });
+          continue;
+        }
 
         const sizePct = Math.min(20, this.state.config.position_size_pct_of_cash);
         const notional = Math.min(
           account.cash * (sizePct / 100) * rec.confidence,
           this.state.config.max_position_value
         );
-        if (notional < 100) continue;
+        if (notional < 100) {
+          this.log("Analyst", "llm_buy_blocked_small_notional", { symbol: rec.symbol, notional, min_notional: 100 });
+          continue;
+        }
 
         const result = await ctx.broker.buy(rec.symbol, notional, rec.reasoning);
         if (result) {
-          const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
-          const aggregatedSocial = socialSnapshot[rec.symbol];
           heldSymbols.add(rec.symbol);
-          this.state.positionEntries[rec.symbol] = {
-            symbol: rec.symbol,
-            entry_time: Date.now(),
-            entry_price: 0,
-            entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? rec.confidence,
-            entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
-            entry_sources: aggregatedSocial
-              ? aggregatedSocial.sources
-              : originalSignal?.subreddits || [originalSignal?.source || "analyst"],
-            entry_reason: rec.reasoning,
-            peak_price: 0,
-            peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? rec.confidence,
-          };
+          currentOpenPositions = heldSymbols.size;
+          this.state.positionEntries[rec.symbol] = this.createPositionEntry(
+            rec.symbol,
+            rec.reasoning,
+            rec.confidence,
+            socialSnapshot,
+            "analyst"
+          );
         }
       }
-    }
-  }
-
-  private async executeOptionsOrder(
-    contract: { symbol: string; mid_price: number },
-    quantity: number,
-    equity: number
-  ): Promise<boolean> {
-    if (!this.state.config.options_enabled) return false;
-
-    const totalCost = contract.mid_price * quantity * 100;
-    const maxAllowed = equity * this.state.config.options_max_pct_per_trade;
-    let qty = quantity;
-
-    if (totalCost > maxAllowed) {
-      qty = Math.floor(maxAllowed / (contract.mid_price * 100));
-      if (qty < 1) {
-        this.log("Options", "skipped_size", { contract: contract.symbol, cost: totalCost, max: maxAllowed });
-        return false;
-      }
-    }
-
-    try {
-      const alpaca = createAlpacaProviders(this.env);
-      const order = await alpaca.trading.createOrder({
-        symbol: contract.symbol,
-        qty,
-        side: "buy",
-        type: "limit",
-        limit_price: Math.round(contract.mid_price * 100) / 100,
-        time_in_force: "day",
-      });
-
-      this.log("Options", "options_buy_executed", {
-        contract: contract.symbol,
-        qty,
-        status: order.status,
-        estimated_cost: (contract.mid_price * qty * 100).toFixed(2),
-      });
-      return true;
-    } catch (error) {
-      this.log("Options", "options_buy_failed", { contract: contract.symbol, error: String(error) });
-      return false;
     }
   }
 
@@ -1012,21 +1881,13 @@ export class MahoragaHarness extends DurableObject<Env> {
         const result = await ctx.broker.buy(rec.symbol, notional, `Pre-market plan: ${rec.reasoning}`);
         if (result) {
           heldSymbols.add(rec.symbol);
-          const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
-          const aggregatedSocial = socialSnapshot[rec.symbol];
-          this.state.positionEntries[rec.symbol] = {
-            symbol: rec.symbol,
-            entry_time: Date.now(),
-            entry_price: 0,
-            entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0,
-            entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
-            entry_sources: aggregatedSocial
-              ? aggregatedSocial.sources
-              : originalSignal?.subreddits || [originalSignal?.source || "premarket"],
-            entry_reason: rec.reasoning,
-            peak_price: 0,
-            peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0,
-          };
+          this.state.positionEntries[rec.symbol] = this.createPositionEntry(
+            rec.symbol,
+            rec.reasoning,
+            rec.confidence,
+            socialSnapshot,
+            "premarket"
+          );
         }
       }
     }
@@ -1087,6 +1948,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       "costs",
       "signals",
       "history",
+      "position-history",
       "setup/status",
     ];
     if (protectedActions.includes(action)) {
@@ -1114,6 +1976,8 @@ export class MahoragaHarness extends DurableObject<Env> {
           return this.jsonResponse({ signals: this.state.signalCache });
         case "history":
           return this.handleGetHistory(url);
+        case "position-history":
+          return this.handleGetPositionHistory(url);
         case "trigger":
           await this.alarm();
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
@@ -1149,17 +2013,21 @@ export class MahoragaHarness extends DurableObject<Env> {
         alpaca.trading.getPositions(),
         alpaca.trading.getClock(),
       ]);
-
-      for (const pos of positions || []) {
-        const entry = this.state.positionEntries[pos.symbol];
-        if (entry && entry.entry_price === 0 && pos.avg_entry_price) {
-          entry.entry_price = pos.avg_entry_price;
-          entry.peak_price = Math.max(entry.peak_price, pos.current_price);
-        }
-      }
+      await this.syncTrackedPositionEntries(positions || []);
+      this.applyStateHygiene();
     } catch (_e) {
       // Ignore - will return null
     }
+
+    const activePositionSymbols = new Set((positions || []).map((position) => position.symbol));
+    const recentSignalResearch = this.limitTimestampedRecord(
+      this.state.signalResearch,
+      this.MAX_STATUS_SIGNAL_RESEARCH_ENTRIES
+    );
+    const recentTwitterConfirmations = this.limitTimestampedRecord(
+      this.state.twitterConfirmations,
+      this.MAX_STATUS_TWITTER_CONFIRMATIONS
+    );
 
     return this.jsonResponse({
       ok: true,
@@ -1169,26 +2037,43 @@ export class MahoragaHarness extends DurableObject<Env> {
         account,
         positions,
         clock,
-        config: this.state.config,
+        config: this.getDashboardConfig(),
         signals: this.state.signalCache,
         logs: this.state.logs.slice(-100),
         costs: this.state.costTracker,
         lastAnalystRun: this.state.lastAnalystRun,
         lastResearchRun: this.state.lastResearchRun,
         lastPositionResearchRun: this.state.lastPositionResearchRun,
-        signalResearch: this.state.signalResearch,
+        signalResearch: recentSignalResearch,
         positionResearch: this.state.positionResearch,
-        positionEntries: this.state.positionEntries,
-        twitterConfirmations: this.state.twitterConfirmations,
+        positionEntries: this.filterRecordBySymbols(this.state.positionEntries, activePositionSymbols),
+        twitterConfirmations: recentTwitterConfirmations,
         premarketPlan: this.state.premarketPlan,
-        stalenessAnalysis: this.state.stalenessAnalysis,
+        stalenessAnalysis: this.filterRecordBySymbols(this.state.stalenessAnalysis, activePositionSymbols),
       },
     });
   }
 
   private async handleUpdateConfig(request: Request): Promise<Response> {
     const body = (await request.json()) as Partial<AgentConfig>;
-    const merged = { ...this.state.config, ...body };
+    const normalizedBody = {
+      ...body,
+      llm_provider:
+        (body.llm_provider as string | undefined) === "openai-compatible" ? "openai-raw" : body.llm_provider,
+    };
+    const merged = { ...this.state.config, ...normalizedBody };
+    const updatedLlmModel = typeof body.llm_model === "string" ? body.llm_model.trim() : null;
+    const analystModelExplicitlySet = Object.prototype.hasOwnProperty.call(body, "llm_analyst_model");
+    const shouldSyncAnalystModel =
+      !!updatedLlmModel &&
+      !analystModelExplicitlySet &&
+      (this.state.config.llm_analyst_model === this.state.config.llm_model ||
+        (!!(merged.openai_base_url?.trim() || this.env.OPENAI_BASE_URL) &&
+          ["gpt-4o", "gpt-4o-mini"].includes(this.state.config.llm_analyst_model)));
+
+    if (shouldSyncAnalystModel) {
+      merged.llm_analyst_model = updatedLlmModel;
+    }
 
     const validation = safeValidateAgentConfig(merged);
     if (!validation.success) {
@@ -1201,7 +2086,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.state.config = validation.data;
     this.initializeLLM();
     await this.persist();
-    return this.jsonResponse({ ok: true, config: this.state.config });
+    return this.jsonResponse({ ok: true, config: this.getDashboardConfig() });
   }
 
   private async handleEnable(): Promise<Response> {
@@ -1256,6 +2141,383 @@ export class MahoragaHarness extends DurableObject<Env> {
       });
     } catch (error) {
       this.log("System", "history_error", { error: String(error) });
+      return new Response(JSON.stringify({ ok: false, error: String(error) }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  private getPeriodStartMs(period: string, nowMs: number): number {
+    switch (period) {
+      case "5Min":
+        return nowMs - 5 * 60 * 1000;
+      case "1H":
+        return nowMs - 60 * 60 * 1000;
+      case "6H":
+        return nowMs - 6 * 60 * 60 * 1000;
+      case "1D":
+        return nowMs - 24 * 60 * 60 * 1000;
+      case "7D":
+        return nowMs - 7 * 24 * 60 * 60 * 1000;
+      case "30D":
+        return nowMs - 30 * 24 * 60 * 60 * 1000;
+      default:
+        return nowMs - 7 * 24 * 60 * 60 * 1000;
+    }
+  }
+
+  private getPositionHistoryTimeframeCandidates(period: string, preferredTimeframe: string): string[] {
+    const candidates =
+      period === "5Min" || period === "1H"
+        ? [preferredTimeframe, "1Min", "5Min", "15Min"]
+        : period === "6H"
+          ? [preferredTimeframe, "5Min", "15Min", "1Hour"]
+        : period === "1D"
+        ? [preferredTimeframe, "5Min", "15Min", "1Hour"]
+        : period === "7D"
+          ? [preferredTimeframe, "15Min", "1Hour", "1Day"]
+          : [preferredTimeframe, "1Hour", "1Day"];
+
+    return [...new Set(candidates)];
+  }
+
+  private getPositionHistoryLimit(period: string, timeframe: string): number {
+    if (timeframe === "1Min") return period === "5Min" ? 12 : period === "1H" ? 90 : 400;
+    if (timeframe === "5Min") return period === "1D" ? 288 : 500;
+    if (timeframe === "15Min") return period === "1D" ? 120 : 400;
+    if (timeframe === "1Hour") return period === "30D" ? 500 : 300;
+    if (timeframe === "1Day") return 180;
+    return period === "1D" ? 120 : period === "7D" ? 240 : 180;
+  }
+
+  private async fetchPositionHistoryBars(
+    alpaca: ReturnType<typeof createAlpacaProviders>,
+    symbol: string,
+    isCrypto: boolean,
+    period: string,
+    preferredTimeframe: string,
+    startMs: number,
+    endMs: number
+  ) {
+    let bestBars: Awaited<ReturnType<typeof alpaca.marketData.getBars>> = [];
+
+    for (const timeframe of this.getPositionHistoryTimeframeCandidates(period, preferredTimeframe)) {
+      const baseParams = {
+        start: new Date(startMs).toISOString(),
+        end: new Date(endMs).toISOString(),
+        limit: this.getPositionHistoryLimit(period, timeframe),
+      };
+      const requestVariants = isCrypto
+        ? [baseParams]
+        : [
+            { ...baseParams, feed: "iex" as const },
+            baseParams,
+          ];
+
+      let bars: Awaited<ReturnType<typeof alpaca.marketData.getBars>> = [];
+      for (const params of requestVariants) {
+        const requestBars = isCrypto ? alpaca.marketData.getCryptoBars.bind(alpaca.marketData) : alpaca.marketData.getBars.bind(alpaca.marketData);
+        bars = await requestBars(symbol, timeframe, params).catch(() => []);
+        if (bars.length > 0) break;
+      }
+
+      if (bars.length > bestBars.length) {
+        bestBars = bars;
+      }
+
+      if (bars.length > 2) {
+        return bars;
+      }
+    }
+
+    return bestBars;
+  }
+
+  private buildClosedTimelineCandidates(
+    orders: Order[],
+    openSymbols: Set<string>,
+    periodStartMs: number
+  ): Array<{
+    symbol: string;
+    asset_class: string;
+    side: "long" | "short";
+    entry_time: number;
+    exit_time: number;
+    entry_price: number;
+    exit_price: number;
+  }> {
+    const groupedOrders = new Map<string, Order[]>();
+
+    for (const order of orders) {
+      if (!order.symbol || !order.filled_at || openSymbols.has(order.symbol)) continue;
+      const existing = groupedOrders.get(order.symbol) ?? [];
+      existing.push(order);
+      groupedOrders.set(order.symbol, existing);
+    }
+
+    const candidates: Array<{
+      symbol: string;
+      asset_class: string;
+      side: "long" | "short";
+      entry_time: number;
+      exit_time: number;
+      entry_price: number;
+      exit_price: number;
+    }> = [];
+
+    for (const [symbol, symbolOrders] of groupedOrders.entries()) {
+      const sortedOrders = symbolOrders
+        .filter((order) => !!order.filled_at && this.parseFilledOrderQuantity(order) > 0)
+        .sort((a, b) => new Date(a.filled_at || 0).getTime() - new Date(b.filled_at || 0).getTime());
+
+      let openQty = 0;
+      let entryTime = 0;
+      let entryCost = 0;
+      let entryAssetClass = sortedOrders[0]?.asset_class || "us_equity";
+      let entrySide: "long" | "short" = "long";
+
+      for (const order of sortedOrders) {
+        const qty = this.parseFilledOrderQuantity(order);
+        const filledAt = new Date(order.filled_at || 0).getTime();
+        const filledPrice = Number.parseFloat(order.filled_avg_price || "0");
+        if (!qty || !Number.isFinite(filledAt) || !Number.isFinite(filledPrice) || filledPrice <= 0) continue;
+
+        if (order.side === "buy") {
+          if (openQty <= 0) {
+            entryTime = filledAt;
+            entryCost = qty * filledPrice;
+            openQty = qty;
+            entryAssetClass = order.asset_class || entryAssetClass;
+            entrySide = "long";
+          } else {
+            entryCost += qty * filledPrice;
+            openQty += qty;
+          }
+          continue;
+        }
+
+        if (openQty <= 0) continue;
+
+        openQty -= qty;
+        if (openQty <= 0 && entryTime > 0) {
+          const entryPrice = entryCost > 0 ? entryCost / Math.max(qty + openQty, 0.000001) : filledPrice;
+          if (filledAt >= periodStartMs || entryTime >= periodStartMs) {
+            candidates.push({
+              symbol,
+              asset_class: entryAssetClass,
+              side: entrySide,
+              entry_time: entryTime,
+              exit_time: filledAt,
+              entry_price: entryPrice,
+              exit_price: filledPrice,
+            });
+          }
+          entryTime = 0;
+          entryCost = 0;
+          openQty = 0;
+        }
+      }
+    }
+
+    return candidates.sort((a, b) => b.exit_time - a.exit_time);
+  }
+
+  private async handleGetPositionHistory(url: URL): Promise<Response> {
+    const alpaca = createAlpacaProviders(this.env);
+    const period = url.searchParams.get("period") || "7D";
+    const timeframe = url.searchParams.get("timeframe") || "1Hour";
+    const nowMs = Date.now();
+
+    try {
+      const [positions, orders] = await Promise.all([
+        alpaca.trading.getPositions(),
+        alpaca.trading.listOrders({ status: "closed", limit: 200, direction: "desc" }).catch(() => []),
+      ]);
+
+      await this.syncTrackedPositionEntries(positions, orders);
+
+      const periodStartMs = this.getPeriodStartMs(period, nowMs);
+      const openSymbols = new Set(positions.map((position) => position.symbol));
+      const closedCandidates = this.buildClosedTimelineCandidates(orders, openSymbols, periodStartMs);
+
+      const openHistories = await Promise.all(
+        positions.map(async (position) => {
+          const entry = this.findTrackedPositionEntry(position.symbol);
+          if (!entry) return null;
+
+          const visibleEntryTime = Math.max(periodStartMs, entry.entry_time || periodStartMs);
+          const startMs = visibleEntryTime;
+          const endMs = nowMs;
+          const isCryptoPosition = position.asset_class === "crypto" || isCryptoSymbol(position.symbol, this.state.config.crypto_symbols || []);
+          const historySymbol = isCryptoPosition ? normalizeCryptoSymbol(position.symbol) : position.symbol;
+          const bars = await this.fetchPositionHistoryBars(alpaca, historySymbol, isCryptoPosition, period, timeframe, startMs, endMs);
+
+          const entryPrice = entry.entry_price > 0 ? entry.entry_price : position.avg_entry_price;
+          if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
+
+          const points = bars
+            .map((bar) => {
+              const timestamp = new Date(bar.t).getTime();
+              if (!Number.isFinite(timestamp)) return null;
+
+              const changePct =
+                position.side === "short"
+                  ? ((entryPrice - bar.c) / entryPrice) * 100
+                  : ((bar.c - entryPrice) / entryPrice) * 100;
+
+              return {
+                timestamp,
+                price: bar.c,
+                change_pct: Number.isFinite(changePct) ? changePct : 0,
+              };
+            })
+            .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
+
+          const firstPoint = points[0];
+          if (!firstPoint || firstPoint.timestamp > visibleEntryTime) {
+            points.unshift({
+              timestamp: visibleEntryTime,
+              price: entryPrice,
+              change_pct: 0,
+            });
+          } else if (points.length > 0) {
+            points[0] = {
+              price: points[0]!.price,
+              timestamp: visibleEntryTime,
+              change_pct: 0,
+            };
+          }
+
+          const latestPrice = position.current_price > 0 ? position.current_price : points[points.length - 1]?.price;
+          if (latestPrice && points.length > 0) {
+            const latestChange =
+              position.side === "short"
+                ? ((entryPrice - latestPrice) / entryPrice) * 100
+                : ((latestPrice - entryPrice) / entryPrice) * 100;
+
+            const lastPoint = points[points.length - 1];
+            if (!lastPoint || Math.abs(lastPoint.timestamp - nowMs) > 60_000) {
+              points.push({
+                timestamp: nowMs,
+                price: latestPrice,
+                change_pct: Number.isFinite(latestChange) ? latestChange : 0,
+              });
+            } else {
+              lastPoint.price = latestPrice;
+              lastPoint.change_pct = Number.isFinite(latestChange) ? latestChange : lastPoint.change_pct;
+            }
+          }
+
+          const dedupedPoints = points
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .filter((point, index, items) => index === 0 || items[index - 1]!.timestamp !== point.timestamp);
+
+          return {
+            symbol: position.symbol,
+            entry_time: entry.entry_time,
+            entry_price: entryPrice,
+            current_price: latestPrice || entryPrice,
+            status: "OPEN",
+            points: dedupedPoints,
+          };
+        })
+      );
+
+      const closedHistories = await Promise.all(
+        closedCandidates.map(async (candidate) => {
+          const visibleEntryTime = Math.max(periodStartMs, candidate.entry_time);
+          const startMs = visibleEntryTime;
+          const endMs = candidate.exit_time;
+          const isCryptoPosition =
+            candidate.asset_class === "crypto" ||
+            isCryptoSymbol(candidate.symbol, this.state.config.crypto_symbols || []);
+          const historySymbol = isCryptoPosition ? normalizeCryptoSymbol(candidate.symbol) : candidate.symbol;
+          const bars = await this.fetchPositionHistoryBars(alpaca, historySymbol, isCryptoPosition, period, timeframe, startMs, endMs);
+          const entryPrice = candidate.entry_price;
+
+          if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
+
+          const points = bars
+            .map((bar) => {
+              const timestamp = new Date(bar.t).getTime();
+              if (!Number.isFinite(timestamp)) return null;
+
+              const changePct =
+                candidate.side === "short"
+                  ? ((entryPrice - bar.c) / entryPrice) * 100
+                  : ((bar.c - entryPrice) / entryPrice) * 100;
+
+              return {
+                timestamp,
+                price: bar.c,
+                change_pct: Number.isFinite(changePct) ? changePct : 0,
+              };
+            })
+            .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
+
+          const firstPoint = points[0];
+          if (!firstPoint || firstPoint.timestamp > visibleEntryTime) {
+            points.unshift({
+              timestamp: visibleEntryTime,
+              price: entryPrice,
+              change_pct: 0,
+            });
+          } else if (points.length > 0) {
+            points[0] = {
+              price: points[0]!.price,
+              timestamp: visibleEntryTime,
+              change_pct: 0,
+            };
+          }
+
+          const exitPrice = candidate.exit_price > 0 ? candidate.exit_price : points[points.length - 1]?.price;
+          if (exitPrice && points.length > 0) {
+            const exitChange =
+              candidate.side === "short"
+                ? ((entryPrice - exitPrice) / entryPrice) * 100
+                : ((exitPrice - entryPrice) / entryPrice) * 100;
+
+            const lastPoint = points[points.length - 1];
+            if (!lastPoint || Math.abs(lastPoint.timestamp - candidate.exit_time) > 60_000) {
+              points.push({
+                timestamp: candidate.exit_time,
+                price: exitPrice,
+                change_pct: Number.isFinite(exitChange) ? exitChange : 0,
+              });
+            } else {
+              lastPoint.timestamp = candidate.exit_time;
+              lastPoint.price = exitPrice;
+              lastPoint.change_pct = Number.isFinite(exitChange) ? exitChange : lastPoint.change_pct;
+            }
+          }
+
+          const dedupedPoints = points
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .filter((point, index, items) => index === 0 || items[index - 1]!.timestamp !== point.timestamp);
+
+          return {
+            symbol: candidate.symbol,
+            entry_time: candidate.entry_time,
+            entry_price: entryPrice,
+            current_price: exitPrice || entryPrice,
+            exit_time: candidate.exit_time,
+            exit_price: exitPrice || entryPrice,
+            status: "SOLD",
+            points: dedupedPoints,
+          };
+        })
+      );
+
+      const data = Object.fromEntries(
+        [...openHistories, ...closedHistories]
+          .filter((history): history is NonNullable<typeof history> => !!history && history.points.length > 1)
+          .map((history) => [history.symbol, history])
+      );
+
+      return this.jsonResponse({ ok: true, data: { histories: data } });
+    } catch (error) {
+      this.log("System", "position_history_error", { error: String(error) });
       return new Response(JSON.stringify({ ok: false, error: String(error) }), {
         status: 500,
         headers: { "Content-Type": "application/json" },

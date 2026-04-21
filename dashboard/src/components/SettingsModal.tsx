@@ -1,28 +1,111 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Config } from '../types'
 import { Panel } from './Panel'
+import type { ConnectionSettings } from '../lib/connection'
+import { normalizeApiUrl } from '../lib/connection'
+
+const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
+  'openai-raw': ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
+  'ai-sdk': [
+    'openai/gpt-4o-mini',
+    'openai/gpt-4.1-mini',
+    'anthropic/claude-3-5-haiku-latest',
+    'google/gemini-2.5-flash',
+    'deepseek/deepseek-chat',
+  ],
+  'cloudflare-gateway': [
+    'openai/gpt-4o-mini',
+    'openai/gpt-5-mini',
+    'anthropic/claude-haiku-4-5',
+    'google-ai-studio/gemini-2.5-flash',
+  ],
+}
+
+const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
+  'openai-raw': ['gpt-5.2-2025-12-11', 'gpt-4.1', 'gpt-4o'],
+  'ai-sdk': [
+    'openai/gpt-4o',
+    'openai/o1',
+    'anthropic/claude-sonnet-4-0',
+    'google/gemini-2.5-pro',
+    'xai/grok-4',
+    'deepseek/deepseek-reasoner',
+  ],
+  'cloudflare-gateway': [
+    'openai/gpt-5.2',
+    'openai/gpt-5',
+    'anthropic/claude-opus-4-5',
+    'google-ai-studio/gemini-2.5-pro',
+  ],
+}
 
 interface SettingsModalProps {
   config: Config
-  onSave: (config: Config) => void
+  connection: ConnectionSettings
+  onSave: (config: Config) => Promise<void> | void
+  onSaveConnection: (connection: ConnectionSettings) => Promise<void> | void
   onClose: () => void
 }
 
-export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
-  const [localConfig, setLocalConfig] = useState<Config>(config)
+export function SettingsModal({ config, connection, onSave, onSaveConnection, onClose }: SettingsModalProps) {
+  const [localConfig, setLocalConfig] = useState<Config>(() => ({
+    ...config,
+    llm_provider: (config.llm_provider as string | undefined) === 'openai-compatible' ? 'openai-raw' : config.llm_provider,
+  }))
   const [saving, setSaving] = useState(false)
-  const [apiToken, setApiToken] = useState(localStorage.getItem('mahoraga_api_token') || '')
+  const [connectionSaving, setConnectionSaving] = useState(false)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [apiUrl, setApiUrl] = useState(connection.apiUrl)
+  const [apiToken, setApiToken] = useState(connection.bearerToken)
+  const llmProvider = ((localConfig.llm_provider as string | undefined) === 'openai-compatible'
+    ? 'openai-raw'
+    : localConfig.llm_provider) || 'openai-raw'
+  const researchModelSuggestions = RESEARCH_MODEL_PRESETS[llmProvider] || []
+  const analystModelSuggestions = ANALYST_MODEL_PRESETS[llmProvider] || []
+  const showOpenAIBaseUrl = ['openai-raw', 'ai-sdk'].includes(llmProvider)
 
   // Note: We intentionally do NOT sync localConfig with the config prop after initial mount.
   // This prevents the parent's polling (every 5s) from overwriting user's unsaved changes.
 
-  const handleTokenSave = () => {
-    if (apiToken) {
-      localStorage.setItem('mahoraga_api_token', apiToken)
-    } else {
-      localStorage.removeItem('mahoraga_api_token')
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
     }
-    window.location.reload()
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  const handleConnectionSave = async () => {
+    const normalizedUrl = normalizeApiUrl(apiUrl)
+    const trimmedToken = apiToken.trim()
+
+    if (!normalizedUrl) {
+      setConnectionError('API URL is required')
+      return
+    }
+
+    if (!trimmedToken) {
+      setConnectionError('Bearer token is required')
+      return
+    }
+
+    setConnectionSaving(true)
+    setConnectionError(null)
+
+    try {
+      await onSaveConnection({
+        apiUrl: normalizedUrl,
+        bearerToken: trimmedToken,
+      })
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Failed to update remote link')
+    } finally {
+      setConnectionSaving(false)
+    }
   }
 
   const handleChange = <K extends keyof Config>(key: K, value: Config[K]) => {
@@ -32,7 +115,12 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave(localConfig)
+      await onSave({
+        ...localConfig,
+        llm_provider: (localConfig.llm_provider as string | undefined) === 'openai-compatible'
+          ? 'openai-raw'
+          : localConfig.llm_provider,
+      })
       onClose()
     } finally {
       setSaving(false)
@@ -51,24 +139,32 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
         }
       >
         <div onClick={e => e.stopPropagation()} className="space-y-6">
-          {/* API Authentication */}
+          {/* Remote Link */}
           <div className="pb-4 border-b border-hud-line">
-            <h3 className="hud-label mb-3 text-hud-error">API Authentication (Required)</h3>
-            <div className="flex gap-2">
+            <h3 className="hud-label mb-3 text-hud-primary">Remote Link</h3>
+            <div className="grid gap-3 md:grid-cols-[1.3fr_1fr_auto]">
+              <input
+                type="text"
+                className="hud-input"
+                value={apiUrl}
+                onChange={e => setApiUrl(e.target.value)}
+                placeholder="https://your-mahoraga.workers.dev"
+              />
               <input
                 type="password"
-                className="hud-input flex-1"
+                className="hud-input"
                 value={apiToken}
                 onChange={e => setApiToken(e.target.value)}
-                placeholder="Enter MAHORAGA_API_TOKEN"
+                placeholder="Bearer token"
               />
-              <button className="hud-button" onClick={handleTokenSave}>
-                Save & Reload
+              <button className="hud-button" onClick={handleConnectionSave} disabled={connectionSaving}>
+                {connectionSaving ? 'LINKING...' : 'Reconnect'}
               </button>
             </div>
-            <p className="text-[9px] text-hud-text-dim mt-1">
-              Your MAHORAGA_API_TOKEN from Cloudflare secrets. Required for all API access.
+            <p className="text-[9px] text-hud-text-dim mt-2">
+              Worker のルート URL を指定してください。`/agent/*` は自動で付与されます。
             </p>
+            {connectionError && <p className="text-[10px] text-hud-error mt-2">{connectionError}</p>}
           </div>
 
           {/* Position Limits */}
@@ -216,10 +312,10 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
                 <label className="hud-label block mb-1">Provider</label>
                 <select
                   className="hud-input w-full"
-                  value={localConfig.llm_provider || 'openai-raw'}
+                  value={llmProvider}
                   onChange={e => handleChange('llm_provider', e.target.value as Config['llm_provider'])}
                 >
-                  <option value="openai-raw">OpenAI Direct (default)</option>
+                  <option value="openai-raw">OpenAI Official</option>
                   <option value="ai-sdk">AI SDK (5 providers)</option>
                   <option value="cloudflare-gateway">Cloudflare AI Gateway</option>
                   {localConfig.llm_provider &&
@@ -229,137 +325,68 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
                 </select>
                 <p className="text-[9px] text-hud-text-dim mt-1">
                   {localConfig.llm_provider === 'ai-sdk' && 'Supports: OpenAI, Anthropic, Google, xAI, DeepSeek'}
-                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') && 'Uses OPENAI_API_KEY directly (+ optional OPENAI_BASE_URL).'}
+                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') &&
+                    'Uses the official OpenAI API key. If Base URL Override is set, that endpoint is used instead.'}
                   {localConfig.llm_provider &&
                     !['openai-raw', 'ai-sdk', 'cloudflare-gateway'].includes(localConfig.llm_provider) &&
                     'Provider is configured in the backend; selection is hidden in the dashboard.'}
                   {localConfig.llm_provider === 'cloudflare-gateway' && 'Uses CLOUDFLARE_AI_GATEWAY_* env vars via Cloudflare AI Gateway /compat.'}
                 </p>
               </div>
+              {showOpenAIBaseUrl && (
+                <div>
+                  <label className="hud-label block mb-1">OpenAI Base URL Override</label>
+                  <input
+                    type="text"
+                    className="hud-input w-full"
+                    value={localConfig.openai_base_url || ''}
+                    onChange={e => handleChange('openai_base_url', e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                  <p className="text-[9px] text-hud-text-dim mt-1">
+                    {llmProvider === 'ai-sdk'
+                      ? 'AI SDK では OpenAI 系モデルを使うときに適用されます。'
+                      : '空なら公式 OpenAI API を使い、入力されていれば互換 endpoint としてその URL を使います。'}
+                  </p>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="hud-label block mb-1">Research Model (cheap)</label>
-                <select
+                <input
+                  list="research-model-suggestions"
                   className="hud-input w-full"
                   value={localConfig.llm_model}
                   onChange={e => handleChange('llm_model', e.target.value)}
-                >
-                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') && (
-                    <>
-                      <option value="gpt-4o-mini">gpt-4o-mini</option>
-                      <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'ai-sdk' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="openai/gpt-3.5-turbo">gpt-3.5-turbo</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-3-5-haiku-latest">claude-3.5-haiku</option>
-                      </optgroup>
-                      <optgroup label="Google">
-                        <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
-                        <option value="google/gemini-2.0-flash">gemini-2.0-flash</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'cloudflare-gateway' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="openai/gpt-5-mini">gpt-5-mini</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-haiku-4-5">claude-haiku-4.5</option>
-                      </optgroup>
-                      <optgroup label="Google AI Studio">
-                        <option value="google-ai-studio/gemini-2.5-flash">gemini-2.5-flash</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider &&
-                    !['openai-raw', 'ai-sdk', 'cloudflare-gateway'].includes(localConfig.llm_provider) && (
-                      <option value={localConfig.llm_model}>{localConfig.llm_model}</option>
-                    )}
-                </select>
+                  placeholder="Model name"
+                />
+                <datalist id="research-model-suggestions">
+                  {researchModelSuggestions.map(model => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+                <p className="text-[9px] text-hud-text-dim mt-1">
+                  候補から選んでも、任意のモデルIDを直接入力しても大丈夫です。
+                </p>
               </div>
               <div>
                 <label className="hud-label block mb-1">Analyst Model (smart)</label>
-                <select
+                <input
+                  list="analyst-model-suggestions"
                   className="hud-input w-full"
                   value={localConfig.llm_analyst_model || 'gpt-4o'}
                   onChange={e => handleChange('llm_analyst_model', e.target.value)}
-                >
-                  {(!localConfig.llm_provider || localConfig.llm_provider === 'openai-raw') && (
-                    <>
-                      <option value="gpt-5.2-2025-12-11">GPT-5.2 (best)</option>
-                      <option value="gpt-4o">gpt-4o</option>
-                      <option value="gpt-4o-mini">gpt-4o-mini (cheaper)</option>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'ai-sdk' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-4o">gpt-4o</option>
-                        <option value="openai/o1">o1 (reasoning)</option>
-                        <option value="openai/o1-mini">o1-mini</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-3-7-sonnet-latest">claude-3.7-sonnet (best)</option>
-                        <option value="anthropic/claude-sonnet-4-0">claude-sonnet-4</option>
-                        <option value="anthropic/claude-opus-4-1">claude-opus-4</option>
-                      </optgroup>
-                      <optgroup label="Google">
-                        <option value="google/gemini-2.5-pro">gemini-2.5-pro</option>
-                        <option value="google/gemini-3-pro-preview">gemini-3-pro (preview)</option>
-                      </optgroup>
-                      <optgroup label="xAI">
-                        <option value="xai/grok-4">grok-4</option>
-                        <option value="xai/grok-3">grok-3</option>
-                        <option value="xai/grok-4-fast-reasoning">grok-4-fast-reasoning</option>
-                      </optgroup>
-                      <optgroup label="DeepSeek">
-                        <option value="deepseek/deepseek-reasoner">deepseek-reasoner</option>
-                        <option value="deepseek/deepseek-chat">deepseek-chat</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider === 'cloudflare-gateway' && (
-                    <>
-                      <optgroup label="OpenAI">
-                        <option value="openai/gpt-5.2">gpt-5.2 (best)</option>
-                        <option value="openai/gpt-5">gpt-5</option>
-                        <option value="openai/gpt-4o">gpt-4o</option>
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        <option value="anthropic/claude-opus-4-5">claude-opus-4.5 (best)</option>
-                        <option value="anthropic/claude-sonnet-4-5">claude-sonnet-4.5</option>
-                      </optgroup>
-                      <optgroup label="Google AI Studio">
-                        <option value="google-ai-studio/gemini-2.5-pro">gemini-2.5-pro</option>
-                      </optgroup>
-                      <optgroup label="Grok">
-                        <option value="grok/grok-4.1-fast-reasoning">grok-4.1-fast-reasoning</option>
-                        <option value="grok/grok-code-fast-1">grok-code-fast-1</option>
-                      </optgroup>
-                    </>
-                  )}
-                  {localConfig.llm_provider &&
-                    !['openai-raw', 'ai-sdk', 'cloudflare-gateway'].includes(localConfig.llm_provider) && (
-                      <option value={localConfig.llm_analyst_model || 'gpt-4o'}>
-                        {localConfig.llm_analyst_model || 'gpt-4o'}
-                      </option>
-                    )}
-                </select>
+                  placeholder="Model name"
+                />
+                <datalist id="analyst-model-suggestions">
+                  {analystModelSuggestions.map(model => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+                <p className="text-[9px] text-hud-text-dim mt-1">
+                  Base URL Override を使う場合も、ここに互換 API 側のモデル名をそのまま入力できます。
+                </p>
               </div>
             </div>
           </div>

@@ -65,6 +65,7 @@ export interface Config {
   llm_provider?: 'openai-raw' | 'ai-sdk' | 'cloudflare-gateway'
   llm_model: string
   llm_analyst_model?: string
+  openai_base_url?: string
   starting_equity?: number
 
   // Stale position management
@@ -107,7 +108,7 @@ export interface SignalResearch {
   reasoning: string
   red_flags: string[]
   catalysts: string[]
-  sentiment: number
+  sentiment?: number
   timestamp: number
 }
 
@@ -191,7 +192,26 @@ export interface PositionHistory {
   timestamps: number[]
 }
 
+export interface PositionTimelinePoint {
+  timestamp: number
+  price: number
+  change_pct: number
+}
+
+export interface PositionTimelineHistory {
+  symbol: string
+  entry_time: number
+  entry_price: number
+  current_price: number
+  exit_time?: number
+  exit_price?: number
+  status?: 'OPEN' | 'SOLD'
+  points: PositionTimelinePoint[]
+}
+
 export interface Status {
+  enabled: boolean
+  strategy?: string
   account: Account | null
   positions: Position[]
   clock: Clock | null
@@ -201,6 +221,7 @@ export interface Status {
   costs: CostTracker
   lastAnalystRun: number
   lastResearchRun: number
+  lastPositionResearchRun?: number
   signalResearch: Record<string, SignalResearch>
   positionResearch: Record<string, PositionResearch>
   portfolioHistory?: PortfolioSnapshot[]

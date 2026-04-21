@@ -24,6 +24,7 @@ function createValidConfig() {
     llm_provider: "openai-raw" as const,
     llm_model: "gpt-4o-mini",
     llm_analyst_model: "gpt-4o",
+    openai_base_url: "",
     llm_min_hold_minutes: 30,
     options_enabled: false,
     options_min_confidence: 0.8,

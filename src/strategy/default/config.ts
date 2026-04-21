@@ -13,11 +13,11 @@ import type { AgentConfig, AgentState } from "../../core/types";
 export const SOURCE_CONFIG = {
   weights: {
     stocktwits: 0.85,
-    reddit_wallstreetbets: 0.6,
+    reddit_wallstreetbets: 0.45,
     reddit_stocks: 0.9,
     reddit_investing: 0.8,
     reddit_options: 0.85,
-    twitter_fintwit: 0.95,
+    twitter_fintwit: 0.85,
     twitter_news: 0.9,
     sec_8k: 0.95,
     sec_4: 0.9,
@@ -54,21 +54,22 @@ export const DEFAULT_CONFIG: AgentConfig = {
   market_open_execute_window_minutes: 2,
   max_position_value: 5000,
   max_positions: 5,
-  min_sentiment_score: 0.3,
-  min_analyst_confidence: 0.6,
+  min_sentiment_score: 0.4,
+  min_analyst_confidence: 0.68,
   take_profit_pct: 10,
   stop_loss_pct: 5,
-  position_size_pct_of_cash: 25,
+  position_size_pct_of_cash: 15,
   stale_position_enabled: true,
-  stale_min_hold_hours: 24,
-  stale_max_hold_days: 3,
+  stale_min_hold_hours: 12,
+  stale_max_hold_days: 2,
   stale_min_gain_pct: 5,
-  stale_mid_hold_days: 2,
+  stale_mid_hold_days: 1,
   stale_mid_min_gain_pct: 3,
   stale_social_volume_decay: 0.3,
   llm_provider: "openai-raw",
   llm_model: "gpt-4o-mini",
   llm_analyst_model: "gpt-4o",
+  openai_base_url: "",
   llm_min_hold_minutes: 30,
   options_enabled: false,
   options_min_confidence: 0.8,
@@ -88,6 +89,39 @@ export const DEFAULT_CONFIG: AgentConfig = {
   crypto_stop_loss_pct: 5,
   ticker_blacklist: [],
   allowed_exchanges: ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
+
+  // ── Trailing Stop ──────────────────────────────────────────────────────────
+  trailing_stop_enabled: true,
+  trailing_stop_pct: 3.5,
+  trailing_stop_activation_pct: 5,
+
+  // ── Dynamic Take Profit ────────────────────────────────────────────────────
+  dynamic_tp_enabled: true,
+  tp_atr_multiplier: 3,
+  tp_min_pct: 5,
+  tp_max_pct: 25,
+
+  // ── Entry Timing Filters ────────────────────────────────────────────────────
+  entry_timing_enabled: true,
+  entry_rsi_min: 40,
+  entry_rsi_max: 55,
+  entry_bb_lower_threshold: 0.2,
+
+  // ── Composite Scoring ──────────────────────────────────────────────────────
+  scoring_enabled: true,
+  scoring_sentiment_weight: 0.3,
+  scoring_technical_weight: 0.35,
+  scoring_catalyst_weight: 0.2,
+  scoring_momentum_weight: 0.15,
+
+  // ── Market Regime ──────────────────────────────────────────────────────────
+  market_regime_enabled: true,
+  regime_low_threshold: 0.5,
+  regime_position_size_reduction: 0.45,
+
+  // ── Portfolio Risk ─────────────────────────────────────────────────────────
+  portfolio_risk_enabled: true,
+  max_positions_per_sector: 2,
 };
 
 // ── Default agent state ──────────────────────────────────────────────────────

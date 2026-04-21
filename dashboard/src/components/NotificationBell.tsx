@@ -6,9 +6,10 @@ import type { OvernightActivity, PremarketPlan } from '../types'
 interface NotificationBellProps {
   overnightActivity?: OvernightActivity
   premarketPlan?: PremarketPlan | null
+  compact?: boolean
 }
 
-export function NotificationBell({ overnightActivity, premarketPlan }: NotificationBellProps) {
+export function NotificationBell({ overnightActivity, premarketPlan, compact = false }: NotificationBellProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [hasRead, setHasRead] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -51,13 +52,14 @@ export function NotificationBell({ overnightActivity, premarketPlan }: Notificat
       <button
         onClick={() => setIsOpen(!isOpen)}
         className={clsx(
-          'relative p-2 transition-colors',
+          'relative flex items-center justify-center border border-hud-line/40 bg-hud-bg/45 transition-colors',
+          compact ? 'h-8 w-8 rounded-md p-1.5' : 'min-h-[48px] min-w-[48px] rounded-xl p-3',
           isOpen ? 'text-hud-primary' : 'text-hud-text-dim hover:text-hud-text'
         )}
       >
         <svg 
-          width="16" 
-          height="16" 
+          width={compact ? 16 : 20}
+          height={compact ? 16 : 20}
           viewBox="0 0 24 24" 
           fill="none" 
           stroke="currentColor" 
@@ -72,7 +74,10 @@ export function NotificationBell({ overnightActivity, premarketPlan }: Notificat
           <motion.span
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
-            className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-hud-error text-[9px] font-bold rounded-full flex items-center justify-center text-white"
+            className={clsx(
+              'absolute bg-hud-error font-bold rounded-full flex items-center justify-center text-white',
+              compact ? '-top-1 -right-1 h-3.5 min-w-3.5 px-1 text-[8px]' : '-top-0.5 -right-0.5 w-4 h-4 text-[9px]'
+            )}
           >
             {unreadCount > 9 ? '9+' : unreadCount}
           </motion.span>
@@ -182,7 +187,7 @@ function ActivityStat({
   return (
     <div className="text-center">
       <div className={clsx(
-        'text-lg font-light',
+        'text-lg font-semibold',
         highlight ? 'text-hud-success' : 'text-hud-text-bright'
       )}>
         {value}

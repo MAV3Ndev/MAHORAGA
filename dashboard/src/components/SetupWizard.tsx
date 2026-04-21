@@ -1,25 +1,31 @@
 import { useState } from 'react'
 import { Panel } from './Panel'
+import type { ConnectionSettings } from '../lib/connection'
+import { getDefaultApiUrl, isNativeShell, normalizeApiUrl } from '../lib/connection'
 
 interface SetupWizardProps {
-  onComplete: () => void
+  initialConnection: ConnectionSettings
+  onComplete: (connection: ConnectionSettings) => Promise<void>
 }
 
-export function SetupWizard({ onComplete }: SetupWizardProps) {
-  const [step, setStep] = useState(0)
-  const [disclaimerAccepted, setDisclaimerAccepted] = useState(false)
+export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps) {
+  const [apiUrl, setApiUrl] = useState(initialConnection.apiUrl || getDefaultApiUrl())
+  const [bearerToken, setBearerToken] = useState(initialConnection.bearerToken || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  
-  const [alpacaKey, setAlpacaKey] = useState('')
-  const [alpacaSecret, setAlpacaSecret] = useState('')
-  const [openaiKey, setOpenaiKey] = useState('')
-  const [paperMode, setPaperMode] = useState(true)
-  const [startingEquity, setStartingEquity] = useState(100000)
+  const nativeShell = isNativeShell()
 
   const handleSubmit = async () => {
-    if (!alpacaKey || !alpacaSecret) {
-      setError('Alpaca API Key and Secret are required')
+    const normalizedUrl = normalizeApiUrl(apiUrl)
+    const trimmedToken = bearerToken.trim()
+
+    if (!normalizedUrl) {
+      setError('API URL is required')
+      return
+    }
+
+    if (!trimmedToken) {
+      setError('Bearer token is required')
       return
     }
 
@@ -27,27 +33,12 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     setError(null)
 
     try {
-      const res = await fetch('/api/setup/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          alpaca_key: alpacaKey,
-          alpaca_secret: alpacaSecret,
-          openai_key: openaiKey || undefined,
-          paper_mode: paperMode,
-          starting_equity: startingEquity,
-        }),
+      await onComplete({
+        apiUrl: normalizedUrl,
+        bearerToken: trimmedToken,
       })
-      
-      const data = await res.json()
-      
-      if (data.ok) {
-        setStep(3)
-      } else {
-        setError(data.error || 'Failed to save configuration')
-      }
     } catch (err) {
-      setError('Failed to connect to agent')
+      setError(err instanceof Error ? err.message : 'Failed to connect to MAHORAGA')
     } finally {
       setSaving(false)
     }
@@ -55,225 +46,103 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
   return (
     <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-      <Panel title="MAHORAGA SETUP" className="w-full max-w-xl">
-        {step === 0 && (
-          <div className="space-y-6">
-            <div className="text-center py-2">
-              <h2 className="text-xl font-light text-hud-warning mb-2">Risk Disclaimer</h2>
-              <p className="text-hud-text-dim text-xs">
-                Please read carefully before proceeding
-              </p>
+      <div className="w-full max-w-5xl grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+        <Panel title="MAHORAGA PANEL" className="relative overflow-hidden">
+          <div className="absolute inset-0 opacity-40 pointer-events-none bg-[radial-gradient(circle_at_top_left,rgba(90,154,184,0.18),transparent_45%),radial-gradient(circle_at_bottom_right,rgba(138,106,184,0.14),transparent_40%)]" />
+          <div className="relative space-y-6 min-h-[420px] flex flex-col justify-between">
+            <div className="space-y-5">
+              <div>
+                <div className="hud-label text-hud-primary mb-2">
+                  {nativeShell ? 'ANDROID CONTROL SURFACE' : 'DESKTOP CONTROL SURFACE'}
+                </div>
+                <h1 className="text-4xl sm:text-5xl font-bold tracking-[0.14em] text-hud-text-bright m-0">
+                  MAHORAGA PANEL
+                </h1>
+                <p className="text-sm text-hud-text-dim max-w-xl mt-4 leading-6">
+                  任意の API URL と Bearer で MAHORAGA に接続し、エージェント状況、残高推移、シグナル、
+                  リサーチ、設定変更までを一枚のサイバーパネルで扱います。
+                  {nativeShell ? ' Android 版では接続先 Worker URL を最初に登録して使います。' : ''}
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="border border-hud-line bg-hud-bg/70 p-3">
+                  <div className="hud-label text-hud-cyan mb-2">STATUS</div>
+                  <div className="hud-value-md">Agent heartbeat</div>
+                  <div className="text-xs text-hud-text-dim mt-2">enabled / disabled / market clock / live logs</div>
+                </div>
+                <div className="border border-hud-line bg-hud-bg/70 p-3">
+                  <div className="hud-label text-hud-success mb-2">BALANCE</div>
+                  <div className="hud-value-md">Equity telemetry</div>
+                  <div className="text-xs text-hud-text-dim mt-2">portfolio history / realized / unrealized / cost trace</div>
+                </div>
+                <div className="border border-hud-line bg-hud-bg/70 p-3">
+                  <div className="hud-label text-hud-purple mb-2">CONTROL</div>
+                  <div className="hud-value-md">Remote config</div>
+                  <div className="text-xs text-hud-text-dim mt-2">thresholds / options / crypto / model settings</div>
+                </div>
+              </div>
             </div>
 
-            <div className="bg-hud-bg p-4 rounded text-xs text-hud-text-dim space-y-3 max-h-64 overflow-y-auto">
-              <p>
-                This software is provided for <strong className="text-hud-text">educational and informational purposes only</strong>. 
-                Nothing in this software constitutes financial, investment, legal, or tax advice.
-              </p>
-              <p>
-                <strong className="text-hud-text">By using this software, you acknowledge and agree that:</strong>
-              </p>
-              <ul className="list-disc pl-4 space-y-1">
-                <li>All trading and investment decisions are made <strong className="text-hud-warning">at your own risk</strong></li>
-                <li>Markets are volatile and <strong className="text-hud-error">you can lose some or all of your capital</strong></li>
-                <li>No guarantees of performance, profits, or outcomes are made</li>
-                <li>The authors, contributors, and maintainers are not responsible for any financial losses</li>
-                <li>You are solely responsible for your own trades and investment decisions</li>
-                <li>This software may contain bugs, errors, or behave unexpectedly</li>
-                <li>Past performance does not guarantee future results</li>
-              </ul>
-              <p>
-                <strong className="text-hud-error">If you do not fully understand the risks involved in trading or investing, you should not use this software.</strong>
-              </p>
-              <p>
-                No member, contributor, or operator of this project shall be held liable for losses of any kind.
-              </p>
+            <div className="grid gap-3 sm:grid-cols-3 text-xs text-hud-text-dim">
+              <div className="border-t border-hud-line pt-3">
+                接続先は Worker のルート URL を想定しています。
+                <span className="text-hud-text"> `/agent/*` は自動で付与</span> します。
+              </div>
+              <div className="border-t border-hud-line pt-3">
+                Bearer は `MAHORAGA_API_TOKEN` を使う前提です。
+              </div>
+              <div className="border-t border-hud-line pt-3">
+                {nativeShell ? 'Android 版では公開 Worker URL を直接叩くため、HTTPS 配信を推奨します。' : 'Electron 版では CORS を回避して安定接続します。'}
+              </div>
             </div>
+          </div>
+        </Panel>
 
-            <div className="flex items-start gap-2">
+        <Panel title="REMOTE LINK" className="justify-center">
+          <div className="space-y-5">
+            <div>
+              <div className="hud-label mb-2 text-hud-primary">API URL</div>
               <input
-                type="checkbox"
-                id="acceptDisclaimer"
-                checked={disclaimerAccepted}
-                onChange={e => setDisclaimerAccepted(e.target.checked)}
-                className="accent-hud-primary mt-1"
+                type="text"
+                className="hud-input w-full"
+                placeholder={nativeShell ? 'https://your-mahoraga.workers.dev' : 'https://your-mahoraga.workers.dev'}
+                value={apiUrl}
+                onChange={(event) => setApiUrl(event.target.value)}
               />
-              <label htmlFor="acceptDisclaimer" className="text-xs text-hud-text">
-                I have read and understand the risks. I accept full responsibility for any losses that may occur from using this software.
-              </label>
-            </div>
-
-            <div className="pt-4 border-t border-hud-line">
-              <button 
-                className="hud-button w-full disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={() => setStep(1)}
-                disabled={!disclaimerAccepted}
-              >
-                I Understand, Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="space-y-6">
-            <div className="text-center py-4">
-              <h2 className="text-2xl font-light text-hud-text-bright mb-2">Welcome to Mahoraga</h2>
-              <p className="text-hud-text-dim text-sm">
-                Autonomous trading powered by social sentiment and AI analysis
+              <p className="text-xs text-hud-text-dim mt-2">
+                {nativeShell
+                  ? '例: `https://your-app.workers.dev`'
+                  : '例: `https://your-app.workers.dev` または `http://localhost:8787`'}
               </p>
-            </div>
-
-            <div className="space-y-4 text-sm text-hud-text">
-              <div className="flex items-start gap-3">
-                <span className="text-hud-success">1.</span>
-                <span>Monitors StockTwits for sentiment signals</span>
-              </div>
-              <div className="flex items-start gap-3">
-                <span className="text-hud-success">2.</span>
-                <span>AI research agents analyze candidates 24/7</span>
-              </div>
-              <div className="flex items-start gap-3">
-                <span className="text-hud-success">3.</span>
-                <span>LLM makes final trading decisions at market open</span>
-              </div>
-              <div className="flex items-start gap-3">
-                <span className="text-hud-success">4.</span>
-                <span>Automatic stop-loss and take-profit protection</span>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-hud-line">
-              <button 
-                className="hud-button w-full"
-                onClick={() => setStep(2)}
-              >
-                Get Started
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-6">
-            <div>
-              <h3 className="hud-label mb-4 text-hud-primary">Alpaca Trading Account</h3>
-              <p className="text-xs text-hud-text-dim mb-4">
-                Get your API keys from{' '}
-                <a href="https://app.alpaca.markets" target="_blank" rel="noopener noreferrer" className="text-hud-primary hover:underline">
-                  app.alpaca.markets
-                </a>
-              </p>
-              
-              <div className="space-y-3">
-                <div>
-                  <label className="hud-label block mb-1">API Key</label>
-                  <input
-                    type="text"
-                    className="hud-input w-full"
-                    placeholder="PK..."
-                    value={alpacaKey}
-                    onChange={e => setAlpacaKey(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="hud-label block mb-1">API Secret</label>
-                  <input
-                    type="password"
-                    className="hud-input w-full"
-                    placeholder="Secret key..."
-                    value={alpacaSecret}
-                    onChange={e => setAlpacaSecret(e.target.value)}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="paperMode"
-                    checked={paperMode}
-                    onChange={e => setPaperMode(e.target.checked)}
-                    className="accent-hud-primary"
-                  />
-                  <label htmlFor="paperMode" className="hud-label">
-                    Paper Trading Mode (recommended for testing)
-                  </label>
-                </div>
-              </div>
             </div>
 
             <div>
-              <h3 className="hud-label mb-4 text-hud-primary">OpenAI API Key (Optional)</h3>
-              <p className="text-xs text-hud-text-dim mb-4">
-                Required for AI-powered analysis. Get from{' '}
-                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-hud-primary hover:underline">
-                  platform.openai.com
-                </a>
-              </p>
+              <div className="hud-label mb-2 text-hud-primary">Bearer Token</div>
               <input
                 type="password"
                 className="hud-input w-full"
-                placeholder="sk-..."
-                value={openaiKey}
-                onChange={e => setOpenaiKey(e.target.value)}
+                placeholder="MAHORAGA_API_TOKEN"
+                value={bearerToken}
+                onChange={(event) => setBearerToken(event.target.value)}
               />
-            </div>
-
-            <div>
-              <h3 className="hud-label mb-4 text-hud-primary">Starting Equity</h3>
-              <p className="text-xs text-hud-text-dim mb-4">
-                Your account starting balance (for P&L tracking)
+              <p className="text-xs text-hud-text-dim mt-2">
+                保存後は `/agent/status` へ接続テストして、そのままパネルを起動します。
               </p>
-              <input
-                type="number"
-                className="hud-input w-full"
-                value={startingEquity}
-                onChange={e => setStartingEquity(Number(e.target.value))}
-              />
             </div>
 
             {error && (
-              <div className="text-hud-error text-sm p-2 border border-hud-error/30 rounded">
+              <div className="border border-hud-error/40 bg-hud-error/10 px-3 py-2 text-sm text-hud-error">
                 {error}
               </div>
             )}
 
-            <div className="flex gap-4 pt-4 border-t border-hud-line">
-              <button 
-                className="hud-button flex-1"
-                onClick={() => setStep(1)}
-              >
-                Back
-              </button>
-              <button 
-                className="hud-button flex-1"
-                onClick={handleSubmit}
-                disabled={saving}
-              >
-                {saving ? 'Saving...' : 'Save & Continue'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="space-y-6 text-center py-8">
-            <div className="text-hud-success text-4xl mb-4">✓</div>
-            <h2 className="text-xl font-light text-hud-text-bright">Configuration Saved</h2>
-            <p className="text-hud-text-dim text-sm">
-              Please restart the agent to apply the new settings:
-            </p>
-            <code className="block bg-hud-bg p-3 text-hud-primary text-sm rounded">
-              curl localhost:8787/agent/disable && curl localhost:8787/agent/enable
-            </code>
-            <button 
-              className="hud-button mt-4"
-              onClick={onComplete}
-            >
-              Continue to Dashboard
+            <button className="hud-button w-full" onClick={handleSubmit} disabled={saving}>
+              {saving ? 'LINKING...' : 'CONNECT PANEL'}
             </button>
           </div>
-        )}
-      </Panel>
+        </Panel>
+      </div>
     </div>
   )
 }

@@ -56,6 +56,8 @@ export interface StrategyContext {
     getClock(): Promise<MarketClock>;
     /** Execute a buy. Returns true if the order was submitted. */
     buy(symbol: string, notional: number, reason: string): Promise<boolean>;
+    /** Execute a long options buy. Returns true if the order was submitted. */
+    buyOption(contractSymbol: string, quantity: number, reason: string): Promise<boolean>;
     /** Close a position. Returns true if the close was submitted. */
     sell(symbol: string, reason: string): Promise<boolean>;
   };

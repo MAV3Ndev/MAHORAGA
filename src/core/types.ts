@@ -52,6 +52,9 @@ export interface PositionEntry {
   entry_reason: string;
   peak_price: number;
   peak_sentiment: number;
+  recommended_entry_zone?: string;
+  recommended_stop_loss_pct?: number;
+  recommended_take_profit_pct?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +103,11 @@ export interface ResearchResult {
   reasoning: string;
   red_flags: string[];
   catalysts: string[];
+  sentiment?: number;
   timestamp: number;
+  recommended_entry_zone?: string;
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
 }
 
 export interface TwitterConfirmation {

@@ -32,12 +32,51 @@ function unauthorizedResponse(): Response {
   });
 }
 
+function buildCorsHeaders(request: Request): Headers {
+  const origin = request.headers.get("Origin");
+  const headers = new Headers();
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept");
+  headers.set("Access-Control-Max-Age", "86400");
+  headers.set("Vary", "Origin");
+  headers.set("Access-Control-Allow-Origin", origin || "*");
+  return headers;
+}
+
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  const corsHeaders = buildCorsHeaders(request);
+
+  for (const [key, value] of corsHeaders.entries()) {
+    headers.set(key, value);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function corsPreflightResponse(request: Request): Response {
+  return new Response(null, {
+    status: 204,
+    headers: buildCorsHeaders(request),
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method === "OPTIONS") {
+      return corsPreflightResponse(request);
+    }
+
     if (url.pathname === "/health") {
-      return new Response(
+      return withCors(
+        request,
+        new Response(
         JSON.stringify({
           status: "ok",
           timestamp: new Date().toISOString(),
@@ -45,12 +84,15 @@ export default {
         }),
         {
           headers: { "Content-Type": "application/json" },
-        }
+        },
+      ),
       );
     }
 
     if (url.pathname === "/") {
-      return new Response(
+      return withCors(
+        request,
+        new Response(
         JSON.stringify({
           name: "mahoraga",
           version: "0.3.0",
@@ -63,30 +105,34 @@ export default {
         }),
         {
           headers: { "Content-Type": "application/json" },
-        }
+        },
+      ),
       );
     }
 
     if (url.pathname.startsWith("/mcp")) {
       if (!isAuthorized(request, env)) {
-        return unauthorizedResponse();
+        return withCors(request, unauthorizedResponse());
       }
-      return MahoragaMcpAgent.mount("/mcp", { binding: "MCP_AGENT" }).fetch(request, env, ctx);
+      return withCors(request, await MahoragaMcpAgent.mount("/mcp", { binding: "MCP_AGENT" }).fetch(request, env, ctx));
     }
 
     if (url.pathname.startsWith("/agent")) {
       if (!isAuthorized(request, env)) {
-        return unauthorizedResponse();
+        return withCors(request, unauthorizedResponse());
       }
 
       // Rate limiting via SessionDO
       const tokenHash = request.headers.get("Authorization")?.slice(7, 15) || "anon";
       const rateCheck = await checkRateLimit(env, `agent-${tokenHash}`);
       if (!rateCheck.allowed) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded", resetAt: rateCheck.resetAt }), {
-          status: 429,
-          headers: { "Content-Type": "application/json" },
-        });
+        return withCors(
+          request,
+          new Response(JSON.stringify({ error: "Rate limit exceeded", resetAt: rateCheck.resetAt }), {
+            status: 429,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
       await incrementRequest(env, `agent-${tokenHash}`);
 
@@ -94,16 +140,19 @@ export default {
       const agentPath = url.pathname.replace("/agent", "") || "/status";
       const agentUrl = new URL(agentPath, "http://harness");
       agentUrl.search = url.search;
-      return stub.fetch(
+      return withCors(
+        request,
+        await stub.fetch(
         new Request(agentUrl.toString(), {
           method: request.method,
           headers: request.headers,
           body: request.body,
         })
+        ),
       );
     }
 
-    return new Response("Not found", { status: 404 });
+    return withCors(request, new Response("Not found", { status: 404 }));
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {

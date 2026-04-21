@@ -35,40 +35,60 @@ export function analyzeStaleness(
   }
 
   let stalenessScore = 0;
+  let timeScore = 0;
+  let priceScore = 0;
+  let socialScore = 0;
+  const staleMidHoldDays = Number.isFinite(config.stale_mid_hold_days) ? config.stale_mid_hold_days : config.stale_max_hold_days;
+  const staleMaxHoldDays = Number.isFinite(config.stale_max_hold_days) ? config.stale_max_hold_days : staleMidHoldDays;
+  const staleTimeWindowDays = staleMaxHoldDays - staleMidHoldDays;
 
   // Time-based (max 40 points)
-  if (holdDays >= config.stale_max_hold_days) {
-    stalenessScore += 40;
-  } else if (holdDays >= config.stale_mid_hold_days) {
-    stalenessScore +=
-      (20 * (holdDays - config.stale_mid_hold_days)) / (config.stale_max_hold_days - config.stale_mid_hold_days);
+  if (holdDays >= staleMaxHoldDays) {
+    timeScore = 40;
+  } else if (holdDays >= staleMidHoldDays) {
+    timeScore = staleTimeWindowDays > 0
+      ? (20 * (holdDays - staleMidHoldDays)) / staleTimeWindowDays
+      : 20;
   }
+  stalenessScore += timeScore;
 
   // Price action (max 30 points)
   if (pnlPct < 0) {
-    stalenessScore += Math.min(30, Math.abs(pnlPct) * 3);
-  } else if (pnlPct < config.stale_mid_min_gain_pct && holdDays >= config.stale_mid_hold_days) {
-    stalenessScore += 15;
+    priceScore = Math.min(30, Math.abs(pnlPct) * 3);
+  } else if (pnlPct < config.stale_mid_min_gain_pct && holdDays >= staleMidHoldDays) {
+    priceScore = 15;
   }
+  stalenessScore += priceScore;
 
   // Social volume decay (max 30 points)
   const volumeRatio = entry.entry_social_volume > 0 ? currentSocialVolume / entry.entry_social_volume : 1;
   if (volumeRatio <= config.stale_social_volume_decay) {
-    stalenessScore += 30;
+    socialScore = 30;
   } else if (volumeRatio <= 0.5) {
-    stalenessScore += 15;
+    socialScore = 15;
   }
+  stalenessScore += socialScore;
 
-  stalenessScore = Math.min(100, stalenessScore);
+  stalenessScore = Number.isFinite(stalenessScore) ? Math.min(100, stalenessScore) : 0;
 
-  const isStale =
-    stalenessScore >= 70 || (holdDays >= config.stale_max_hold_days && pnlPct < config.stale_min_gain_pct);
+  const staleByScore = stalenessScore >= 70;
+  const staleByAging = holdDays >= staleMaxHoldDays && pnlPct < config.stale_min_gain_pct;
+  const isStale = staleByScore || staleByAging;
+
+  let reason: string;
+  if (isStale) {
+    if (staleByAging) {
+      reason = `Held ${holdDays.toFixed(1)} days with P&L ${pnlPct.toFixed(1)}% below stale target ${config.stale_min_gain_pct.toFixed(1)}%`;
+    } else {
+      reason = `Score ${stalenessScore}/100 (time ${timeScore.toFixed(0)}, price ${priceScore.toFixed(0)}, social ${socialScore.toFixed(0)})`;
+    }
+  } else {
+    reason = `OK (score ${stalenessScore}/100, hold ${holdDays.toFixed(1)}d, pnl ${pnlPct.toFixed(1)}%)`;
+  }
 
   return {
     isStale,
-    reason: isStale
-      ? `Staleness score ${stalenessScore}/100, held ${holdDays.toFixed(1)} days`
-      : `OK (score ${stalenessScore}/100)`,
+    reason,
     staleness_score: stalenessScore,
   };
 }

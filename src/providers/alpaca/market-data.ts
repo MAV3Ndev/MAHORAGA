@@ -117,6 +117,31 @@ export class AlpacaMarketDataProvider implements MarketDataProvider {
     return bars ? bars.map(parseBar) : [];
   }
 
+  async getCryptoBars(symbol: string, timeframe: string, params?: BarsParams): Promise<Bar[]> {
+    const response = await this.client.dataRequest<AlpacaBarsResponse | { bars: AlpacaBar[] }>(
+      "GET",
+      "/v1beta3/crypto/us/bars",
+      {
+        symbols: symbol,
+        timeframe,
+        start: params?.start,
+        end: params?.end,
+        limit: params?.limit,
+      }
+    );
+
+    if (!response || !response.bars) {
+      return [];
+    }
+
+    if (Array.isArray(response.bars)) {
+      return response.bars.map(parseBar);
+    }
+
+    const bars = (response as AlpacaBarsResponse).bars[symbol];
+    return bars ? bars.map(parseBar) : [];
+  }
+
   async getLatestBar(symbol: string): Promise<Bar> {
     const response = await this.client.dataRequest<AlpacaLatestBarsResponse>(
       "GET",

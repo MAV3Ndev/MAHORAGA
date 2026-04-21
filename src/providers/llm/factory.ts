@@ -18,7 +18,8 @@ export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway";
  * @returns LLMProvider instance or null if no valid configuration
  */
 export function createLLMProvider(env: Env): LLMProvider | null {
-  const providerType = (env.LLM_PROVIDER as LLMProviderType) ?? "openai-raw";
+  const rawProvider = env.LLM_PROVIDER as string | undefined;
+  const providerType = (rawProvider === "openai-compatible" ? "openai-raw" : rawProvider) ?? "openai-raw";
   const model = env.LLM_MODEL ?? "gpt-4o-mini";
   const openaiBaseUrlRaw = env.OPENAI_BASE_URL?.trim().replace(/\/+$/, "");
   const openaiBaseUrl = openaiBaseUrlRaw ? openaiBaseUrlRaw : undefined;
@@ -65,10 +66,10 @@ export function createLLMProvider(env: Env): LLMProvider | null {
         return null;
       }
 
-      return createAISDKProvider({ model, apiKeys, openaiBaseUrl });
+      return createAISDKProvider({ model, apiKeys, openaiBaseUrl, anthropicBaseUrl: env.ANTHROPIC_BASE_URL });
     }
     default:
-      // Backward compatible: use existing OpenAI provider
+      // Direct OpenAI API, with optional base URL override for OpenAI-compatible backends
       if (!env.OPENAI_API_KEY) {
         return null;
       }
@@ -84,7 +85,8 @@ export function createLLMProvider(env: Env): LLMProvider | null {
  * Check if LLM features are available based on environment configuration.
  */
 export function isLLMConfigured(env: Env): boolean {
-  const providerType = (env.LLM_PROVIDER as LLMProviderType) ?? "openai-raw";
+  const rawProvider = env.LLM_PROVIDER as string | undefined;
+  const providerType = (rawProvider === "openai-compatible" ? "openai-raw" : rawProvider) ?? "openai-raw";
 
   switch (providerType) {
     case "cloudflare-gateway":

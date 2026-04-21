@@ -16,6 +16,21 @@ export function normalizeCryptoSymbol(symbol: string): string {
   return symbol;
 }
 
+/** Convert a crypto symbol to compact exchange format (e.g., "BTC/USD" → "BTCUSD"). */
+export function compactCryptoSymbol(symbol: string): string {
+  return normalizeCryptoSymbol(symbol).replace("/", "");
+}
+
+/** Return all common aliases for a crypto symbol. */
+export function getCryptoSymbolAliases(symbol: string): string[] {
+  const aliases = new Set<string>();
+  const normalized = normalizeCryptoSymbol(symbol);
+  aliases.add(symbol.toUpperCase());
+  aliases.add(normalized);
+  aliases.add(compactCryptoSymbol(symbol));
+  return Array.from(aliases);
+}
+
 /** Check if a symbol is a configured crypto symbol. */
 export function isCryptoSymbol(symbol: string, cryptoSymbols: string[]): boolean {
   const normalizedInput = normalizeCryptoSymbol(symbol);

@@ -3,6 +3,7 @@
  */
 
 import type { Account, Position, Signal } from "../../../core/types";
+import { getCryptoSymbolAliases, isCryptoSymbol } from "../helpers/crypto";
 import type { AnalyzeSignalsPromptBuilder, PromptTemplate, StrategyContext } from "../../types";
 
 /**
@@ -32,7 +33,11 @@ export const analyzeSignalsPrompt: AnalyzeSignalsPromptBuilder = (
     .sort((a, b) => b.avgSentiment - a.avgSentiment)
     .slice(0, 10);
 
-  const positionSymbols = new Set(positions.map((p) => p.symbol));
+  const positionSymbols = new Set(
+    positions.flatMap((p) =>
+      isCryptoSymbol(p.symbol, ctx.config.crypto_symbols || []) ? getCryptoSymbolAliases(p.symbol) : [p.symbol]
+    )
+  );
 
   const user = `Current Time: ${new Date().toISOString()}
 
@@ -47,7 +52,7 @@ ${
     ? "None"
     : positions
         .map((p) => {
-          const entry = ctx.positionEntries[p.symbol];
+          const entry = getPositionEntry(p.symbol, ctx);
           const holdMinutes = entry ? Math.round((Date.now() - entry.entry_time) / (1000 * 60)) : 0;
           const holdStr = holdMinutes >= 60 ? `${(holdMinutes / 60).toFixed(1)}h` : `${holdMinutes}m`;
           return `- ${p.symbol}: ${p.qty} shares, P&L: $${p.unrealized_pl.toFixed(2)} (${((p.unrealized_pl / (p.market_value - p.unrealized_pl)) * 100).toFixed(1)}%), held ${holdStr}`;
@@ -102,3 +107,19 @@ Response format:
     maxTokens: 800,
   };
 };
+
+function getPositionEntry(symbol: string, ctx: StrategyContext) {
+  const directMatch = ctx.positionEntries[symbol];
+  if (directMatch) return directMatch;
+
+  if (!isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
+    return undefined;
+  }
+
+  for (const alias of getCryptoSymbolAliases(symbol)) {
+    const candidate = ctx.positionEntries[alias];
+    if (candidate) return candidate;
+  }
+
+  return undefined;
+}

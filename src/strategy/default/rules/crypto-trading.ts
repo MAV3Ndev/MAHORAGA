@@ -8,10 +8,12 @@
 
 import type { Position, ResearchResult } from "../../../core/types";
 import { createAlpacaProviders } from "../../../providers/alpaca";
+import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
 import type { StrategyContext } from "../../types";
 
 /**
  * Research a crypto symbol for BUY/SKIP/WAIT verdict.
+ * Includes retry logic for rate limit (429) errors.
  */
 export async function researchCrypto(
   ctx: StrategyContext,
@@ -19,20 +21,21 @@ export async function researchCrypto(
   momentum: number,
   sentiment: number
 ): Promise<ResearchResult | null> {
+  ctx.log("Crypto", "research_start", { symbol, momentum, sentiment, has_llm: !!ctx.llm });
+
   if (!ctx.llm) {
     ctx.log("Crypto", "skipped_no_llm", { symbol, reason: "LLM Provider not configured" });
     return null;
   }
 
-  try {
-    const alpaca = createAlpacaProviders(ctx.env);
-    const snapshot = await alpaca.marketData.getCryptoSnapshot(symbol).catch(() => null);
-    const price = snapshot?.latest_trade?.price || 0;
-    const dailyChange = snapshot
-      ? ((snapshot.daily_bar.c - snapshot.prev_daily_bar.c) / snapshot.prev_daily_bar.c) * 100
-      : 0;
+  const alpaca = createAlpacaProviders(ctx.env);
+  const snapshot = await alpaca.marketData.getCryptoSnapshot(symbol).catch(() => null);
+  const price = snapshot?.latest_trade?.price || 0;
+  const dailyChange = snapshot
+    ? ((snapshot.daily_bar.c - snapshot.prev_daily_bar.c) / snapshot.prev_daily_bar.c) * 100
+    : 0;
 
-    const prompt = `Should we BUY this cryptocurrency based on momentum and market conditions?
+  const prompt = `Should we BUY this cryptocurrency based on momentum and market conditions?
 
 SYMBOL: ${symbol}
 PRICE: $${price.toFixed(2)}
@@ -55,59 +58,144 @@ JSON response:
   "catalysts": ["positive factors"]
 }`;
 
-    const response = await ctx.llm.complete({
-      model: ctx.config.llm_model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a crypto analyst. Be skeptical of FOMO. Crypto is volatile - only recommend BUY for strong setups. Output valid JSON only.",
-        },
-        { role: "user", content: prompt },
-      ],
-      max_tokens: 250,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-    });
+  const MAX_RETRIES = 3;
+  let lastError: string | null = null;
 
-    const usage = response.usage;
-    if (usage) {
-      ctx.trackLLMCost(ctx.config.llm_model, usage.prompt_tokens, usage.completion_tokens);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const response = await ctx.llm.complete({
+        model: ctx.config.llm_model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a crypto analyst. Be skeptical of FOMO. Crypto is volatile - only recommend BUY for strong setups. Output valid JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 1500,
+        temperature: 0.3,
+      });
+
+      const usage = response.usage;
+      if (usage) {
+        ctx.trackLLMCost(ctx.config.llm_model, usage.prompt_tokens, usage.completion_tokens);
+      }
+
+      const content = response.content || "{}";
+
+      ctx.log("Crypto", "research_raw_response", {
+        symbol,
+        content_preview: content.substring(0, 200),
+        content_length: content.length,
+      });
+      let analysis: {
+        verdict: "BUY" | "SKIP" | "WAIT";
+        confidence: number;
+        entry_quality: "excellent" | "good" | "fair" | "poor";
+        reasoning: string;
+        red_flags?: string[];
+        catalysts?: string[];
+      };
+
+      try {
+        // Strip markdown code blocks and normalize whitespace
+        let cleaned = content
+          .replace(/```json\s*/gi, "")
+          .replace(/```\s*$/gi, "")
+          .replace(/```\s*/gi, "")
+          .replace(/^[\n\r]+/, "")
+          .trim();
+
+        // Try to extract JSON object if content has extra text
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          cleaned = jsonMatch[0];
+        }
+
+        analysis = JSON.parse(cleaned);
+      } catch (parseError) {
+        ctx.log("Crypto", "research_parse_error", {
+          symbol,
+          attempt,
+          content_preview: content.substring(0, 100),
+          error: String(parseError),
+        });
+        // If parse fails, treat as SKIP with low confidence
+        return {
+          symbol,
+          verdict: "SKIP",
+          confidence: 0.1,
+          entry_quality: "poor",
+          reasoning: "LLM returned invalid JSON: " + content.substring(0, 50),
+          red_flags: ["JSON parse failed"],
+          catalysts: [],
+          timestamp: Date.now(),
+        };
+      }
+
+      // Validate verdict (case-insensitive)
+      const receivedVerdict = analysis.verdict;
+      const normalizedVerdict = receivedVerdict ? String(receivedVerdict).toUpperCase().trim() : null;
+      if (!normalizedVerdict || !["BUY", "SKIP", "WAIT"].includes(normalizedVerdict)) {
+        ctx.log("Crypto", "research_invalid_verdict", {
+          symbol,
+          received_verdict: receivedVerdict,
+          received_type: typeof receivedVerdict,
+          received_confidence: analysis.confidence,
+          received_fields: Object.keys(analysis),
+        });
+        analysis.verdict = "SKIP";
+        analysis.confidence = 0.1;
+      } else {
+        analysis.verdict = normalizedVerdict as "BUY" | "SKIP" | "WAIT";
+      }
+
+      const result: ResearchResult = {
+        symbol,
+        verdict: analysis.verdict,
+        confidence: Math.max(0, Math.min(1, analysis.confidence || 0)),
+        entry_quality: analysis.entry_quality || "fair",
+        reasoning: analysis.reasoning || "No reasoning provided",
+        red_flags: analysis.red_flags || [],
+        catalysts: analysis.catalysts || [],
+        timestamp: Date.now(),
+      };
+
+      ctx.log("Crypto", "researched", {
+        symbol,
+        verdict: result.verdict,
+        confidence: result.confidence,
+        quality: result.entry_quality,
+        attempt,
+      });
+
+      return result;
+    } catch (error) {
+      lastError = String(error);
+      const isRateLimit = lastError.includes("429") || lastError.includes("rate_limit");
+
+      ctx.log("Crypto", "research_retry", {
+        symbol,
+        attempt,
+        max_retries: MAX_RETRIES,
+        is_rate_limit: isRateLimit,
+        error: lastError.substring(0, 100),
+      });
+
+      if (isRateLimit && attempt < MAX_RETRIES - 1) {
+        // Exponential backoff: 1s, 2s, 4s
+        const backoffMs = Math.min(4000, 1000 * 2 ** attempt);
+        await ctx.sleep(backoffMs);
+        continue;
+      }
+
+      ctx.log("Crypto", "research_error", { symbol, error: lastError, attempt });
+      return null;
     }
-
-    const content = response.content || "{}";
-    const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim()) as {
-      verdict: "BUY" | "SKIP" | "WAIT";
-      confidence: number;
-      entry_quality: "excellent" | "good" | "fair" | "poor";
-      reasoning: string;
-      red_flags: string[];
-      catalysts: string[];
-    };
-
-    const result: ResearchResult = {
-      symbol,
-      verdict: analysis.verdict,
-      confidence: analysis.confidence,
-      entry_quality: analysis.entry_quality,
-      reasoning: analysis.reasoning,
-      red_flags: analysis.red_flags || [],
-      catalysts: analysis.catalysts || [],
-      timestamp: Date.now(),
-    };
-
-    ctx.log("Crypto", "researched", {
-      symbol,
-      verdict: result.verdict,
-      confidence: result.confidence,
-      quality: result.entry_quality,
-    });
-
-    return result;
-  } catch (error) {
-    ctx.log("Crypto", "research_error", { symbol, error: String(error) });
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -117,9 +205,8 @@ JSON response:
 export async function runCryptoTrading(ctx: StrategyContext, positions: Position[]): Promise<void> {
   if (!ctx.config.crypto_enabled) return;
 
-  const cryptoSymbols = new Set(ctx.config.crypto_symbols || []);
-  const cryptoPositions = positions.filter((p) => cryptoSymbols.has(p.symbol) || p.symbol.includes("/"));
-  const heldCrypto = new Set(cryptoPositions.map((p) => p.symbol));
+  const cryptoPositions = positions.filter((p) => isCryptoSymbol(p.symbol, ctx.config.crypto_symbols || []));
+  const heldCrypto = new Set(cryptoPositions.flatMap((p) => getCryptoSymbolAliases(p.symbol)));
 
   // Check exits
   for (const pos of cryptoPositions) {
@@ -147,17 +234,43 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
     .filter((s) => s.sentiment > 0)
     .sort((a, b) => (b.momentum || 0) - (a.momentum || 0));
 
+  ctx.log("Crypto", "run_start", {
+    total_signals: ctx.signals.length,
+    crypto_signals: cryptoSignals.length,
+    held_crypto: Array.from(heldCrypto),
+    has_llm: !!ctx.llm,
+    crypto_enabled: ctx.config.crypto_enabled,
+  });
+
   const CRYPTO_RESEARCH_TTL_MS = 300_000;
 
   for (const signal of cryptoSignals.slice(0, 2)) {
     if (cryptoPositions.length >= maxCryptoPositions) break;
 
     const cachedResearch = ctx.state.get<ResearchResult>(`cryptoResearch_${signal.symbol}`);
+    const cacheAge = cachedResearch ? Date.now() - cachedResearch.timestamp : null;
+    // Cache is valid if: has cache AND (fresh OR not a failure)
+    const isFailure = cachedResearch && (cachedResearch.verdict === "SKIP" && cachedResearch.confidence < 0.2);
+    const isCacheFresh = cachedResearch && cacheAge !== null && cacheAge < CRYPTO_RESEARCH_TTL_MS && !isFailure;
+
+    ctx.log("Crypto", "research_cache_check", {
+      symbol: signal.symbol,
+      has_cache: !!cachedResearch,
+      cache_age_ms: cacheAge,
+      is_fresh: isCacheFresh,
+      is_failure: isFailure,
+      cached_verdict: cachedResearch?.verdict,
+      cached_confidence: cachedResearch?.confidence,
+    });
+
     let research: ResearchResult | null = cachedResearch ?? null;
 
-    if (!cachedResearch || Date.now() - cachedResearch.timestamp > CRYPTO_RESEARCH_TTL_MS) {
+    if (!cachedResearch || !isCacheFresh) {
       research = await researchCrypto(ctx, signal.symbol, signal.momentum || 0, signal.sentiment);
-      if (research) ctx.state.set(`cryptoResearch_${signal.symbol}`, research);
+      // Only cache successful results (BUY or SKIP with reasonable confidence)
+      if (research && (research.verdict === "BUY" || research.confidence >= 0.2)) {
+        ctx.state.set(`cryptoResearch_${signal.symbol}`, research);
+      }
     }
 
     if (!research || research.verdict !== "BUY") {
@@ -188,8 +301,10 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
 
     const result = await ctx.broker.buy(signal.symbol, positionSize, `Crypto momentum: ${research.reasoning}`);
     if (result) {
-      heldCrypto.add(signal.symbol);
-      cryptoPositions.push({ symbol: signal.symbol } as Position);
+      for (const alias of getCryptoSymbolAliases(signal.symbol)) {
+        heldCrypto.add(alias);
+      }
+      cryptoPositions.push({ symbol: normalizeCryptoSymbol(signal.symbol) } as Position);
       break;
     }
   }

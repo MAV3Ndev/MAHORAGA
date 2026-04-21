@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import clsx from 'clsx'
 
 interface StatusIndicatorProps {
@@ -47,8 +48,9 @@ export function StatusIndicator({
 interface StatusBarProps {
   items: Array<{
     label: string
-    value: string | number
+    value: ReactNode
     status?: 'active' | 'warning' | 'error' | 'inactive'
+    multiline?: boolean
   }>
   className?: string
 }
@@ -58,16 +60,16 @@ export function StatusBar({
   className,
 }: StatusBarProps) {
   return (
-    <div className={clsx('flex items-center gap-6', className)}>
+    <div className={clsx('flex flex-wrap items-center gap-3 sm:gap-6', className)}>
       {items.map((item, i) => (
-        <div key={i} className="flex items-center gap-2">
+        <div key={i} className={clsx('hud-statusbar-item', item.multiline && 'hud-statusbar-item-multiline')}>
           {item.status && (
             <div
-              className={clsx('w-1.5 h-1.5 rounded-full', statusColors[item.status])}
+              className={clsx('hud-statusbar-dot', statusColors[item.status], item.multiline && 'hud-statusbar-dot-multiline')}
             />
           )}
-          <span className="hud-label">{item.label}</span>
-          <span className="hud-value-sm">{item.value}</span>
+          <span className={clsx('hud-label hud-statusbar-label', item.multiline && 'hud-statusbar-label-multiline')}>{item.label}</span>
+          <span className={clsx('hud-value-sm hud-statusbar-value', item.multiline && 'hud-statusbar-value-multiline')}>{item.value}</span>
         </div>
       ))}
     </div>

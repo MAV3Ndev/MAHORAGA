@@ -28,6 +28,7 @@ export const AgentConfigSchema = z
     llm_provider: z.enum(["openai-raw", "ai-sdk", "cloudflare-gateway"]),
     llm_model: z.string().min(1),
     llm_analyst_model: z.string().min(1),
+    openai_base_url: z.string().max(500),
     llm_min_hold_minutes: z.number().min(0).max(1440),
 
     options_enabled: z.boolean(),
@@ -50,6 +51,39 @@ export const AgentConfigSchema = z
 
     ticker_blacklist: z.array(z.string()),
     allowed_exchanges: z.array(z.string()),
+
+    // ── Trailing Stop ────────────────────────────────────────────────────────
+    trailing_stop_enabled: z.boolean(),
+    trailing_stop_pct: z.number().min(1).max(50),
+    trailing_stop_activation_pct: z.number().min(1).max(50),
+
+    // ── Dynamic Take Profit ───────────────────────────────────────────────────
+    dynamic_tp_enabled: z.boolean(),
+    tp_atr_multiplier: z.number().min(1).max(10),
+    tp_min_pct: z.number().min(1).max(50),
+    tp_max_pct: z.number().min(1).max(100),
+
+    // ── Entry Timing Filters ──────────────────────────────────────────────────
+    entry_timing_enabled: z.boolean(),
+    entry_rsi_min: z.number().min(10).max(50),
+    entry_rsi_max: z.number().min(50).max(90),
+    entry_bb_lower_threshold: z.number().min(0).max(1),
+
+    // ── Composite Scoring ─────────────────────────────────────────────────────
+    scoring_enabled: z.boolean(),
+    scoring_sentiment_weight: z.number().min(0).max(1),
+    scoring_technical_weight: z.number().min(0).max(1),
+    scoring_catalyst_weight: z.number().min(0).max(1),
+    scoring_momentum_weight: z.number().min(0).max(1),
+
+    // ── Market Regime ────────────────────────────────────────────────────────
+    market_regime_enabled: z.boolean(),
+    regime_low_threshold: z.number().min(0).max(1),
+    regime_position_size_reduction: z.number().min(0).max(1),
+
+    // ── Portfolio Risk ───────────────────────────────────────────────────────
+    portfolio_risk_enabled: z.boolean(),
+    max_positions_per_sector: z.number().int().min(1).max(10),
   })
   .refine((data) => data.options_min_delta < data.options_max_delta, {
     message: "options_min_delta must be less than options_max_delta",
