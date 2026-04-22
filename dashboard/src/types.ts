@@ -59,9 +59,20 @@ export interface Config {
   max_positions: number
   min_sentiment_score: number
   min_analyst_confidence: number
+  signal_research_limit: number
+  entry_candidate_limit: number
   take_profit_pct: number
   stop_loss_pct: number
   position_size_pct_of_cash: number
+  entry_timing_enabled?: boolean
+  entry_rsi_min?: number
+  entry_rsi_max?: number
+  entry_bb_lower_threshold?: number
+  market_regime_enabled?: boolean
+  regime_low_threshold?: number
+  regime_position_size_reduction?: number
+  portfolio_risk_enabled?: boolean
+  max_positions_per_sector?: number
   llm_provider?: 'openai-raw' | 'ai-sdk' | 'cloudflare-gateway'
   llm_model: string
   llm_analyst_model?: string
@@ -99,6 +110,10 @@ export interface Config {
 
   // Custom ticker blacklist (insider trading restrictions, etc.)
   ticker_blacklist?: string[]
+  allowed_exchanges?: string[]
+  discord_daily_report_enabled: boolean
+  discord_daily_report_time: string
+  discord_daily_report_timezone: string
 }
 
 export interface SignalResearch {

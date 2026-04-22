@@ -58,11 +58,6 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
                 <h1 className="text-4xl sm:text-5xl font-bold tracking-[0.14em] text-hud-text-bright m-0">
                   MAHORAGA PANEL
                 </h1>
-                <p className="text-sm text-hud-text-dim max-w-xl mt-4 leading-6">
-                  任意の API URL と Bearer で MAHORAGA に接続し、エージェント状況、残高推移、シグナル、
-                  リサーチ、設定変更までを一枚のサイバーパネルで扱います。
-                  {nativeShell ? ' Android 版では接続先 Worker URL を最初に登録して使います。' : ''}
-                </p>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
@@ -83,19 +78,6 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
                 </div>
               </div>
             </div>
-
-            <div className="grid gap-3 sm:grid-cols-3 text-xs text-hud-text-dim">
-              <div className="border-t border-hud-line pt-3">
-                接続先は Worker のルート URL を想定しています。
-                <span className="text-hud-text"> `/agent/*` は自動で付与</span> します。
-              </div>
-              <div className="border-t border-hud-line pt-3">
-                Bearer は `MAHORAGA_API_TOKEN` を使う前提です。
-              </div>
-              <div className="border-t border-hud-line pt-3">
-                {nativeShell ? 'Android 版では公開 Worker URL を直接叩くため、HTTPS 配信を推奨します。' : 'Electron 版では CORS を回避して安定接続します。'}
-              </div>
-            </div>
           </div>
         </Panel>
 
@@ -111,9 +93,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
                 onChange={(event) => setApiUrl(event.target.value)}
               />
               <p className="text-xs text-hud-text-dim mt-2">
-                {nativeShell
-                  ? '例: `https://your-app.workers.dev`'
-                  : '例: `https://your-app.workers.dev` または `http://localhost:8787`'}
+                {nativeShell ? '例: `https://your-app.workers.dev`' : '例: `https://your-app.workers.dev`'}
               </p>
             </div>
 
@@ -126,9 +106,6 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
                 value={bearerToken}
                 onChange={(event) => setBearerToken(event.target.value)}
               />
-              <p className="text-xs text-hud-text-dim mt-2">
-                保存後は `/agent/status` へ接続テストして、そのままパネルを起動します。
-              </p>
             </div>
 
             {error && (

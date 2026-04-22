@@ -22,7 +22,7 @@ export function DetailDialog({ title, titleRight, children, onClose }: DetailDia
 
   return (
     <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div onClick={(event) => event.stopPropagation()} className="w-full max-w-3xl">
+      <div onClick={(event) => event.stopPropagation()} className="w-full min-w-0 max-w-3xl">
         <Panel
           title={title}
           titleRight={
@@ -32,9 +32,9 @@ export function DetailDialog({ title, titleRight, children, onClose }: DetailDia
               </button>
             )
           }
-          className="w-full max-h-[88vh] overflow-auto"
+          className="w-full max-h-[88vh] overflow-x-hidden overflow-y-auto"
         >
-          <div className="space-y-5">
+          <div className="min-w-0 space-y-5">
             {children}
           </div>
         </Panel>

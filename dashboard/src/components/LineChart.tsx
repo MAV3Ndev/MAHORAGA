@@ -3,6 +3,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 
 type ChartVariant = 'cyan' | 'blue' | 'green' | 'yellow' | 'red' | 'purple' | 'primary'
 type ChartUpdateEffect = 'pulse' | 'trace' | 'none'
+const CHART_VIEWBOX_WIDTH = 720
 
 interface LineChartSeries {
   label: string
@@ -37,7 +38,8 @@ interface LineChartProps {
   series: LineChartSeries[]
   labels?: string[]
   variant?: ChartVariant
-  height?: number
+  height?: number | string
+  viewBoxHeight?: number
   showDots?: boolean
   showGrid?: boolean
   showArea?: boolean
@@ -59,14 +61,21 @@ const variantColors: Record<ChartVariant, { stroke: string; fill: string }> = {
   primary: { stroke: 'var(--color-hud-primary)', fill: 'var(--color-hud-primary)' },
 }
 
+function toPercentX(x: number, width: number): string {
+  return `${(x / width) * 100}%`
+}
+
+function toPercentY(y: number, height: number): string {
+  return `${(y / height) * 100}%`
+}
+
 interface LineTraceEffectProps {
   pathD: string
   color: string
-  traceId: string
   animationKey: number
 }
 
-function LineTraceEffect({ pathD, color, traceId, animationKey }: LineTraceEffectProps) {
+function LineTraceEffect({ pathD, color, animationKey }: LineTraceEffectProps) {
   const pathRef = useRef<SVGPathElement>(null)
   const frameRef = useRef<number | null>(null)
   const [point, setPoint] = useState<{ x: number; y: number; opacity: number } | null>(null)
@@ -118,21 +127,22 @@ function LineTraceEffect({ pathD, color, traceId, animationKey }: LineTraceEffec
 
   return (
     <g pointerEvents="none">
-      <defs>
-        <filter id={traceId} x="-250%" y="-250%" width="500%" height="500%">
-          <feGaussianBlur stdDeviation="5" />
-        </filter>
-      </defs>
       <path ref={pathRef} d={pathD} fill="none" stroke="transparent" strokeWidth={1} />
       {point && (
         <>
           <circle
             cx={point.x}
             cy={point.y}
+            r={16}
+            fill={color}
+            opacity={0.1 * point.opacity}
+          />
+          <circle
+            cx={point.x}
+            cy={point.y}
             r={9}
             fill={color}
             opacity={0.16 * point.opacity}
-            filter={`url(#${traceId})`}
           />
           <circle
             cx={point.x}
@@ -152,6 +162,7 @@ export function LineChart({
   labels,
   variant = 'cyan',
   height,
+  viewBoxHeight,
   showDots = false,
   showGrid = true,
   showArea = true,
@@ -163,19 +174,18 @@ export function LineChart({
   updateEffect = 'pulse',
 }: LineChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
-  const [containerWidth, setContainerWidth] = useState<number>(800)
   const [isPulsing, setIsPulsing] = useState(false)
   const [animationVersion, setAnimationVersion] = useState(0)
-  const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const hasMountedRef = useRef(false)
 
-  const resolvedHeight = height || 200
-  const viewBoxWidth = Math.max(Math.round(containerWidth), 320)
-  const viewBoxHeight = resolvedHeight
-  const padding = { top: 16, right: 4, bottom: 24, left: 48 }
+  const resolvedHeight = height ?? 200
+  const viewBoxWidth = CHART_VIEWBOX_WIDTH
+  const resolvedViewBoxHeight = viewBoxHeight ?? (typeof resolvedHeight === 'number' ? resolvedHeight : 320)
+  const viewBoxHeightValue = resolvedViewBoxHeight
+  const padding = { top: 18, right: 8, bottom: 34, left: 78 }
   const chartWidth = viewBoxWidth - padding.left - padding.right
-  const chartHeight = viewBoxHeight - padding.top - padding.bottom
+  const chartHeight = viewBoxHeightValue - padding.top - padding.bottom
 
   const allValues = series.flatMap((s) => s.data)
   const dataMin = Math.min(...allValues)
@@ -198,25 +208,6 @@ export function LineChart({
     if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`
     return v.toFixed(0)
   })
-
-  useEffect(() => {
-    if (!containerRef.current) return
-
-    const element = containerRef.current
-    const updateWidth = () => {
-      const nextWidth = element.getBoundingClientRect().width
-      if (nextWidth > 0) {
-        setContainerWidth(nextWidth)
-      }
-    }
-
-    updateWidth()
-
-    const observer = new ResizeObserver(() => updateWidth())
-    observer.observe(element)
-
-    return () => observer.disconnect()
-  }, [])
 
   useEffect(() => {
     if (updateToken === undefined) return
@@ -256,9 +247,28 @@ export function LineChart({
   const hoverValue = hoverIndex !== null ? series[0]?.data[hoverIndex] : null
   const hoverLabel = hoverIndex !== null && labels ? labels[hoverIndex] : null
   const labelStep = labels ? Math.max(1, Math.ceil(labels.length / 6)) : 1
+  const tooltipWidth = 164
+  const tooltipHeight = 68
+  const hoverX = hoverIndex !== null ? getX(hoverIndex) : null
+  const hoverY = hoverValue !== null ? getY(hoverValue) : null
+  const hoverTooltipX =
+    hoverX !== null
+      ? hoverX > viewBoxWidth - padding.right - tooltipWidth - 20
+        ? hoverX - tooltipWidth - 12
+        : hoverX + 12
+      : null
+  const hoverTooltipY =
+    hoverY !== null
+      ? Math.min(Math.max(hoverY - tooltipHeight / 2, padding.top), padding.top + chartHeight - tooltipHeight)
+      : null
+  const xAxisLabels = labels
+    ? labels
+        .map((label, index) => (index % labelStep === 0 ? { label, x: getX(index) } : null))
+        .filter(Boolean) as Array<{ label: string; x: number }>
+    : []
 
   return (
-    <div ref={containerRef} className="hud-chart-shell w-full" style={{ height: resolvedHeight }}>
+    <div className="hud-chart-shell w-full" style={{ height: resolvedHeight }}>
       {updateEffect === 'pulse' && (
         <motion.div
           aria-hidden
@@ -270,10 +280,12 @@ export function LineChart({
       )}
       <svg
         ref={svgRef}
-        width={viewBoxWidth}
-        height={viewBoxHeight}
-        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeightValue}`}
         className="block h-full w-full"
+        overflow="hidden"
+        preserveAspectRatio="none"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       >
@@ -291,40 +303,8 @@ export function LineChart({
                   strokeWidth={0.5}
                   opacity={0.3}
                 />
-                <text
-                  x={padding.left - 6}
-                  y={getY(value)}
-                  textAnchor="end"
-                  dominantBaseline="middle"
-                  fill="currentColor"
-                  className="text-hud-text-dim"
-                  fontSize={9}
-                >
-                  {formatLabel(value)}
-                </text>
               </g>
             ))}
-          </g>
-        )}
-
-        {labels && (
-          <g>
-            {labels.map((label, index) => {
-              if (index % labelStep !== 0) return null
-              return (
-                <text
-                  key={`${label}-${index}`}
-                  x={getX(index)}
-                  y={viewBoxHeight - 6}
-                  textAnchor="middle"
-                  fill="currentColor"
-                  className="text-hud-text-dim"
-                  fontSize={9}
-                >
-                  {label}
-                </text>
-              )
-            })}
           </g>
         )}
 
@@ -365,15 +345,6 @@ export function LineChart({
               strokeDasharray="4,4"
               opacity={0.5}
             />
-            <text
-              x={getX(marker.index)}
-              y={padding.top - 4}
-              textAnchor="middle"
-              fill={marker.color || 'var(--color-hud-text-dim)'}
-              fontSize={8}
-            >
-              {marker.label}
-            </text>
           </g>
         ))}
 
@@ -412,10 +383,11 @@ export function LineChart({
                 d={pathD}
                 fill="none"
                 stroke={colors.stroke}
-                strokeWidth={1.5}
+                strokeWidth={2.2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                opacity={0.8}
+                opacity={0.94}
+                vectorEffect="non-scaling-stroke"
                 initial={animated ? { pathLength: 0 } : undefined}
                 animate={{ pathLength: 1 }}
                 transition={{ duration: 1.2, ease: [0.25, 0.46, 0.45, 0.94] }}
@@ -426,7 +398,6 @@ export function LineChart({
                   key={`trace-${seriesIndex}-${animationVersion}`}
                   pathD={pathD}
                   color={colors.stroke}
-                  traceId={`trace-glow-${seriesIndex}-${animationVersion}`}
                   animationKey={animationVersion}
                 />
               )}
@@ -437,9 +408,10 @@ export function LineChart({
                     key={i}
                     cx={p.x}
                     cy={p.y}
-                    r={2}
+                    r={3}
                     fill={colors.fill}
-                    opacity={0.8}
+                    opacity={0.92}
+                    vectorEffect="non-scaling-stroke"
                     initial={animated ? { scale: 0 } : undefined}
                     animate={{ scale: 1 }}
                     transition={{ delay: i * 0.03, duration: 0.2 }}
@@ -450,64 +422,93 @@ export function LineChart({
         })}
 
         {hoverIndex !== null && hoverValue !== null && (() => {
-          const hoverX = getX(hoverIndex)
-          const hoverY = getY(hoverValue)
-          const tooltipWidth = 85
-          const tooltipHeight = 38
-          const nearRightEdge = hoverX > viewBoxWidth - padding.right - tooltipWidth - 20
-          const tooltipX = nearRightEdge ? hoverX - tooltipWidth - 12 : hoverX + 12
-          const tooltipY = Math.min(Math.max(hoverY - tooltipHeight / 2, padding.top), padding.top + chartHeight - tooltipHeight)
-
           return (
             <g>
               <line
-                x1={hoverX}
+                x1={hoverX!}
                 y1={padding.top}
-                x2={hoverX}
+                x2={hoverX!}
                 y2={padding.top + chartHeight}
                 stroke="var(--color-hud-text-dim)"
                 strokeWidth={1}
                 opacity={0.6}
               />
               <circle
-                cx={hoverX}
-                cy={hoverY}
+                cx={hoverX!}
+                cy={hoverY!}
                 r={4}
                 fill="var(--color-hud-bg)"
                 stroke={variantColors[series[0]?.variant ?? variant].stroke}
                 strokeWidth={2}
               />
-              <g transform={`translate(${tooltipX}, ${tooltipY})`}>
-                <rect
-                  x={0}
-                  y={0}
-                  width={tooltipWidth}
-                  height={tooltipHeight}
-                  fill="var(--color-hud-bg)"
-                  stroke="var(--color-hud-line)"
-                  strokeWidth={1}
-                  rx={2}
-                />
-                <text x={8} y={15} fill="var(--color-hud-text)" fontSize={11} fontWeight="500">
-                  {formatLabel(hoverValue)}
-                </text>
-                {hoverLabel && (
-                  <text x={8} y={30} fill="var(--color-hud-text-dim)" fontSize={9}>
-                    {hoverLabel}
-                  </text>
-                )}
-              </g>
             </g>
           )
         })()}
       </svg>
+
+      <div className="hud-chart-overlay hud-chart-overlay--labels" aria-hidden="true">
+        {showGrid &&
+          gridValues.map((value, index) => (
+            <div
+              key={`y-label-${index}`}
+              className="hud-chart-axis-label hud-chart-axis-label-y"
+              style={{
+                top: toPercentY(getY(value), viewBoxHeightValue),
+                width: `calc(${toPercentX(padding.left, viewBoxWidth)} - 10px)`,
+              }}
+            >
+              {formatLabel(value)}
+            </div>
+          ))}
+
+        {xAxisLabels.map(({ label, x }, index) => (
+          <div
+            key={`x-label-${index}`}
+            className="hud-chart-axis-label hud-chart-axis-label-x"
+            style={{
+              left: toPercentX(x, viewBoxWidth),
+              bottom: '4px',
+            }}
+          >
+            {label}
+          </div>
+        ))}
+
+        {markers?.map((marker, index) => (
+          <div
+            key={`marker-label-${index}`}
+            className="hud-chart-marker-label"
+            style={{
+              left: toPercentX(getX(marker.index), viewBoxWidth),
+              top: '2px',
+              color: marker.color || 'var(--color-hud-text-dim)',
+            }}
+          >
+            {marker.label}
+          </div>
+        ))}
+
+        {hoverIndex !== null && hoverValue !== null && (
+          <div
+            className="hud-chart-tooltip"
+            style={{
+              left: toPercentX(hoverTooltipX!, viewBoxWidth),
+              top: toPercentY(hoverTooltipY!, viewBoxHeightValue),
+            }}
+          >
+            <div className="hud-chart-tooltip-value">{formatLabel(hoverValue)}</div>
+            {hoverLabel && <div className="hud-chart-tooltip-label">{hoverLabel}</div>}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
 interface PositionTimelineChartProps {
   series: PositionTimelineSeries[]
-  height?: number
+  height?: number | string
+  viewBoxHeight?: number
   formatValue?: (value: number) => string
   xDomainStart?: number
   xDomainEnd?: number
@@ -548,35 +549,15 @@ function formatTimelineTick(timestamp: number, minTimestamp: number, maxTimestam
 export const PositionTimelineChart = memo(function PositionTimelineChart({
   series,
   height = 220,
+  viewBoxHeight,
   formatValue = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`,
   xDomainStart,
   xDomainEnd,
   updateToken,
 }: PositionTimelineChartProps) {
   const [hoveredSeries, setHoveredSeries] = useState<number | null>(null)
-  const [containerWidth, setContainerWidth] = useState<number>(800)
   const [isPulsing, setIsPulsing] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
   const hasMountedRef = useRef(false)
-
-  useEffect(() => {
-    if (!containerRef.current) return
-
-    const element = containerRef.current
-    const updateWidth = () => {
-      const nextWidth = element.getBoundingClientRect().width
-      if (nextWidth > 0) {
-        setContainerWidth(nextWidth)
-      }
-    }
-
-    updateWidth()
-
-    const observer = new ResizeObserver(() => updateWidth())
-    observer.observe(element)
-
-    return () => observer.disconnect()
-  }, [])
 
   useEffect(() => {
     if (updateToken === undefined) return
@@ -597,11 +578,12 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
     return null
   }
 
-  const viewBoxWidth = Math.max(Math.round(containerWidth), 320)
-  const viewBoxHeight = height
-  const padding = { top: 16, right: 16, bottom: 28, left: 48 }
+  const viewBoxWidth = CHART_VIEWBOX_WIDTH
+  const resolvedViewBoxHeight = viewBoxHeight ?? (typeof height === 'number' ? height : 300)
+  const viewBoxHeightValue = resolvedViewBoxHeight
+  const padding = { top: 18, right: 12, bottom: 34, left: 78 }
   const chartWidth = viewBoxWidth - padding.left - padding.right
-  const chartHeight = viewBoxHeight - padding.top - padding.bottom
+  const chartHeight = viewBoxHeightValue - padding.top - padding.bottom
 
   const pointMinTimestamp = Math.min(...allPoints.map((point) => point.timestamp))
   const pointMaxTimestamp = Math.max(...allPoints.map((point) => point.timestamp))
@@ -629,7 +611,7 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
   const zeroLineVisible = minValue < 0 && maxValue > 0
 
   return (
-    <div ref={containerRef} className="hud-chart-shell w-full" style={{ height }}>
+    <div className="hud-chart-shell w-full" style={{ height }}>
       <motion.div
         aria-hidden
         className="hud-chart-pulse"
@@ -637,7 +619,14 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
         animate={isPulsing ? { opacity: [0, 0.85, 0], scale: [0.985, 1.008, 1.02] } : { opacity: 0, scale: 1 }}
         transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
       />
-      <svg width={viewBoxWidth} height={viewBoxHeight} viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`} className="block h-full w-full">
+      <svg
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeightValue}`}
+        className="block h-full w-full"
+        overflow="hidden"
+        preserveAspectRatio="none"
+      >
         <g>
           {gridValues.map((value, index) => (
             <g key={`grid-${index}`}>
@@ -651,17 +640,6 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
                 strokeWidth={0.5}
                 opacity={0.28}
               />
-              <text
-                x={padding.left - 6}
-                y={getY(value)}
-                textAnchor="end"
-                dominantBaseline="middle"
-                fill="currentColor"
-                className="text-hud-text-dim"
-                fontSize={9}
-              >
-                {formatValue(value)}
-              </text>
             </g>
           ))}
         </g>
@@ -673,22 +651,11 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
               y1={getY(0)}
               x2={viewBoxWidth - padding.right}
               y2={getY(0)}
-              stroke="var(--color-hud-text-dim)"
-              strokeWidth={1}
-              strokeDasharray="5,4"
-              opacity={0.5}
+              stroke="var(--color-hud-primary)"
+              strokeWidth={1.6}
+              strokeDasharray="7,5"
+              opacity={0.72}
             />
-            <text
-              x={padding.left - 6}
-              y={getY(0)}
-              textAnchor="end"
-              dominantBaseline="middle"
-              fill="currentColor"
-              className="text-hud-text-dim"
-              fontSize={9}
-            >
-              0%
-            </text>
           </g>
         )}
 
@@ -705,16 +672,6 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
                 strokeWidth={0.5}
                 opacity={0.14}
               />
-              <text
-                x={getX(timestamp)}
-                y={viewBoxHeight - 6}
-                textAnchor="middle"
-                fill="currentColor"
-                className="text-hud-text-dim"
-                fontSize={9}
-              >
-                {formatTimelineTick(timestamp, minTimestamp, safeMaxTimestamp)}
-              </text>
             </g>
           ))}
         </g>
@@ -745,10 +702,11 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
                 d={pathD}
                 fill="none"
                 stroke={colors.stroke}
-                strokeWidth={isHovered ? 2.6 : 1.8}
+                strokeWidth={isHovered ? 3 : 2.2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 opacity={isHovered || hoveredSeries === null ? 0.95 : 0.34}
+                vectorEffect="non-scaling-stroke"
                 animate={{ opacity: isHovered || hoveredSeries === null ? 0.95 : 0.34 }}
                 transition={{ duration: 0.18 }}
               />
@@ -766,7 +724,7 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
                       key={`${item.label}-${pointIndex}`}
                       cx={point.x}
                       cy={point.y}
-                      r={2.5}
+                      r={3.2}
                       fill={colors.stroke}
                       opacity={isHovered || hoveredSeries === null ? 0.95 : 0.45}
                     />
@@ -776,16 +734,13 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
                 return (
                   <g key={`${item.label}-${pointIndex}`}>
                     {point.label && (
-                      <text
-                        x={point.x}
-                        y={point.y - 8}
-                        textAnchor="middle"
+                      <circle
+                        cx={point.x}
+                        cy={point.y}
+                        r={2.6}
                         fill={colors.stroke}
-                        fontSize={8}
                         opacity={isHovered || hoveredSeries === null ? 0.9 : 0.45}
-                      >
-                        {point.label}
-                      </text>
+                      />
                     )}
                   </g>
                 )
@@ -794,6 +749,34 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
           )
         })}
       </svg>
+
+      <div className="hud-chart-overlay hud-chart-overlay--labels" aria-hidden="true">
+        {gridValues.map((value, index) => (
+          <div
+            key={`timeline-y-${index}`}
+            className="hud-chart-axis-label hud-chart-axis-label-y"
+            style={{
+              top: toPercentY(getY(value), viewBoxHeightValue),
+              width: `calc(${toPercentX(padding.left, viewBoxWidth)} - 10px)`,
+            }}
+          >
+            {formatValue(value)}
+          </div>
+        ))}
+
+        {timeTicks.map((timestamp, index) => (
+          <div
+            key={`timeline-x-${index}`}
+            className="hud-chart-axis-label hud-chart-axis-label-x"
+            style={{
+              left: toPercentX(getX(timestamp), viewBoxWidth),
+              bottom: '4px',
+            }}
+          >
+            {formatTimelineTick(timestamp, minTimestamp, safeMaxTimestamp)}
+          </div>
+        ))}
+      </div>
     </div>
   )
 })

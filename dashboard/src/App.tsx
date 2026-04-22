@@ -14,6 +14,7 @@ import type { Status, Config, LogEntry, Signal, Position, SignalResearch, Portfo
 import {
   type ConnectionSettings,
   getResponseError,
+  isDesktopPanel,
   isNativeShell,
   loadConnectionSettings,
   maskBearerToken,
@@ -221,10 +222,7 @@ function getPortfolioHistoryQueries(period: PortfolioPeriod): Array<{ period: st
   }
 
   if (period === '7D') return [{ period: '7D', timeframe: '15Min', intraday: 'continuous' }]
-  return [
-    { period: '30D', timeframe: '1D', intraday: 'continuous' },
-    { period: '30D', timeframe: '1H', intraday: 'continuous' },
-  ]
+  return [{ period: '30D', timeframe: '1D', intraday: 'continuous' }]
 }
 
 function isOrderExecutionLog(log: LogEntry): boolean {
@@ -473,6 +471,29 @@ function useChangeToken(signature: string): number {
   return token
 }
 
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined) return 'N/A'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function getLogDetailEntries(log: LogEntry): Array<{ key: string; value: string }> {
+  const hiddenKeys = new Set(['timestamp', 'agent', 'action', 'symbol'])
+  return Object.entries(log)
+    .filter(([key, value]) => !hiddenKeys.has(key) && value !== undefined)
+    .map(([key, value]) => ({
+      key,
+      value: formatDetailValue(value),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+}
+
 function hashSymbol(symbol: string): number {
   return symbol.split('').reduce((accumulator, char, index) => accumulator + char.charCodeAt(0) * (index + 1), 0)
 }
@@ -521,7 +542,9 @@ function generatePositionPriceHistory(
 
 export default function App() {
   const nativeShell = isNativeShell()
+  const desktopPanel = isDesktopPanel()
   const desktopShell = !nativeShell
+  const viewportLockedShell = nativeShell || desktopPanel
   const [connection, setConnection] = useState<ConnectionSettings>({ apiUrl: '', bearerToken: '' })
   const [connectionLoaded, setConnectionLoaded] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
@@ -532,6 +555,7 @@ export default function App() {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [selectedResearchSymbol, setSelectedResearchSymbol] = useState<string | null>(null)
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null)
+  const [selectedActivityLog, setSelectedActivityLog] = useState<LogEntry | null>(null)
   const [time, setTime] = useState(new Date())
   const [portfolioHistory, setPortfolioHistory] = useState<PortfolioSnapshot[]>([])
   const [apyHistory, setApyHistory] = useState<PortfolioSnapshot[]>([])
@@ -555,10 +579,14 @@ export default function App() {
   const portfolioDetailsExpanded = nativeShell ? showPortfolioDetails : true
   const periodButtonClass = nativeShell
     ? 'flex min-h-10 items-center rounded-lg border px-3 transition-colors'
-    : 'flex min-h-8 items-center rounded-md border px-2.5 text-[11px] transition-colors'
+    : desktopPanel
+      ? 'flex min-h-8 items-center rounded-lg border px-2.5 text-[11px] font-medium transition-colors'
+      : 'flex min-h-8 items-center rounded-md border px-2.5 text-[11px] transition-colors'
   const remoteLinkActionClass = nativeShell
     ? 'hud-button'
-    : 'hud-button h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.1em]'
+    : desktopPanel
+      ? 'hud-button hud-button-muted h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]'
+      : 'hud-button h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.1em]'
 
   useEffect(() => {
     const bootstrapConnection = async () => {
@@ -574,11 +602,13 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement
     root.classList.toggle('native-shell', nativeShell)
+    root.classList.toggle('desktop-panel', desktopPanel)
 
     return () => {
       root.classList.remove('native-shell')
+      root.classList.remove('desktop-panel')
     }
-  }, [nativeShell])
+  }, [desktopPanel, nativeShell])
 
   useEffect(() => {
     const requestResumeRefresh = () => {
@@ -1097,6 +1127,85 @@ export default function App() {
   const selectedPositionHoldHours = selectedPositionEntry
     ? Math.max(0, Math.floor((Date.now() - selectedPositionEntry.entry_time) / 3600000))
     : null
+  const selectedActivityLogDetails = selectedActivityLog ? getLogDetailEntries(selectedActivityLog) : []
+  const positionsPanel = (
+    <Panel
+      title="POSITIONS"
+      titleRight={`${positions.length}/${config?.max_positions || 5}`}
+      className={clsx(
+        'overflow-hidden',
+        desktopPanel
+          ? 'h-full min-h-0'
+          : desktopShell
+            ? 'h-[340px] lg:h-[380px]'
+            : 'h-full min-h-[320px] lg:min-h-[360px]'
+      )}
+    >
+      {positions.length === 0 ? (
+        <div className="text-hud-text-dim text-sm py-8 text-center">No open positions</div>
+      ) : (
+        <div className="h-full min-h-0 overflow-x-auto overflow-y-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-hud-line/50">
+                <th className="hud-label text-left py-2 px-2">Symbol</th>
+                <th className="hud-label text-right py-2 px-2 hidden sm:table-cell">Qty</th>
+                <th className="hud-label text-right py-2 px-2 hidden md:table-cell">Value</th>
+                <th className="hud-label text-right py-2 px-2">P&L</th>
+                <th className="hud-label text-center py-2 px-2">Trend</th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.map((pos: Position) => {
+                const plPct = (pos.unrealized_pl / (pos.market_value - pos.unrealized_pl)) * 100
+                const priceHistory = positionPriceHistories[pos.symbol] || []
+
+                return (
+                  <motion.tr
+                    key={pos.symbol}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="border-b border-hud-line/20 hover:bg-hud-line/10"
+                  >
+                    <td className="hud-value-sm py-2 px-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPositionSymbol(pos.symbol)}
+                        className="cursor-pointer border-b border-dotted border-hud-text-dim hover:text-hud-primary transition-colors text-left"
+                      >
+                        {isCryptoSymbol(pos.symbol, config?.crypto_symbols) && (
+                          <span className="text-hud-warning mr-1">₿</span>
+                        )}
+                        {isCryptoSymbol(pos.symbol, config?.crypto_symbols)
+                          ? formatCryptoSymbol(pos.symbol, config?.crypto_symbols)
+                          : pos.symbol}
+                      </button>
+                    </td>
+                    <td className="hud-value-sm text-right py-2 px-2 hidden sm:table-cell">{pos.qty}</td>
+                    <td className="hud-value-sm text-right py-2 px-2 hidden md:table-cell">{formatCurrency(pos.market_value)}</td>
+                    <td
+                      className={clsx(
+                        'hud-value-sm text-right py-2 px-2',
+                        pos.unrealized_pl >= 0 ? 'text-hud-success' : 'text-hud-error'
+                      )}
+                    >
+                      <div>{formatCurrency(pos.unrealized_pl)}</div>
+                      <div className="text-xs opacity-70">{formatPercent(plPct)}</div>
+                    </td>
+                    <td className="py-2 px-2">
+                      <div className="flex justify-center">
+                        <Sparkline data={priceHistory} width={60} height={20} />
+                      </div>
+                    </td>
+                  </motion.tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
 
   // Early returns (after all hooks)
   if (!connectionLoaded) {
@@ -1161,22 +1270,26 @@ export default function App() {
   return (
     <div
       className={clsx(
-        'min-h-screen bg-hud-bg overflow-x-hidden',
-        nativeShell && 'lg:h-[100dvh] lg:overflow-hidden'
+        'relative z-[1] min-h-screen overflow-x-hidden bg-hud-bg',
+        viewportLockedShell && 'h-[100dvh] overflow-hidden'
       )}
-      style={nativeShell ? { paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' } : undefined}
+      style={viewportLockedShell ? { paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' } : undefined}
     >
+      {desktopPanel && <div className="hud-pointer-glow" aria-hidden="true" />}
       <div
         className={clsx(
-          'max-w-[1920px] mx-auto p-3 sm:p-4 flex flex-col gap-4',
-          nativeShell && 'h-full lg:overflow-hidden'
+          'mx-auto flex max-w-[1920px] flex-col gap-4 p-3 sm:p-4',
+          viewportLockedShell && 'h-full max-h-[100dvh] overflow-hidden',
+          desktopPanel && 'gap-3 px-4 py-3'
         )}
       >
         <div
           className={clsx(
             nativeShell
               ? 'fixed inset-x-0 z-40 border-b border-hud-line bg-hud-bg/88 backdrop-blur-xl'
-              : 'shrink-0 border-b border-hud-line pb-3'
+              : desktopPanel
+                ? 'shrink-0 rounded-[3px] border border-hud-line/70 bg-hud-bg-panel/72 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl'
+                : 'shrink-0 border-b border-hud-line pb-3'
           )}
           style={nativeShell ? { top: 0 } : undefined}
         >
@@ -1197,10 +1310,10 @@ export default function App() {
                 </span>
               </header>
             ) : (
-              <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <header className={clsx('flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between', desktopPanel && 'gap-2')}>
                 <div className="flex items-center gap-4 md:gap-6">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xl font-light tracking-tight text-hud-text-bright md:text-2xl">
+                    <span className={clsx('text-xl tracking-tight text-hud-text-bright md:text-2xl', desktopPanel ? 'font-semibold' : 'font-light')}>
                       SENTINEL
                     </span>
                   </div>
@@ -1210,7 +1323,7 @@ export default function App() {
                     pulse={isMarketOpen}
                   />
                 </div>
-                <div className="flex flex-wrap items-center gap-3 md:gap-5">
+                <div className={clsx('flex flex-wrap items-center gap-3 md:gap-5', desktopPanel && 'gap-x-4 gap-y-2 md:gap-x-4')}>
                   <StatusBar items={headerStatusItems} />
                   <NotificationBell
                     compact
@@ -1239,8 +1352,91 @@ export default function App() {
           />
         )}
 
-        <div className={clsx('grid gap-4', desktopShell && 'lg:grid-cols-12 lg:items-start')}>
-          <div className={clsx('shrink-0', desktopShell && 'lg:col-span-4')}>
+        {desktopPanel && (
+          <motion.div
+            initial={{ opacity: 0, y: 14, filter: 'blur(8px)' }}
+            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+            transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+            className="hud-remote-bar shrink-0"
+          >
+            <div className="hud-remote-bar__section">
+              <span className="hud-label text-hud-primary">REMOTE LINK</span>
+              <div className="min-w-0">
+                <div className="hud-remote-bar__value truncate font-mono">{connection.apiUrl}</div>
+              </div>
+            </div>
+
+            <div className="hud-remote-bar__section hud-remote-bar__section--meta">
+              <div className="hud-remote-bar__meta">
+                <span className="hud-label">Bearer</span>
+                <span className="hud-remote-bar__value font-mono">{maskBearerToken(connection.bearerToken)}</span>
+              </div>
+              <div className="hud-remote-bar__meta">
+                <span className="hud-label">Agent</span>
+                <span className={clsx('hud-remote-bar__value', isAgentEnabled ? 'text-hud-success' : 'text-hud-warning')}>
+                  {isAgentEnabled ? 'ENABLED' : 'DISABLED'}
+                </span>
+              </div>
+              <div className="hud-remote-bar__meta">
+                <span className="hud-label">Strategy</span>
+                <span className="hud-remote-bar__value">{status?.strategy || 'default'}</span>
+              </div>
+              <div className="hud-remote-bar__meta">
+                <span className="hud-label">Latency</span>
+                <span className={clsx('hud-remote-bar__value', error ? 'text-hud-warning' : 'text-hud-primary')}>
+                  {error ? 'DEGRADED' : 'STABLE'}
+                </span>
+              </div>
+            </div>
+
+            <div className="hud-remote-bar__actions">
+              <button
+                className={remoteLinkActionClass}
+                onClick={(event) => {
+                  event.currentTarget.blur()
+                  setShowSettings(true)
+                }}
+              >
+                Open Config
+              </button>
+              <button className={remoteLinkActionClass} onClick={() => setShowSetup(true)}>
+                Edit Link
+              </button>
+              <button
+                className={remoteLinkActionClass}
+                onClick={() => handleAgentAction(isAgentEnabled ? 'disable' : 'enable')}
+                disabled={busyAction === 'enable' || busyAction === 'disable'}
+              >
+                {busyAction === 'enable' || busyAction === 'disable'
+                  ? 'WORKING...'
+                  : isAgentEnabled
+                    ? 'Disable Agent'
+                    : 'Enable Agent'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        <div
+          className={clsx(
+            viewportLockedShell && 'min-h-0 flex-1',
+            desktopPanel
+              ? 'grid gap-3 lg:grid-rows-[minmax(0,1.08fr)_minmax(0,0.92fr)]'
+              : 'flex flex-col'
+          )}
+        >
+        <motion.div
+          initial={desktopPanel ? { opacity: 0, y: 18, filter: 'blur(10px)' } : undefined}
+          animate={desktopPanel ? { opacity: 1, y: 0, filter: 'blur(0px)' } : undefined}
+          transition={desktopPanel ? { duration: 0.42, ease: [0.22, 1, 0.36, 1] } : undefined}
+          className={clsx(
+            'grid gap-4',
+            !desktopPanel && desktopShell && 'lg:grid-cols-12 lg:items-start',
+            desktopPanel && 'min-h-0 h-full lg:grid-cols-12 lg:items-stretch'
+          )}
+        >
+          {!desktopPanel && (
+          <div className={clsx('shrink-0 min-h-0', desktopShell && 'lg:col-span-4')}>
             <Panel
               title="REMOTE LINK"
               titleRight={nativeShell ? (
@@ -1291,7 +1487,7 @@ export default function App() {
                   </button>
                 </div>
               )}
-              className="overflow-hidden"
+              className={clsx('overflow-hidden', desktopPanel && 'h-full')}
             >
               {remoteLinkExpanded && (nativeShell ? (
                 <div className="grid gap-4">
@@ -1392,8 +1588,9 @@ export default function App() {
               ))}
             </Panel>
           </div>
+          )}
 
-          <div className={clsx('shrink-0', desktopShell && 'lg:col-span-8')}>
+          <div className={clsx('min-h-0', desktopPanel ? 'h-full lg:col-span-7' : !desktopPanel && desktopShell && 'shrink-0 lg:col-span-8')}>
             <Panel 
               title="PORTFOLIO OVERVIEW" 
               titleRight={
@@ -1414,10 +1611,15 @@ export default function App() {
                   ))}
                 </div>
               } 
-                className="overflow-hidden"
+                className={clsx('overflow-hidden', desktopPanel && 'h-full')}
             >
             {account ? (
-              <div className="grid h-full gap-4 xl:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
+              <div className={clsx(
+                'grid h-full gap-4',
+                desktopPanel
+                  ? 'min-h-0 lg:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[320px_minmax(0,1fr)]'
+                  : 'xl:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]'
+              )}>
                 <div className="flex flex-col gap-4 min-h-0">
                   <div className="rounded border border-hud-line bg-[linear-gradient(180deg,rgba(111,216,255,0.09),rgba(111,216,255,0.02))] p-4">
                     <div className="hud-label text-hud-primary mb-2">Net Liquidation</div>
@@ -1509,7 +1711,7 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="min-h-0 flex flex-col gap-3">
+                <div className="min-h-0 h-full flex flex-col gap-3">
                   <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
                     <div>
                       <div className="hud-label text-hud-primary mb-1">Equity Curve</div>
@@ -1533,7 +1735,8 @@ export default function App() {
                   <div className="flex-1 min-h-0 rounded border border-hud-line/70 bg-hud-bg/35 p-2">
                     {portfolioChartData.length > 1 ? (
                       <LineChart
-                        height={288}
+                        height={desktopPanel ? '100%' : 320}
+                        viewBoxHeight={desktopPanel ? 520 : 320}
                         series={[{ label: 'Equity', data: portfolioChartData, variant: totalPl >= 0 ? 'green' : 'red' }]}
                         labels={portfolioChartLabels}
                         updateToken={portfolioChartUpdateToken}
@@ -1558,81 +1761,31 @@ export default function App() {
             )}
             </Panel>
           </div>
-        </div>
 
-        <div className="grid grid-cols-4 gap-4 md:grid-cols-8 lg:grid-cols-12">
+          {desktopPanel && (
+            <div className="min-h-0 h-full lg:col-span-5">
+              {positionsPanel}
+            </div>
+          )}
+        </motion.div>
 
-          <div className="col-span-4 md:col-span-4 lg:col-span-4">
-            <Panel
-              title="POSITIONS"
-              titleRight={`${positions.length}/${config?.max_positions || 5}`}
-              className={clsx('overflow-hidden', desktopShell ? 'h-[340px] lg:h-[380px]' : 'h-full min-h-[320px] lg:min-h-[360px]')}
-            >
-              {positions.length === 0 ? (
-                <div className="text-hud-text-dim text-sm py-8 text-center">No open positions</div>
-              ) : (
-                <div className="h-full min-h-0 overflow-x-auto overflow-y-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-hud-line/50">
-                        <th className="hud-label text-left py-2 px-2">Symbol</th>
-                        <th className="hud-label text-right py-2 px-2 hidden sm:table-cell">Qty</th>
-                        <th className="hud-label text-right py-2 px-2 hidden md:table-cell">Value</th>
-                        <th className="hud-label text-right py-2 px-2">P&L</th>
-                        <th className="hud-label text-center py-2 px-2">Trend</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map((pos: Position) => {
-                        const plPct = (pos.unrealized_pl / (pos.market_value - pos.unrealized_pl)) * 100
-                        const priceHistory = positionPriceHistories[pos.symbol] || []
-                        
-                        return (
-                          <motion.tr 
-                            key={pos.symbol}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="border-b border-hud-line/20 hover:bg-hud-line/10"
-                          >
-                            <td className="hud-value-sm py-2 px-2">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedPositionSymbol(pos.symbol)}
-                                className="cursor-pointer border-b border-dotted border-hud-text-dim hover:text-hud-primary transition-colors text-left"
-                              >
-                                {isCryptoSymbol(pos.symbol, config?.crypto_symbols) && (
-                                  <span className="text-hud-warning mr-1">₿</span>
-                                )}
-                                {isCryptoSymbol(pos.symbol, config?.crypto_symbols) 
-                                  ? formatCryptoSymbol(pos.symbol, config?.crypto_symbols)
-                                  : pos.symbol}
-                              </button>
-                            </td>
-                            <td className="hud-value-sm text-right py-2 px-2 hidden sm:table-cell">{pos.qty}</td>
-                            <td className="hud-value-sm text-right py-2 px-2 hidden md:table-cell">{formatCurrency(pos.market_value)}</td>
-                            <td className={clsx(
-                              'hud-value-sm text-right py-2 px-2',
-                              pos.unrealized_pl >= 0 ? 'text-hud-success' : 'text-hud-error'
-                            )}>
-                              <div>{formatCurrency(pos.unrealized_pl)}</div>
-                              <div className="text-xs opacity-70">{formatPercent(plPct)}</div>
-                            </td>
-                            <td className="py-2 px-2">
-                              <div className="flex justify-center">
-                                <Sparkline data={priceHistory} width={60} height={20} />
-                              </div>
-                            </td>
-                          </motion.tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Panel>
-          </div>
+        <motion.div
+          initial={desktopPanel ? { opacity: 0, y: 22, filter: 'blur(12px)' } : undefined}
+          animate={desktopPanel ? { opacity: 1, y: 0, filter: 'blur(0px)' } : undefined}
+          transition={desktopPanel ? { duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] } : undefined}
+          className={clsx(
+            'grid grid-cols-4 gap-4 md:grid-cols-8 lg:grid-cols-12',
+            desktopPanel && 'min-h-0 h-full gap-3 auto-rows-fr'
+          )}
+        >
 
-          <div className="col-span-4 md:col-span-8 lg:col-span-3">
+          {!desktopPanel && (
+            <div className="col-span-4 md:col-span-4 lg:col-span-4">
+              {positionsPanel}
+            </div>
+          )}
+
+          <div className={clsx('col-span-4 md:col-span-8 lg:col-span-3', desktopPanel && 'min-h-0 h-full')}>
             <Panel
               title="POSITION TIMELINE"
               titleRight={
@@ -1653,14 +1806,21 @@ export default function App() {
                   ))}
                 </div>
               }
-              className={clsx('overflow-hidden', desktopShell ? 'h-[340px] lg:h-[380px]' : 'h-full min-h-[320px] lg:min-h-[360px]')}
+              className={clsx(
+                'overflow-hidden',
+                desktopPanel
+                  ? 'h-full min-h-0'
+                  : desktopShell
+                    ? 'h-[340px] lg:h-[380px]'
+                    : 'h-full min-h-[320px] lg:min-h-[360px]'
+              )}
             >
               {positionTimelineSeries.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-hud-text-dim text-sm">
                   No timeline data to display
                 </div>
               ) : (
-                <div className="h-full flex flex-col">
+                <div className="h-full min-h-0 flex flex-col">
                   <div className="flex flex-wrap gap-3 mb-2 pb-2 border-b border-hud-line/30 shrink-0">
                     {positionTimelineLegend.map((series) => {
                       const isPositive = series.currentReturn >= 0
@@ -1670,11 +1830,11 @@ export default function App() {
                             className="w-2 h-2 rounded-full" 
                             style={{ backgroundColor: `var(--color-hud-${series.variant})` }}
                           />
-                          <span className="hud-value-sm">{series.label}</span>
-                          <span className={clsx('hud-label', isPositive ? 'text-hud-success' : 'text-hud-error')}>
+                          <span className="text-[13px] font-semibold text-hud-text-bright">{series.label}</span>
+                          <span className={clsx('text-[11px] font-semibold uppercase tracking-[0.14em]', isPositive ? 'text-hud-success' : 'text-hud-error')}>
                             {formatPercent(series.currentReturn)}
                           </span>
-                          <span className="hud-label text-hud-text-dim">
+                          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-hud-text-dim">
                             {series.holdDuration}
                           </span>
                         </div>
@@ -1683,7 +1843,8 @@ export default function App() {
                   </div>
                   <div className="flex-1 min-h-0 w-full">
                     <PositionTimelineChart
-                      height={180}
+                      height={desktopPanel ? '100%' : 220}
+                      viewBoxHeight={desktopPanel ? 420 : 220}
                       series={positionTimelineSeries}
                       xDomainStart={positionTimelineDomain.start}
                       xDomainEnd={positionTimelineDomain.end}
@@ -1700,7 +1861,14 @@ export default function App() {
             <Panel
               title="ACTIVE SIGNALS"
               titleRight={signals.length.toString()}
-              className={clsx('overflow-hidden', desktopShell ? 'h-[340px] lg:h-[380px]' : 'h-full min-h-[320px] lg:min-h-[360px]')}
+              className={clsx(
+                'overflow-hidden',
+                desktopPanel
+                  ? 'h-full min-h-0'
+                  : desktopShell
+                    ? 'h-[340px] lg:h-[380px]'
+                    : 'h-full min-h-[320px] lg:min-h-[360px]'
+              )}
             >
               <div className="hud-live-list overflow-y-auto h-full space-y-1">
                 {signals.length === 0 ? (
@@ -1778,7 +1946,14 @@ export default function App() {
             <Panel
               title="ACTIVITY FEED"
               titleRight="LIVE"
-              className={clsx('overflow-hidden', desktopShell ? 'h-[340px] lg:h-[380px]' : 'h-full min-h-[320px] lg:min-h-[360px]')}
+              className={clsx(
+                'overflow-hidden',
+                desktopPanel
+                  ? 'h-full min-h-0'
+                  : desktopShell
+                    ? 'h-[340px] lg:h-[380px]'
+                    : 'h-full min-h-[320px] lg:min-h-[360px]'
+              )}
             >
               <div className={clsx('hud-live-list overflow-x-hidden overflow-y-auto h-full font-mono text-sm space-y-1', nativeShell && 'max-h-[24rem] lg:max-h-none')}>
                 {logs.length === 0 ? (
@@ -1789,7 +1964,8 @@ export default function App() {
                     const logKey = getActivityLogKey(log)
                     const isNewLog = newActivityFeedKeys.has(logKey)
                     return (
-                    <motion.div 
+                    <motion.button
+                      type="button"
                       key={logKey}
                       layout
                       initial={false}
@@ -1804,8 +1980,9 @@ export default function App() {
                       }}
                       exit={{ opacity: 0, x: 12, filter: 'blur(4px)' }}
                       transition={isNewLog ? { duration: 0.32, ease: [0.22, 1, 0.36, 1] } : { duration: 0.18 }}
+                      onClick={() => setSelectedActivityLog(log)}
                       className={clsx(
-                        "hud-feed-row min-w-0 flex items-start gap-2 py-1 border-b border-hud-line/10",
+                        "hud-feed-row min-w-0 flex w-full items-start gap-2 border-b border-hud-line/10 py-1 text-left",
                         isNewLog && "hud-live-row-hot",
                       )}
                     >
@@ -1819,7 +1996,7 @@ export default function App() {
                         {log.action}
                         {log.symbol && <span className="text-hud-primary ml-1">({log.symbol})</span>}
                       </span>
-                    </motion.div>
+                    </motion.button>
                     )
                   })}
                   </AnimatePresence>
@@ -1833,7 +2010,14 @@ export default function App() {
             <Panel
               title="SIGNAL RESEARCH"
               titleRight={Object.keys(status?.signalResearch || {}).length.toString()}
-              className={clsx('overflow-hidden', desktopShell ? 'h-[340px] lg:h-[380px]' : 'h-full min-h-[320px] lg:min-h-[360px]')}
+              className={clsx(
+                'overflow-hidden',
+                desktopPanel
+                  ? 'h-full min-h-0'
+                  : desktopShell
+                    ? 'h-[340px] lg:h-[380px]'
+                    : 'h-full min-h-[320px] lg:min-h-[360px]'
+              )}
             >
               <div className="overflow-y-auto h-full space-y-2">
                 {Object.entries(status?.signalResearch || {}).length === 0 ? (
@@ -1930,10 +2114,18 @@ export default function App() {
               </div>
             </Panel>
           </div>
-        </div>
+        </motion.div>
 
-        <footer className="shrink-0 pt-3 border-t border-hud-line flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          <div className="flex flex-wrap gap-4 md:gap-6">
+        <footer className={clsx(
+          'shrink-0 border-t border-hud-line pt-3',
+          desktopPanel
+            ? 'flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-2'
+            : 'flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center'
+        )}>
+          <div className={clsx(
+            'flex flex-wrap',
+            desktopPanel ? 'gap-x-4 gap-y-1.5 text-[11px]' : 'gap-4 md:gap-6'
+          )}>
             {config && (
               <>
                 <MetricInline label="MAX POS" value={`$${config.max_position_value}`} />
@@ -1964,13 +2156,14 @@ export default function App() {
               </>
             )}
           </div>
-          <div className="flex items-center gap-4">
+          <div className={clsx('flex items-center', desktopPanel ? 'gap-3' : 'gap-4')}>
             <span className="hud-label hidden md:inline">AUTONOMOUS TRADING SYSTEM</span>
             <span className={clsx('hud-value-sm', error ? 'text-hud-warning' : 'text-hud-primary')}>
               {error ? 'LINK DEGRADED' : 'REMOTE LOCKED'}
             </span>
           </div>
         </footer>
+        </div>
       </div>
 
       <AnimatePresence>
@@ -2186,6 +2379,68 @@ export default function App() {
                   )}
                 </div>
               </div>
+            </DetailDialog>
+          </motion.div>
+        )}
+
+        {selectedActivityLog && (
+          <motion.div
+            key={`activity-${getActivityLogKey(selectedActivityLog)}`}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <DetailDialog
+              title="ACTIVITY LOG"
+              onClose={() => setSelectedActivityLog(null)}
+            >
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="border border-hud-line/60 bg-hud-bg/45 p-3">
+                  <div className="hud-label mb-1">Timestamp</div>
+                  <div className="hud-value-sm text-hud-text-bright">
+                    {new Date(selectedActivityLog.timestamp).toLocaleString('en-US', { hour12: false })}
+                  </div>
+                </div>
+                <div className="border border-hud-line/60 bg-hud-bg/45 p-3">
+                  <div className="hud-label mb-1">Agent</div>
+                  <div className={clsx('hud-value-md', getAgentColor(selectedActivityLog.agent))}>
+                    {selectedActivityLog.agent}
+                  </div>
+                </div>
+                <div className="border border-hud-line/60 bg-hud-bg/45 p-3">
+                  <div className="hud-label mb-1">Action</div>
+                  <div className="hud-value-sm text-hud-text-bright break-words">
+                    {selectedActivityLog.action}
+                  </div>
+                </div>
+                <div className="border border-hud-line/60 bg-hud-bg/45 p-3">
+                  <div className="hud-label mb-1">Symbol</div>
+                  <div className="hud-value-md text-hud-primary">
+                    {selectedActivityLog.symbol || 'N/A'}
+                  </div>
+                </div>
+              </div>
+
+              {selectedActivityLogDetails.length > 0 ? (
+                <div className="border border-hud-line/60 bg-hud-bg/35 p-4">
+                  <div className="hud-label text-hud-primary mb-3">Metadata</div>
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {selectedActivityLogDetails.map((entry) => (
+                      <div key={entry.key} className="border border-hud-line/40 bg-hud-bg/30 p-3">
+                        <div className="hud-label mb-2">{entry.key}</div>
+                        <pre className="m-0 whitespace-pre-wrap break-words font-mono text-sm leading-6 text-hud-text">
+                          {entry.value}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="border border-hud-line/60 bg-hud-bg/35 p-4">
+                  <div className="hud-label text-hud-primary mb-2">Metadata</div>
+                  <div className="text-sm text-hud-text-dim">No additional fields recorded for this log entry.</div>
+                </div>
+              )}
             </DetailDialog>
           </motion.div>
         )}
