@@ -69,7 +69,7 @@ JSON response:
           {
             role: "system",
             content:
-              "You are a crypto analyst. Be skeptical of FOMO. Crypto is volatile - only recommend BUY for strong setups. Output valid JSON only.",
+              "You are a crypto analyst. Be skeptical of FOMO, but do not miss clearly actionable momentum setups. Crypto is volatile, so reserve SKIP for weak or trap-like setups and use WAIT only when the thesis is constructive but the entry is still borderline. Output valid JSON only.",
           },
           { role: "user", content: prompt },
         ],
@@ -273,7 +273,8 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       }
     }
 
-    if (!research || research.verdict !== "BUY") {
+    const promotableWait = !!research && isPromotableCryptoWait(research, ctx);
+    if (!research || (research.verdict !== "BUY" && !promotableWait)) {
       ctx.log("Crypto", "research_skip", {
         symbol: signal.symbol,
         verdict: research?.verdict || "NO_RESEARCH",
@@ -287,8 +288,16 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       continue;
     }
 
+    if (promotableWait) {
+      ctx.log("Crypto", "wait_promoted", {
+        symbol: signal.symbol,
+        confidence: research.confidence,
+        quality: research.entry_quality,
+      });
+    }
+
     const account = await ctx.broker.getAccount();
-    const sizePct = Math.min(20, ctx.config.position_size_pct_of_cash);
+    const sizePct = ctx.config.position_size_pct_of_cash;
     const positionSize = Math.min(
       account.cash * (sizePct / 100) * research.confidence,
       ctx.config.crypto_max_position_value
@@ -299,7 +308,10 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       continue;
     }
 
-    const result = await ctx.broker.buy(signal.symbol, positionSize, `Crypto momentum: ${research.reasoning}`);
+    const tradeReason = promotableWait
+      ? `Crypto momentum (promoted WAIT): ${research.reasoning}`
+      : `Crypto momentum: ${research.reasoning}`;
+    const result = await ctx.broker.buy(signal.symbol, positionSize, tradeReason);
     if (result) {
       for (const alias of getCryptoSymbolAliases(signal.symbol)) {
         heldCrypto.add(alias);
@@ -308,4 +320,11 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       break;
     }
   }
+}
+
+function isPromotableCryptoWait(result: ResearchResult, ctx: StrategyContext): boolean {
+  if (result.verdict !== "WAIT") return false;
+  if (!["excellent", "good", "fair"].includes(result.entry_quality)) return false;
+  if (result.red_flags.length > 1) return false;
+  return result.confidence >= ctx.config.min_analyst_confidence;
 }

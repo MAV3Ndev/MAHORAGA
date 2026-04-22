@@ -12,6 +12,8 @@ export const AgentConfigSchema = z
     max_positions: z.number().int().min(1).max(50),
     min_sentiment_score: z.number().min(0).max(1),
     min_analyst_confidence: z.number().min(0).max(1),
+    signal_research_limit: z.number().int().min(1).max(20),
+    entry_candidate_limit: z.number().int().min(1).max(10),
 
     take_profit_pct: z.number().min(1).max(100),
     stop_loss_pct: z.number().min(1).max(50),
@@ -51,6 +53,9 @@ export const AgentConfigSchema = z
 
     ticker_blacklist: z.array(z.string()),
     allowed_exchanges: z.array(z.string()),
+    discord_daily_report_enabled: z.boolean(),
+    discord_daily_report_time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+    discord_daily_report_timezone: z.string().min(1).max(100),
 
     // ── Trailing Stop ────────────────────────────────────────────────────────
     trailing_stop_enabled: z.boolean(),

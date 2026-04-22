@@ -56,6 +56,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
   max_positions: 5,
   min_sentiment_score: 0.4,
   min_analyst_confidence: 0.68,
+  signal_research_limit: 8,
+  entry_candidate_limit: 5,
   take_profit_pct: 10,
   stop_loss_pct: 5,
   position_size_pct_of_cash: 15,
@@ -89,6 +91,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   crypto_stop_loss_pct: 5,
   ticker_blacklist: [],
   allowed_exchanges: ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
+  discord_daily_report_enabled: false,
+  discord_daily_report_time: "21:00",
+  discord_daily_report_timezone: "UTC",
 
   // ── Trailing Stop ──────────────────────────────────────────────────────────
   trailing_stop_enabled: true,
@@ -134,6 +139,7 @@ export const DEFAULT_STATE: AgentState = {
   socialSnapshotCache: {},
   socialSnapshotCacheUpdatedAt: 0,
   logs: [],
+  dailyReportBuckets: {},
   costTracker: { total_usd: 0, calls: 0, tokens_in: 0, tokens_out: 0 },
   lastDataGatherRun: 0,
   lastAnalystRun: 0,
@@ -149,5 +155,6 @@ export const DEFAULT_STATE: AgentState = {
   premarketPlan: null,
   lastPremarketPlanDayEt: null,
   lastClockIsOpen: null,
+  lastDailyReportSentAt: null,
   enabled: false,
 };

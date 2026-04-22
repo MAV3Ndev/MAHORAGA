@@ -127,4 +127,30 @@ describe("selectEntries", () => {
 
     expect(result).toHaveLength(0);
   });
+
+  it("promotes excellent WAIT verdicts", () => {
+    const ctx = createTestContext();
+    const account = createAccount();
+
+    const result = selectEntries(
+      ctx,
+      [createResearchResult({ entry_quality: "excellent", confidence: 0.58, reasoning: "Strong but not confirmed." })],
+      [],
+      account
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.symbol).toBe("NOW");
+  });
+
+  it("uses the configured position size without a hard 20 percent cap", () => {
+    const ctx = createTestContext();
+    const account = createAccount();
+    ctx.config.position_size_pct_of_cash = 25;
+
+    const result = selectEntries(ctx, [createResearchResult()], [], account);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.notional).toBeCloseTo(1400);
+  });
 });

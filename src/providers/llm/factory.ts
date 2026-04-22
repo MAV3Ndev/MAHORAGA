@@ -48,7 +48,9 @@ export function createLLMProvider(env: Env): LLMProvider | null {
       // Collect all available API keys
       const apiKeys: Partial<Record<SupportedProvider, string>> = {};
       if (env.OPENAI_API_KEY) apiKeys.openai = env.OPENAI_API_KEY;
-      if (env.ANTHROPIC_API_KEY) apiKeys.anthropic = env.ANTHROPIC_API_KEY;
+      if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) {
+        apiKeys.anthropic = env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN;
+      }
       if (env.GOOGLE_GENERATIVE_AI_API_KEY) apiKeys.google = env.GOOGLE_GENERATIVE_AI_API_KEY;
       if (env.XAI_API_KEY) apiKeys.xai = env.XAI_API_KEY;
       if (env.DEEPSEEK_API_KEY) apiKeys.deepseek = env.DEEPSEEK_API_KEY;
@@ -66,7 +68,13 @@ export function createLLMProvider(env: Env): LLMProvider | null {
         return null;
       }
 
-      return createAISDKProvider({ model, apiKeys, openaiBaseUrl, anthropicBaseUrl: env.ANTHROPIC_BASE_URL });
+      return createAISDKProvider({
+        model,
+        apiKeys,
+        openaiBaseUrl,
+        anthropicBaseUrl: env.ANTHROPIC_BASE_URL,
+        anthropicAuthToken: env.ANTHROPIC_AUTH_TOKEN,
+      });
     }
     default:
       // Direct OpenAI API, with optional base URL override for OpenAI-compatible backends
@@ -100,6 +108,7 @@ export function isLLMConfigured(env: Env): boolean {
       return !!(
         env.OPENAI_API_KEY ||
         env.ANTHROPIC_API_KEY ||
+        env.ANTHROPIC_AUTH_TOKEN ||
         env.GOOGLE_GENERATIVE_AI_API_KEY ||
         env.XAI_API_KEY ||
         env.DEEPSEEK_API_KEY
@@ -115,7 +124,7 @@ export function isLLMConfigured(env: Env): boolean {
 export function getConfiguredProviders(env: Env): SupportedProvider[] {
   const configured: SupportedProvider[] = [];
   if (env.OPENAI_API_KEY) configured.push("openai");
-  if (env.ANTHROPIC_API_KEY) configured.push("anthropic");
+  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) configured.push("anthropic");
   if (env.GOOGLE_GENERATIVE_AI_API_KEY) configured.push("google");
   if (env.XAI_API_KEY) configured.push("xai");
   if (env.DEEPSEEK_API_KEY) configured.push("deepseek");

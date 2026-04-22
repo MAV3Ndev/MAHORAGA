@@ -29,9 +29,16 @@ export interface PolicyBrokerDeps {
   cryptoSymbols: string[];
   allowedExchanges: string[];
   /** Called after a successful buy order */
-  onBuy?: (symbol: string, notional: number) => void;
+  onBuy?: (trade: {
+    symbol: string;
+    notional: number;
+    reason: string;
+    isCrypto: boolean;
+    status: string;
+    orderType: string;
+  }) => void | Promise<void>;
   /** Called after a successful sell/close order */
-  onSell?: (symbol: string, reason: string) => void;
+  onSell?: (trade: { symbol: string; reason: string }) => void | Promise<void>;
 }
 
 export function isTradingHaltMarketOrderError(error: unknown): boolean {
@@ -327,7 +334,14 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       cachedAccount = null;
       cachedPositions = null;
 
-      deps.onBuy?.(symbol, notional);
+      await deps.onBuy?.({
+        symbol,
+        notional,
+        reason,
+        isCrypto,
+        status: String(alpacaOrder.status ?? "submitted"),
+        orderType: String(alpacaOrder.order_type ?? alpacaOrder.type ?? "market"),
+      });
       return true;
     } catch (error) {
       log("PolicyBroker", "buy_failed", { symbol, error: String(error) });
@@ -472,7 +486,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       cachedAccount = null;
       cachedPositions = null;
 
-      deps.onSell?.(symbol, reason);
+      await deps.onSell?.({ symbol, reason });
       return true;
     } catch (error) {
       log("PolicyBroker", "sell_failed", { symbol, error: String(error) });

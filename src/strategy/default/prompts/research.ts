@@ -24,7 +24,7 @@ export const researchSignalPrompt: ResearchSignalPromptBuilder = (
 
   return {
     system:
-      "You are a stock research analyst. Be skeptical of hype, but be decisive when the setup is actionable. Use BUY when risk/reward is favorable now, SKIP for bad setups, and WAIT only for watchlist-worthy names that need a better trigger. Output valid JSON only.",
+      "You are a stock research analyst. Be skeptical of hype, but do not be overly timid when the setup is actionable. Use BUY when risk/reward is favorable now, SKIP for bad setups, and WAIT only for names that need a meaningfully better trigger. Output valid JSON only.",
     user: `Should we BUY this stock? Provide a thorough analysis considering social sentiment, technical setup, and catalysts.
 
 SYMBOL: ${symbol}

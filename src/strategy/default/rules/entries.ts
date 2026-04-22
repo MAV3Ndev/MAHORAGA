@@ -121,7 +121,9 @@ export function selectEntries(
   // Get sector map for portfolio risk (in real impl, this would come from a data provider)
   const sectorMap = getSectorMap(ctx);
 
-  for (const r of sorted.slice(0, 3)) {
+  const maxCandidates = Math.max(1, ctx.config.entry_candidate_limit ?? 3);
+
+  for (const r of sorted.slice(0, maxCandidates)) {
     if (positions.length + candidates.length >= ctx.config.max_positions) break;
 
     // Check entry timing if enabled
@@ -159,7 +161,7 @@ export function selectEntries(
 
     // Calculate position size with regime adjustment
     const compositeScore = compositeScoreMap[r.symbol] ?? r.confidence;
-    const sizePct = Math.min(20, ctx.config.position_size_pct_of_cash);
+    const sizePct = ctx.config.position_size_pct_of_cash;
     let notional = account.cash * (sizePct / 100) * compositeScore;
 
     // Apply market regime reduction
@@ -291,7 +293,7 @@ function getSectorMap(_ctx: StrategyContext): Record<string, string> {
 
 function isPromotableWait(result: ResearchResult, ctx: StrategyContext): boolean {
   if (result.verdict !== "WAIT") return false;
-  if (!["good", "fair"].includes(result.entry_quality)) return false;
+  if (!["excellent", "good", "fair"].includes(result.entry_quality)) return false;
   if (result.red_flags.length > 1) return false;
 
   const minimumWaitConfidence = Math.max(0.55, ctx.config.min_analyst_confidence - 0.05);

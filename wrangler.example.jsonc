@@ -32,6 +32,8 @@
 	// - OPENAI_API_KEY (for openai-raw, or ai-sdk with OpenAI models)
 	// - OPENAI_BASE_URL (optional override for OpenAI-compatible proxy; affects openai-raw and ai-sdk OpenAI models)
 	// - ANTHROPIC_API_KEY (for ai-sdk with Anthropic models)
+	// - ANTHROPIC_AUTH_TOKEN (optional alternative Bearer token for Anthropic-compatible proxies)
+	// - ANTHROPIC_BASE_URL (optional override for Anthropic-compatible proxy)
 	// - GOOGLE_GENERATIVE_AI_API_KEY (for ai-sdk with Google models)
 	// - XAI_API_KEY (for ai-sdk with xAI/Grok models)
 	// - DEEPSEEK_API_KEY (for ai-sdk with DeepSeek models)

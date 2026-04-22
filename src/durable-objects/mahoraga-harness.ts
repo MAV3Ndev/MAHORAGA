@@ -21,6 +21,15 @@ import type {
   SocialSnapshotCacheEntry,
 } from "../core/types";
 import type { Env } from "../env.d";
+import {
+  createDailyReportBucket,
+  DAILY_REPORT_RETENTION_MS,
+  formatDailyReportEmbed,
+  getDailyReportBucketStart,
+  pruneDailyReportBuckets,
+  shouldSendDailyReport,
+  summarizeDailyActivity,
+} from "../lib/discord-report";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
@@ -75,9 +84,8 @@ interface MomentumDataCacheEntry {
 export class MahoragaHarness extends DurableObject<Env> {
   private state: AgentState = { ...DEFAULT_STATE };
   private _llm: LLMProvider | null = null;
+  private lastLLMReinitAttemptAt = 0;
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
-  private discordCooldowns: Map<string, number> = new Map();
-  private readonly DISCORD_COOLDOWN_MS = 30 * 60 * 1000;
   private readonly MARKET_CONTEXT_TTL_MS = 10 * 60 * 1000;
   private readonly MAX_MARKET_CONTEXT_SYMBOLS = 24;
   private readonly TRANSIENT_RESEARCH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -86,8 +94,10 @@ export class MahoragaHarness extends DurableObject<Env> {
   private readonly VOLATILE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
   private readonly TWITTER_CONFIRMATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   private readonly MAX_SIGNAL_RESEARCH_COOLDOWNS = 256;
+  private readonly MAX_LOG_ENTRIES = 500;
   private readonly MAX_STATUS_SIGNAL_RESEARCH_ENTRIES = 40;
   private readonly MAX_STATUS_TWITTER_CONFIRMATIONS = 24;
+  private readonly LLM_REINIT_COOLDOWN_MS = 60_000;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -144,6 +154,15 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
   }
 
+  private refreshLLMProviderIfNeeded(now = Date.now()): void {
+    if (this._llm || now - this.lastLLMReinitAttemptAt < this.LLM_REINIT_COOLDOWN_MS) {
+      return;
+    }
+
+    this.lastLLMReinitAttemptAt = now;
+    this.initializeLLM();
+  }
+
   private getDashboardConfig(): AgentConfig {
     const provider = (((this.state.config.llm_provider as string | undefined) === "openai-compatible"
       ? "openai-raw"
@@ -195,6 +214,8 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   private buildStrategyContext(): StrategyContext {
+    this.refreshLLMProviderIfNeeded();
+
     const self = this;
     const db = createD1Client(this.env.DB);
     const alpaca = createAlpacaProviders(this.env);
@@ -218,8 +239,12 @@ export class MahoragaHarness extends DurableObject<Env> {
       log: (agent, action, details) => self.log(agent, action, details),
       cryptoSymbols: self.state.config.crypto_symbols || [],
       allowedExchanges: self.state.config.allowed_exchanges ?? ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
-      onSell: (symbol) => {
-        self.clearTrackedSymbolState(symbol);
+      onBuy: async (trade) => {
+        await self.sendDiscordTradeNotification("BUY", trade);
+      },
+      onSell: async (trade) => {
+        self.clearTrackedSymbolState(trade.symbol);
+        await self.sendDiscordTradeNotification("SELL", trade);
       },
     });
 
@@ -288,7 +313,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       // Signal research
       if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
         console.log("[Alarm] Starting signal research");
-        await this.researchTopSignals(ctx, 5);
+        await this.researchTopSignals(ctx, this.state.config.signal_research_limit ?? 5);
         console.log("[Alarm] Signal research complete");
         this.state.lastResearchRun = now;
       }
@@ -396,6 +421,9 @@ export class MahoragaHarness extends DurableObject<Env> {
           }
         }
       }
+
+      const account = await ctx.broker.getAccount().catch(() => null);
+      await this.maybeSendDailyDiscordReport(account, positions, now);
 
       this.state.lastClockIsOpen = clock.is_open;
       console.log("[Alarm] Persisting state");
@@ -651,6 +679,10 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     if (this.pruneVolatileCaches()) {
+      changed = true;
+    }
+
+    if (pruneDailyReportBuckets(this.state.dailyReportBuckets, Date.now(), DAILY_REPORT_RETENTION_MS)) {
       changed = true;
     }
 
@@ -1458,20 +1490,6 @@ export class MahoragaHarness extends DurableObject<Env> {
         quality: result.entry_quality,
       });
 
-      if (result.verdict === "BUY") {
-        await this.sendDiscordNotification("research", {
-          symbol: result.symbol,
-          verdict: result.verdict,
-          confidence: result.confidence,
-          quality: result.entry_quality,
-          sentiment,
-          sources,
-          reasoning: result.reasoning,
-          catalysts: result.catalysts,
-          red_flags: result.red_flags,
-        });
-      }
-
       return result;
     } catch (error) {
       if (this.isRateLimitError(error) || this.isUnknownModelError(error)) {
@@ -1768,7 +1786,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           continue;
         }
 
-        const sizePct = Math.min(20, this.state.config.position_size_pct_of_cash);
+        const sizePct = this.state.config.position_size_pct_of_cash;
         const notional = Math.min(
           account.cash * (sizePct / 100) * rec.confidence,
           this.state.config.max_position_value
@@ -1871,7 +1889,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (heldSymbols.has(rec.symbol)) continue;
         if (positions.length >= this.state.config.max_positions) break;
 
-        const sizePct = Math.min(20, this.state.config.position_size_pct_of_cash);
+        const sizePct = this.state.config.position_size_pct_of_cash;
         const notional = Math.min(
           account.cash * (sizePct / 100) * rec.confidence,
           this.state.config.max_position_value
@@ -2060,6 +2078,15 @@ export class MahoragaHarness extends DurableObject<Env> {
       ...body,
       llm_provider:
         (body.llm_provider as string | undefined) === "openai-compatible" ? "openai-raw" : body.llm_provider,
+      openai_base_url: typeof body.openai_base_url === "string" ? body.openai_base_url.trim() : body.openai_base_url,
+      discord_daily_report_time:
+        typeof body.discord_daily_report_time === "string"
+          ? body.discord_daily_report_time.trim()
+          : body.discord_daily_report_time,
+      discord_daily_report_timezone:
+        typeof body.discord_daily_report_timezone === "string"
+          ? body.discord_daily_report_timezone.trim()
+          : body.discord_daily_report_timezone,
     };
     const merged = { ...this.state.config, ...normalizedBody };
     const updatedLlmModel = typeof body.llm_model === "string" ? body.llm_model.trim() : null;
@@ -2114,7 +2141,8 @@ export class MahoragaHarness extends DurableObject<Env> {
   private async handleGetHistory(url: URL): Promise<Response> {
     const alpaca = createAlpacaProviders(this.env);
     const period = url.searchParams.get("period") || "1M";
-    const timeframe = url.searchParams.get("timeframe") || "1D";
+    const requestedTimeframe = url.searchParams.get("timeframe") || "1D";
+    const timeframe = this.normalizePortfolioHistoryTimeframe(period, requestedTimeframe);
     const intradayReporting = url.searchParams.get("intraday_reporting") as
       | "market_hours"
       | "extended_hours"
@@ -2146,6 +2174,21 @@ export class MahoragaHarness extends DurableObject<Env> {
         headers: { "Content-Type": "application/json" },
       });
     }
+  }
+
+  private normalizePortfolioHistoryTimeframe(period: string, timeframe: string): string {
+    const normalizedPeriod = period.trim().toUpperCase();
+    const normalizedTimeframe = timeframe.trim();
+    const dayMatch = normalizedPeriod.match(/^(\d+)D$/);
+    const dayCount = dayMatch ? Number.parseInt(dayMatch[1] || "0", 10) : null;
+
+    if (dayCount !== null && Number.isFinite(dayCount) && dayCount >= 30) {
+      if (normalizedTimeframe === "1H" || normalizedTimeframe === "1Hour") {
+        return "1D";
+      }
+    }
+
+    return normalizedTimeframe;
   }
 
   private getPeriodStartMs(period: string, nowMs: number): number {
@@ -2545,12 +2588,90 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   private log(agent: string, action: string, details: Record<string, unknown>): void {
-    const entry: LogEntry = { timestamp: new Date().toISOString(), agent, action, ...details };
+    const nowMs = Date.now();
+    const entry: LogEntry = { timestamp: new Date(nowMs).toISOString(), agent, action, ...details };
     this.state.logs.push(entry);
-    if (this.state.logs.length > 500) {
-      this.state.logs = this.state.logs.slice(-500);
+    if (this.state.logs.length > this.MAX_LOG_ENTRIES) {
+      this.state.logs = this.state.logs.slice(-this.MAX_LOG_ENTRIES);
     }
+    this.recordDailyReportActivity(nowMs, agent, action, details);
     console.log(`[${entry.timestamp}] [${agent}] ${action}`, JSON.stringify(details));
+  }
+
+  private recordDailyReportActivity(
+    timestampMs: number,
+    agent: string,
+    action: string,
+    details: Record<string, unknown>
+  ): void {
+    const bucketStart = getDailyReportBucketStart(timestampMs);
+    const bucketKey = String(bucketStart);
+    const bucket = this.state.dailyReportBuckets[bucketKey] || createDailyReportBucket(bucketStart);
+
+    let relevant = false;
+    let symbol: string | null = typeof details.symbol === "string" && details.symbol.trim().length > 0 ? details.symbol.trim() : null;
+
+    if (agent === "System" && action === "gathering_data") {
+      bucket.data_gather_cycles++;
+      relevant = true;
+    } else if (agent === "Analyst" && action === "analysis_complete") {
+      bucket.analyst_runs++;
+      relevant = true;
+    } else if (agent === "System" && action === "premarket_analysis_complete") {
+      bucket.premarket_plans++;
+      relevant = true;
+    } else if (agent === "System" && action === "twitter_breaking_news") {
+      bucket.breaking_news_alerts++;
+      relevant = true;
+    } else if (/(^|_)error$/.test(action)) {
+      bucket.errors++;
+      relevant = true;
+    } else if (agent === "SignalResearch" && action === "signal_researched") {
+      bucket.researched_signals++;
+      const verdict = typeof details.verdict === "string" ? details.verdict : "";
+      if (verdict === "BUY") bucket.buy_verdicts++;
+      if (verdict === "SKIP") bucket.skip_verdicts++;
+      if (verdict === "WAIT") bucket.wait_verdicts++;
+      relevant = true;
+    } else if (agent === "PolicyBroker" && action === "buy_executed") {
+      bucket.executed_buys++;
+      const notional = typeof details.notional === "number" && Number.isFinite(details.notional) ? details.notional : 0;
+      bucket.executed_buy_notional += notional;
+      bucket.recent_trades.push({
+        side: "BUY",
+        symbol: symbol || "UNKNOWN",
+        timestamp: timestampMs,
+        reason: typeof details.reason === "string" ? details.reason : undefined,
+        notional: notional > 0 ? notional : undefined,
+      });
+      relevant = true;
+    } else if (agent === "PolicyBroker" && action === "sell_executed") {
+      bucket.executed_sells++;
+      bucket.recent_trades.push({
+        side: "SELL",
+        symbol: symbol || "UNKNOWN",
+        timestamp: timestampMs,
+        reason: typeof details.reason === "string" ? details.reason : undefined,
+      });
+      relevant = true;
+    }
+
+    if (!relevant) {
+      return;
+    }
+
+    bucket.total_events++;
+    if (symbol) {
+      bucket.symbol_counts[symbol] = (bucket.symbol_counts[symbol] || 0) + 1;
+    }
+    if (bucket.recent_trades.length > 10) {
+      bucket.recent_trades = bucket.recent_trades
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 10);
+    }
+
+    this.state.dailyReportBuckets[bucketKey] = bucket;
+    pruneDailyReportBuckets(this.state.dailyReportBuckets, timestampMs, DAILY_REPORT_RETENTION_MS);
   }
 
   public trackLLMCost(model: string, tokensIn: number, tokensOut: number): number {
@@ -2582,89 +2703,106 @@ export class MahoragaHarness extends DurableObject<Env> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async sendDiscordNotification(
-    type: "signal" | "research",
-    data: {
-      symbol: string;
-      sentiment?: number;
-      sources?: string[];
-      verdict?: string;
-      confidence?: number;
-      quality?: string;
-      reasoning?: string;
-      catalysts?: string[];
-      red_flags?: string[];
+  private async postDiscordEmbed(
+    type: "trade" | "daily_report",
+    symbol: string | null,
+    embed: {
+      title: string;
+      color: number;
+      fields: Array<{ name: string; value: string; inline: boolean }>;
+      description?: string;
+      timestamp: string;
+      footer: { text: string };
     }
-  ): Promise<void> {
-    if (!this.env.DISCORD_WEBHOOK_URL) return;
-
-    const cacheKey = data.symbol;
-    const lastNotification = this.discordCooldowns.get(cacheKey);
-    if (lastNotification && Date.now() - lastNotification < this.DISCORD_COOLDOWN_MS) return;
+  ): Promise<boolean> {
+    if (!this.env.DISCORD_WEBHOOK_URL) return false;
 
     try {
-      let embed: {
-        title: string;
-        color: number;
-        fields: Array<{ name: string; value: string; inline: boolean }>;
-        description?: string;
-        timestamp: string;
-        footer: { text: string };
-      };
-
-      if (type === "signal") {
-        embed = {
-          title: `🔔 SIGNAL: $${data.symbol}`,
-          color: 0xfbbf24,
-          fields: [
-            { name: "Sentiment", value: `${((data.sentiment || 0) * 100).toFixed(0)}% bullish`, inline: true },
-            { name: "Sources", value: data.sources?.join(", ") || "StockTwits", inline: true },
-          ],
-          description: "High sentiment detected, researching...",
-          timestamp: new Date().toISOString(),
-          footer: { text: "MAHORAGA • Not financial advice • DYOR" },
-        };
-      } else {
-        const verdictEmoji = data.verdict === "BUY" ? "✅" : data.verdict === "SKIP" ? "⏭️" : "⏸️";
-        const color = data.verdict === "BUY" ? 0x22c55e : data.verdict === "SKIP" ? 0x6b7280 : 0xfbbf24;
-
-        embed = {
-          title: `${verdictEmoji} $${data.symbol} → ${data.verdict}`,
-          color,
-          fields: [
-            { name: "Confidence", value: `${((data.confidence || 0) * 100).toFixed(0)}%`, inline: true },
-            { name: "Quality", value: data.quality || "N/A", inline: true },
-            { name: "Sentiment", value: `${((data.sentiment || 0) * 100).toFixed(0)}%`, inline: true },
-          ],
-          timestamp: new Date().toISOString(),
-          footer: { text: "MAHORAGA • Not financial advice • DYOR" },
-        };
-
-        if (data.reasoning) {
-          embed.description = data.reasoning.substring(0, 300) + (data.reasoning.length > 300 ? "..." : "");
-        }
-        if (data.catalysts && data.catalysts.length > 0) {
-          embed.fields.push({ name: "Catalysts", value: data.catalysts.slice(0, 3).join(", "), inline: false });
-        }
-        if (data.red_flags && data.red_flags.length > 0) {
-          embed.fields.push({
-            name: "⚠️ Red Flags",
-            value: data.red_flags.slice(0, 3).join(", "),
-            inline: false,
-          });
-        }
-      }
-
-      await fetch(this.env.DISCORD_WEBHOOK_URL, {
+      const response = await fetch(this.env.DISCORD_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ embeds: [embed] }),
       });
 
-      this.discordCooldowns.set(cacheKey, Date.now());
-      this.log("Discord", "notification_sent", { type, symbol: data.symbol });
+      if (!response.ok) {
+        throw new Error(`Discord webhook returned ${response.status}`);
+      }
+
+      this.log("Discord", "notification_sent", { type, symbol: symbol ?? undefined });
+      return true;
     } catch (err) {
-      this.log("Discord", "notification_failed", { error: String(err) });
+      this.log("Discord", "notification_failed", { type, symbol: symbol ?? undefined, error: String(err) });
+      return false;
+    }
+  }
+
+  private async sendDiscordTradeNotification(
+    side: "BUY" | "SELL",
+    trade:
+      | { symbol: string; notional: number; reason: string; isCrypto: boolean; status: string; orderType: string }
+      | { symbol: string; reason: string }
+  ): Promise<void> {
+    if (!this.env.DISCORD_WEBHOOK_URL) return;
+
+    const color = side === "BUY" ? 0x22c55e : 0xef4444;
+    const icon = side === "BUY" ? "🟢" : "🔴";
+    const fields: Array<{ name: string; value: string; inline: boolean }> = [
+      { name: "Action", value: side, inline: true },
+      { name: "Symbol", value: `$${trade.symbol}`, inline: true },
+      {
+        name: "Reason",
+        value: trade.reason.length > 300 ? `${trade.reason.slice(0, 297)}...` : trade.reason,
+        inline: false,
+      },
+    ];
+
+    if (side === "BUY" && "notional" in trade) {
+      fields.splice(
+        2,
+        0,
+        { name: "Notional", value: `$${trade.notional.toFixed(2)}`, inline: true },
+        { name: "Order", value: `${trade.orderType} • ${trade.status}`, inline: true }
+      );
+      fields.push({ name: "Asset Class", value: trade.isCrypto ? "Crypto" : "Equity", inline: true });
+    }
+
+    await this.postDiscordEmbed("trade", trade.symbol, {
+      title: `${icon} ${side} EXECUTED: $${trade.symbol}`,
+      color,
+      fields,
+      timestamp: new Date().toISOString(),
+      footer: { text: "MAHORAGA • Executed trade notification" },
+    });
+  }
+
+  private async maybeSendDailyDiscordReport(account: Account | null, positions: Position[], nowMs: number): Promise<void> {
+    if (!this.env.DISCORD_WEBHOOK_URL || !this.state.config.discord_daily_report_enabled) return;
+
+    try {
+      if (
+        !shouldSendDailyReport(
+          nowMs,
+          this.state.lastDailyReportSentAt,
+          this.state.config.discord_daily_report_time,
+          this.state.config.discord_daily_report_timezone
+        )
+      ) {
+        return;
+      }
+    } catch (error) {
+      this.log("Discord", "daily_report_schedule_error", { error: String(error) });
+      return;
+    }
+
+    try {
+      const summary = summarizeDailyActivity(this.state.dailyReportBuckets, nowMs);
+      const embed = formatDailyReportEmbed(summary, account, positions);
+      const sent = await this.postDiscordEmbed("daily_report", null, embed);
+      if (sent) {
+        this.state.lastDailyReportSentAt = nowMs;
+      }
+    } catch (error) {
+      this.log("Discord", "daily_report_failed", { error: String(error) });
     }
   }
 }
