@@ -73,6 +73,8 @@ npx wrangler secret put LLM_MODEL     # e.g. "gpt-4o-mini" or "anthropic/claude-
 npx wrangler secret put OPENAI_API_KEY         # For openai-raw or ai-sdk with OpenAI
 npx wrangler secret put OPENAI_BASE_URL        # Optional: override OpenAI base URL for openai-raw and ai-sdk (OpenAI models)
 # npx wrangler secret put ANTHROPIC_API_KEY    # For ai-sdk with Anthropic
+# npx wrangler secret put ANTHROPIC_AUTH_TOKEN # Optional alternative for Anthropic-compatible Bearer auth
+# npx wrangler secret put ANTHROPIC_BASE_URL   # Optional: override Anthropic base URL for ai-sdk Anthropic models
 # npx wrangler secret put GOOGLE_GENERATIVE_AI_API_KEY  # For ai-sdk with Google
 # npx wrangler secret put XAI_API_KEY          # For ai-sdk with xAI/Grok
 # npx wrangler secret put DEEPSEEK_API_KEY     # For ai-sdk with DeepSeek
