@@ -432,7 +432,7 @@ function getTimelineDomain(
   const minVisibleTimestamp = Math.min(...visiblePoints.map((point) => point.timestamp))
   const maxVisibleTimestamp = Math.max(...visiblePoints.map((point) => point.timestamp))
   return {
-    start: Math.max(startTimestamp, minVisibleTimestamp),
+    start: Math.min(startTimestamp, minVisibleTimestamp),
     end: Math.min(endTimestamp, Math.max(maxVisibleTimestamp, startTimestamp + 60_000)),
   }
 }
@@ -503,6 +503,17 @@ function estimateEntryPrice(position: Position, storedEntryPrice?: number): numb
     return storedEntryPrice
   }
 
+  if (typeof position.avg_entry_price === 'number' && Number.isFinite(position.avg_entry_price) && position.avg_entry_price > 0) {
+    return position.avg_entry_price
+  }
+
+  if (typeof position.cost_basis === 'number' && Number.isFinite(position.cost_basis) && position.cost_basis > 0 && position.qty > 0) {
+    const derivedFromCostBasis = position.cost_basis / position.qty
+    if (Number.isFinite(derivedFromCostBasis) && derivedFromCostBasis > 0) {
+      return derivedFromCostBasis
+    }
+  }
+
   if (position.qty > 0) {
     const estimatedCostBasis = position.market_value - position.unrealized_pl
     const derivedEntryPrice = estimatedCostBasis / position.qty
@@ -520,24 +531,50 @@ function generatePositionPriceHistory(
   points: number = 20,
 ): number[] {
   const startPrice = estimateEntryPrice(position, storedEntryPrice)
-  const endPrice = position.current_price
-  const drift = endPrice - startPrice
+  const finalChangePct =
+    typeof position.unrealized_plpc === 'number' && Number.isFinite(position.unrealized_plpc)
+      ? position.unrealized_plpc * 100
+      : startPrice > 0
+        ? position.side === 'short'
+          ? ((startPrice - position.current_price) / startPrice) * 100
+          : ((position.current_price - startPrice) / startPrice) * 100
+        : 0
+  const drift = finalChangePct
   const symbolSeed = hashSymbol(position.symbol)
   const phase = (symbolSeed % 360) * (Math.PI / 180)
-  const amplitude = Math.max(Math.abs(drift) * 0.28, startPrice * 0.012, 0.02)
+  const amplitude = Math.max(Math.abs(drift) * 0.1, 0.18)
 
-  const prices = Array.from({ length: points }, (_, index) => {
+  const trendSeries = Array.from({ length: points }, (_, index) => {
     const progress = index / Math.max(points - 1, 1)
-    const baseLine = startPrice + drift * progress
-    const primaryWave = Math.sin(progress * Math.PI * 1.35 + phase) * amplitude * (1 - progress) * 0.7
-    const secondaryWave = Math.sin(progress * Math.PI * 3.1 + phase * 0.6) * amplitude * 0.18
-    const value = baseLine + primaryWave + secondaryWave
-    return Math.max(0.01, value)
+    const baseLine = drift * progress
+    const primaryWave = Math.sin(progress * Math.PI * 1.1 + phase) * amplitude * 0.45
+    const secondaryWave = Math.sin(progress * Math.PI * 2.4 + phase * 0.6) * amplitude * 0.12
+    const directionalBias = drift === 0 ? 0 : Math.sign(drift) * amplitude * 0.08 * progress
+    return baseLine + primaryWave + secondaryWave + directionalBias
   })
 
-  prices[0] = startPrice
-  prices[prices.length - 1] = endPrice
-  return prices
+  trendSeries[0] = 0
+  trendSeries[trendSeries.length - 1] = finalChangePct
+  return trendSeries
+}
+
+function buildSparklineFromTimeline(
+  timelineHistory: PositionTimelineHistory | undefined,
+  points: number = 20,
+): number[] | null {
+  if (!timelineHistory || timelineHistory.points.length < 2) return null
+
+  const source = [...timelineHistory.points]
+    .filter((point) => Number.isFinite(point.change_pct))
+    .sort((a, b) => a.timestamp - b.timestamp)
+
+  if (source.length < 2) return null
+  if (source.length <= points) return source.map((point) => point.change_pct)
+
+  return Array.from({ length: points }, (_, index) => {
+    const sampleIndex = Math.round((index / Math.max(points - 1, 1)) * (source.length - 1))
+    return source[sampleIndex]!.change_pct
+  })
 }
 
 export default function App() {
@@ -566,6 +603,7 @@ export default function App() {
   const [showPortfolioDetails, setShowPortfolioDetails] = useState(false)
   const [isWindowVisible, setIsWindowVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [resumeSyncToken, setResumeSyncToken] = useState(0)
+  const [showStartupSequence, setShowStartupSequence] = useState(() => desktopPanel)
   const seenOrderNotificationKeysRef = useRef<Set<string>>(new Set())
   const orderNotificationsPrimedRef = useRef(false)
   const seenActivityFeedKeysRef = useRef<Set<string>>(new Set())
@@ -580,12 +618,12 @@ export default function App() {
   const periodButtonClass = nativeShell
     ? 'flex min-h-10 items-center rounded-lg border px-3 transition-colors'
     : desktopPanel
-      ? 'flex min-h-8 items-center rounded-lg border px-2.5 text-[11px] font-medium transition-colors'
+      ? 'hud-control-chip flex min-h-7 items-center rounded-[3px] border px-2.5 text-[11px] font-medium transition-colors'
       : 'flex min-h-8 items-center rounded-md border px-2.5 text-[11px] transition-colors'
   const remoteLinkActionClass = nativeShell
     ? 'hud-button'
     : desktopPanel
-      ? 'hud-button hud-button-muted h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]'
+      ? 'hud-button hud-toolbar-button h-7 min-h-0 rounded-[3px] px-3 py-1 text-[10px] tracking-[0.12em]'
       : 'hud-button h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.1em]'
 
   useEffect(() => {
@@ -609,6 +647,16 @@ export default function App() {
       root.classList.remove('desktop-panel')
     }
   }, [desktopPanel, nativeShell])
+
+  useEffect(() => {
+    if (!desktopPanel) return
+
+    const timer = window.setTimeout(() => {
+      setShowStartupSequence(false)
+    }, 1700)
+
+    return () => window.clearTimeout(timer)
+  }, [desktopPanel])
 
   useEffect(() => {
     const requestResumeRefresh = () => {
@@ -824,6 +872,8 @@ export default function App() {
   const totalPl = account ? account.equity - startingEquity : 0
   const realizedPl = totalPl - unrealizedPl
   const totalPlPct = account ? (totalPl / startingEquity) * 100 : 0
+  const syncTimeLabel = lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('en-US', { hour12: false }) : 'PENDING'
+  const totalPlStateLabel = totalPl >= 0 ? 'Ahead Of Baseline' : 'Below Baseline'
   const headerStatusItems: Array<{
     label: string
     value: string
@@ -840,7 +890,7 @@ export default function App() {
     },
     {
       label: 'SYNC',
-      value: lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('en-US', { hour12: false }) : 'PENDING',
+      value: syncTimeLabel,
       status: error ? 'warning' : 'active',
     },
   ]
@@ -873,10 +923,13 @@ export default function App() {
   const positionPriceHistories = useMemo(() => {
     const histories: Record<string, number[]> = {}
     positions.forEach(pos => {
-      histories[pos.symbol] = generatePositionPriceHistory(pos, status?.positionEntries?.[pos.symbol]?.entry_price)
+      const timelineHistory = positionTimelineHistory[pos.symbol]
+      histories[pos.symbol] =
+        buildSparklineFromTimeline(timelineHistory)
+        ?? generatePositionPriceHistory(pos, status?.positionEntries?.[pos.symbol]?.entry_price)
     })
     return histories
-  }, [positions, status?.positionEntries])
+  }, [positionTimelineHistory, positions, status?.positionEntries])
 
   // Chart data derived from portfolio history
   const portfolioChartData = useMemo(() => {
@@ -1144,8 +1197,8 @@ export default function App() {
       {positions.length === 0 ? (
         <div className="text-hud-text-dim text-sm py-8 text-center">No open positions</div>
       ) : (
-        <div className="h-full min-h-0 overflow-x-auto overflow-y-auto">
-          <table className="w-full">
+        <div className="hud-scroll-pane hud-data-table-wrap h-full min-h-0 overflow-x-auto overflow-y-auto">
+          <table className="hud-data-table w-full">
             <thead>
               <tr className="border-b border-hud-line/50">
                 <th className="hud-label text-left py-2 px-2">Symbol</th>
@@ -1165,7 +1218,7 @@ export default function App() {
                     key={pos.symbol}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="border-b border-hud-line/20 hover:bg-hud-line/10"
+                    className="hud-data-row border-b border-hud-line/20"
                   >
                     <td className="hud-value-sm py-2 px-2">
                       <button
@@ -1208,6 +1261,55 @@ export default function App() {
   )
 
   // Early returns (after all hooks)
+  if (showStartupSequence) {
+    return (
+      <div className="hud-startup-screen">
+        <div className="hud-startup-screen__grid" aria-hidden="true" />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.985, filter: 'blur(12px)' }}
+          animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+          transition={{ duration: 0.48, ease: [0.22, 1, 0.36, 1] }}
+          className="hud-startup-shell"
+        >
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.42, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+            className="hud-startup-mark"
+          >
+            MAHORAGA SENTINEL
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, letterSpacing: '0.36em' }}
+            animate={{ opacity: 1, letterSpacing: '0.22em' }}
+            transition={{ duration: 0.4, delay: 0.16 }}
+            className="hud-startup-subtitle"
+          >
+            Autonomous Tactical Console
+          </motion.div>
+          <div className="hud-startup-loader">
+            <motion.div
+              initial={{ scaleX: 0, opacity: 0.55 }}
+              animate={{ scaleX: 1, opacity: 1 }}
+              transition={{ duration: 1.05, delay: 0.26, ease: [0.22, 1, 0.36, 1] }}
+              className="hud-startup-loader__bar"
+            />
+          </div>
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.32, delay: 0.36 }}
+            className="hud-startup-meta"
+          >
+            <span>BOOTSTRAP</span>
+            <span>SYNC</span>
+            <span>READY</span>
+          </motion.div>
+        </motion.div>
+      </div>
+    )
+  }
+
   if (!connectionLoaded) {
     return (
       <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
@@ -1288,7 +1390,7 @@ export default function App() {
             nativeShell
               ? 'fixed inset-x-0 z-40 border-b border-hud-line bg-hud-bg/88 backdrop-blur-xl'
               : desktopPanel
-                ? 'shrink-0 rounded-[3px] border border-hud-line/70 bg-hud-bg-panel/72 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl'
+                ? 'hud-top-shell shrink-0 rounded-[4px] border border-hud-line/70 bg-hud-bg-panel/72 px-4 py-2.5 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl'
                 : 'shrink-0 border-b border-hud-line pb-3'
           )}
           style={nativeShell ? { top: 0 } : undefined}
@@ -1311,10 +1413,10 @@ export default function App() {
               </header>
             ) : (
               <header className={clsx('flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between', desktopPanel && 'gap-2')}>
-                <div className="flex items-center gap-4 md:gap-6">
+                <div className={clsx('flex items-center gap-4 md:gap-6', desktopPanel && 'hud-title-rail')}>
                   <div className="flex items-baseline gap-2">
-                    <span className={clsx('text-xl tracking-tight text-hud-text-bright md:text-2xl', desktopPanel ? 'font-semibold' : 'font-light')}>
-                      SENTINEL
+                    <span className={clsx('text-xl tracking-tight text-hud-text-bright md:text-2xl', desktopPanel ? 'hud-title-mark font-semibold' : 'font-light')}>
+                      MAHORAGA SENTINEL
                     </span>
                   </div>
                   <StatusIndicator
@@ -1330,12 +1432,6 @@ export default function App() {
                     overnightActivity={status?.overnightActivity}
                     premarketPlan={status?.premarketPlan}
                   />
-                  <button
-                    className="hud-label transition-colors hover:text-hud-primary"
-                    onClick={() => setShowSettings(true)}
-                  >
-                    [CONFIG]
-                  </button>
                   <span className="hud-value-sm font-mono">
                     {time.toLocaleTimeString('en-US', { hour12: false })}
                   </span>
@@ -1357,7 +1453,7 @@ export default function App() {
             initial={{ opacity: 0, y: 14, filter: 'blur(8px)' }}
             animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
             transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
-            className="hud-remote-bar shrink-0"
+            className="hud-remote-bar hud-remote-bar--desktop shrink-0"
           >
             <div className="hud-remote-bar__section">
               <span className="hud-label text-hud-primary">REMOTE LINK</span>
@@ -1421,7 +1517,7 @@ export default function App() {
           className={clsx(
             viewportLockedShell && 'min-h-0 flex-1',
             desktopPanel
-              ? 'grid gap-3 lg:grid-rows-[minmax(0,1.08fr)_minmax(0,0.92fr)]'
+              ? 'grid gap-3 lg:grid-rows-[minmax(0,1.2fr)_minmax(0,0.8fr)]'
               : 'flex flex-col'
           )}
         >
@@ -1591,8 +1687,9 @@ export default function App() {
           )}
 
           <div className={clsx('min-h-0', desktopPanel ? 'h-full lg:col-span-7' : !desktopPanel && desktopShell && 'shrink-0 lg:col-span-8')}>
-            <Panel 
-              title="PORTFOLIO OVERVIEW" 
+            <Panel
+              title="PORTFOLIO OVERVIEW"
+              variant={desktopPanel ? 'hero' : 'default'}
               titleRight={
                 <div className="flex flex-wrap justify-end gap-2">
                   {PORTFOLIO_PERIOD_OPTIONS.map(p => (
@@ -1611,34 +1708,35 @@ export default function App() {
                   ))}
                 </div>
               } 
-                className={clsx('overflow-hidden', desktopPanel && 'h-full')}
+              className={clsx('overflow-hidden', desktopPanel && 'h-full')}
             >
             {account ? (
               <div className={clsx(
-                'grid h-full gap-4',
+                'grid h-full min-h-0 gap-4',
                 desktopPanel
-                  ? 'min-h-0 lg:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[320px_minmax(0,1fr)]'
+                  ? 'items-start lg:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[320px_minmax(0,1fr)]'
                   : 'xl:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]'
               )}>
-                <div className="flex flex-col gap-4 min-h-0">
-                  <div className="rounded border border-hud-line bg-[linear-gradient(180deg,rgba(111,216,255,0.09),rgba(111,216,255,0.02))] p-4">
-                    <div className="hud-label text-hud-primary mb-2">Net Liquidation</div>
+                <div className="flex flex-col gap-3 min-h-0">
+                  <div className={clsx('hud-hero-card', desktopPanel && 'hud-hero-card--compact')}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="hud-hero-card__eyebrow">Capital State</div>
+                        <div className="hud-label text-hud-primary mb-2">Net Liquidation</div>
+                      </div>
+                      <span className={clsx('hud-hero-pill', totalPl >= 0 ? 'is-positive' : 'is-negative')}>
+                        {totalPlStateLabel}
+                      </span>
+                    </div>
                     <AnimatedMetricValue
                       value={account.equity}
                       formatter={formatCurrency}
-                      className="text-3xl md:text-4xl font-semibold tracking-tight text-hud-text-bright"
+                      className={clsx(
+                        'font-semibold tracking-tight text-hud-text-bright',
+                        desktopPanel ? 'text-[36px] leading-none' : 'text-3xl md:text-4xl',
+                      )}
                       pulseOnChange
                     />
-                    <div className="mt-3 flex flex-wrap items-center gap-3">
-                      <span className={clsx('hud-value-sm', totalPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
-                        {formatCurrency(totalPl)} ({formatPercent(totalPlPct)})
-                      </span>
-                      <StatusIndicator
-                        status={isMarketOpen ? 'active' : 'inactive'}
-                        label={isMarketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
-                        pulse={isMarketOpen}
-                      />
-                    </div>
                   </div>
 
                   {nativeShell && (
@@ -1665,59 +1763,94 @@ export default function App() {
                   )}
 
                   {portfolioDetailsExpanded && (
-                    <>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="border border-hud-line/70 bg-hud-bg/50 p-3">
+                    desktopPanel ? (
+                      <div className="hud-compact-grid">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label text-hud-primary mb-1">Cash</div>
-                          <div className="hud-value-md">{formatCompactCurrency(account.cash)}</div>
+                          <div className="hud-compact-grid__value">{formatCompactCurrency(account.cash)}</div>
                         </div>
-                        <div className="border border-hud-line/70 bg-hud-bg/50 p-3">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label text-hud-primary mb-1">Buying Power</div>
-                          <div className="hud-value-md">{formatCompactCurrency(account.buying_power)}</div>
+                          <div className="hud-compact-grid__value">{formatCompactCurrency(account.buying_power)}</div>
                         </div>
-                        <div className="border border-hud-line/70 bg-hud-bg/50 p-3">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label text-hud-primary mb-1">Realized</div>
-                          <div className={clsx('hud-value-md', realizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
+                          <div className={clsx('hud-compact-grid__value', realizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
                             {formatCompactCurrency(realizedPl)}
                           </div>
                         </div>
-                        <div className="border border-hud-line/70 bg-hud-bg/50 p-3">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label text-hud-primary mb-1">Unrealized</div>
-                          <div className={clsx('hud-value-md', unrealizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
+                          <div className={clsx('hud-compact-grid__value', unrealizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
                             {formatCompactCurrency(unrealizedPl)}
                           </div>
                         </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="border border-hud-line/50 bg-hud-bg/40 px-3 py-2">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label mb-1">APY</div>
-                          <div className={clsx('hud-value-sm', rollingApy !== null ? (rollingApy >= 0 ? 'text-hud-success' : 'text-hud-error') : 'text-hud-text-dim')}>
+                          <div className={clsx('hud-compact-grid__value', rollingApy !== null ? (rollingApy >= 0 ? 'text-hud-success' : 'text-hud-error') : 'text-hud-text-dim')}>
                             {rollingApy !== null ? formatPercent(rollingApy) : 'CALC...'}
                           </div>
                         </div>
-                        <div className="border border-hud-line/50 bg-hud-bg/40 px-3 py-2">
+                        <div className="hud-compact-grid__item">
                           <div className="hud-label mb-1">Open Risk</div>
-                          <div className="hud-value-sm">{positions.length}/{config?.max_positions || 5}</div>
+                          <div className="hud-compact-grid__value">{positions.length}/{config?.max_positions || 5}</div>
                         </div>
-                        <div className="border border-hud-line/50 bg-hud-bg/40 px-3 py-2">
+                        <div className="hud-compact-grid__item hud-compact-grid__item--wide">
                           <div className="hud-label mb-1">Sync</div>
-                          <div className="hud-value-sm">
-                            {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('en-US', { hour12: false }) : 'PENDING'}
-                          </div>
+                          <div className="hud-compact-grid__value">{syncTimeLabel}</div>
                         </div>
                       </div>
-                    </>
+                    ) : (
+                      <>
+                        <div className="hud-kpi-grid grid-cols-2">
+                          <div className="hud-kpi-card">
+                            <div className="hud-label text-hud-primary mb-1">Cash</div>
+                            <div className="hud-kpi-card__value hud-kpi-card__value--lg">{formatCompactCurrency(account.cash)}</div>
+                          </div>
+                          <div className="hud-kpi-card">
+                            <div className="hud-label text-hud-primary mb-1">Buying Power</div>
+                            <div className="hud-kpi-card__value hud-kpi-card__value--lg">{formatCompactCurrency(account.buying_power)}</div>
+                          </div>
+                          <div className="hud-kpi-card">
+                            <div className="hud-label text-hud-primary mb-1">Realized</div>
+                            <div className={clsx('hud-kpi-card__value hud-kpi-card__value--lg', realizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
+                              {formatCompactCurrency(realizedPl)}
+                            </div>
+                          </div>
+                          <div className="hud-kpi-card">
+                            <div className="hud-label text-hud-primary mb-1">Unrealized</div>
+                            <div className={clsx('hud-kpi-card__value hud-kpi-card__value--lg', unrealizedPl >= 0 ? 'text-hud-success' : 'text-hud-error')}>
+                              {formatCompactCurrency(unrealizedPl)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="hud-kpi-grid grid-cols-1 sm:grid-cols-3">
+                          <div className="hud-kpi-card hud-kpi-card--quiet">
+                            <div className="hud-label mb-1">APY</div>
+                            <div className={clsx('hud-kpi-card__value', rollingApy !== null ? (rollingApy >= 0 ? 'text-hud-success' : 'text-hud-error') : 'text-hud-text-dim')}>
+                              {rollingApy !== null ? formatPercent(rollingApy) : 'CALC...'}
+                            </div>
+                          </div>
+                          <div className="hud-kpi-card hud-kpi-card--quiet">
+                            <div className="hud-label mb-1">Open Risk</div>
+                            <div className="hud-kpi-card__value">{positions.length}/{config?.max_positions || 5}</div>
+                          </div>
+                          <div className="hud-kpi-card hud-kpi-card--quiet">
+                            <div className="hud-label mb-1">Sync</div>
+                            <div className="hud-kpi-card__value">{syncTimeLabel}</div>
+                          </div>
+                        </div>
+                      </>
+                    )
                   )}
                 </div>
 
                 <div className="min-h-0 h-full flex flex-col gap-3">
                   <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
                     <div>
+                      <div className="hud-section-kicker">Trajectory</div>
                       <div className="hud-label text-hud-primary mb-1">Equity Curve</div>
-                      <div className="text-sm text-hud-text-dim leading-6">
-                        Balance history layered with current portfolio state.
-                      </div>
                     </div>
                     <div className="hidden md:flex items-center gap-4">
                       <MetricInline
@@ -1732,7 +1865,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex-1 min-h-0 rounded border border-hud-line/70 bg-hud-bg/35 p-2">
+                  <div className="hud-chart-stage flex-1">
                     {portfolioChartData.length > 1 ? (
                       <LineChart
                         height={desktopPanel ? '100%' : 320}
@@ -1821,11 +1954,11 @@ export default function App() {
                 </div>
               ) : (
                 <div className="h-full min-h-0 flex flex-col">
-                  <div className="flex flex-wrap gap-3 mb-2 pb-2 border-b border-hud-line/30 shrink-0">
+                  <div className="hud-timeline-legend mb-2 shrink-0 border-b border-hud-line/30 pb-2">
                     {positionTimelineLegend.map((series) => {
                       const isPositive = series.currentReturn >= 0
                       return (
-                        <div key={series.label} className="flex items-center gap-1.5">
+                        <div key={series.label} className="hud-timeline-legend__item flex items-center gap-1.5">
                           <div 
                             className="w-2 h-2 rounded-full" 
                             style={{ backgroundColor: `var(--color-hud-${series.variant})` }}
@@ -1870,7 +2003,7 @@ export default function App() {
                     : 'h-full min-h-[320px] lg:min-h-[360px]'
               )}
             >
-              <div className="hud-live-list overflow-y-auto h-full space-y-1">
+              <div className="hud-live-list hud-scroll-pane hud-list-stack overflow-y-auto h-full space-y-1">
                 {signals.length === 0 ? (
                   <div className="text-hud-text-dim text-sm py-4 text-center">Gathering signals...</div>
                 ) : (
@@ -1911,7 +2044,7 @@ export default function App() {
                         exit={{ opacity: 0, x: 12, filter: 'blur(6px)' }}
                         transition={{ delay: i * 0.02 }}
                         className={clsx(
-                          "flex items-center justify-between py-1 px-2 border-b border-hud-line/10 hover:bg-hud-line/10 cursor-help transition-transform duration-200",
+                          "hud-list-card hud-list-card--signal flex items-center justify-between cursor-help px-3 py-2 transition-transform duration-200",
                           i === 0 && signalListUpdateToken > 0 && "hud-live-row-hot",
                           sig.isCrypto && "bg-hud-warning/5"
                         )}
@@ -1955,7 +2088,7 @@ export default function App() {
                     : 'h-full min-h-[320px] lg:min-h-[360px]'
               )}
             >
-              <div className={clsx('hud-live-list overflow-x-hidden overflow-y-auto h-full font-mono text-sm space-y-1', nativeShell && 'max-h-[24rem] lg:max-h-none')}>
+              <div className={clsx('hud-live-list hud-scroll-pane hud-list-stack overflow-x-hidden overflow-y-auto h-full font-mono text-sm space-y-1', nativeShell && 'max-h-[24rem] lg:max-h-none')}>
                 {logs.length === 0 ? (
                   <div className="text-hud-text-dim py-4 text-center">Waiting for activity...</div>
                 ) : (
@@ -1982,7 +2115,7 @@ export default function App() {
                       transition={isNewLog ? { duration: 0.32, ease: [0.22, 1, 0.36, 1] } : { duration: 0.18 }}
                       onClick={() => setSelectedActivityLog(log)}
                       className={clsx(
-                        "hud-feed-row min-w-0 flex w-full items-start gap-2 border-b border-hud-line/10 py-1 text-left",
+                        "hud-feed-row hud-list-card hud-list-card--feed min-w-0 flex w-full items-start gap-2 px-3 py-2 text-left",
                         isNewLog && "hud-live-row-hot",
                       )}
                     >
@@ -2019,7 +2152,7 @@ export default function App() {
                     : 'h-full min-h-[320px] lg:min-h-[360px]'
               )}
             >
-              <div className="overflow-y-auto h-full space-y-2">
+              <div className="hud-scroll-pane hud-list-stack overflow-y-auto h-full space-y-2">
                 {Object.entries(status?.signalResearch || {}).length === 0 ? (
                   <div className="text-hud-text-dim text-sm py-4 text-center">Researching candidates...</div>
                 ) : (
@@ -2084,7 +2217,7 @@ export default function App() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         onClick={() => setSelectedResearchSymbol(symbol)}
-                        className="w-full p-2 border border-hud-line/30 rounded hover:border-hud-line/60 cursor-pointer transition-colors"
+                        className="hud-list-card hud-list-card--research w-full cursor-pointer p-3 transition-colors"
                       >
                         <div className="flex justify-between items-center mb-1">
                           <span className="hud-value-sm">{symbol}</span>

@@ -9,8 +9,11 @@ export interface Position {
   symbol: string
   qty: number
   side: string
+  avg_entry_price?: number
+  cost_basis?: number
   market_value: number
   unrealized_pl: number
+  unrealized_plpc?: number
   current_price: number
 }
 
@@ -64,6 +67,8 @@ export interface Config {
   take_profit_pct: number
   stop_loss_pct: number
   position_size_pct_of_cash: number
+  equity_entry_cutoff_minutes_before_close?: number
+  after_hours_exit_limit_buffer_pct?: number
   entry_timing_enabled?: boolean
   entry_rsi_min?: number
   entry_rsi_max?: number
@@ -78,6 +83,12 @@ export interface Config {
   llm_analyst_model?: string
   openai_base_url?: string
   starting_equity?: number
+  llm_min_hold_minutes?: number
+  llm_force_sell_pnl_pct?: number
+  llm_force_sell_min_confidence?: number
+  llm_size_conviction_scaling?: boolean
+  llm_size_low_confidence_multiplier?: number
+  llm_size_medium_confidence_multiplier?: number
 
   // Stale position management
   stale_position_enabled?: boolean

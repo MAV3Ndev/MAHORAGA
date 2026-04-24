@@ -317,6 +317,79 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                   </div>
                 </div>
               </div>
+
+              <div>
+                <h3 className="hud-label mb-3 text-hud-primary">Analyst Position Sizing</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="hud-input w-4 h-4"
+                        checked={localConfig.llm_size_conviction_scaling ?? true}
+                        onChange={e => handleChange('llm_size_conviction_scaling', e.target.checked)}
+                      />
+                      <span className="hud-label">Enable Conviction-Based Sizing</span>
+                    </label>
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      analyst BUY の confidence が低いほど、同じ上限設定でも実際の発注額を小さくします。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Low Confidence Multiplier</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.1"
+                      max="1"
+                      className="hud-input w-full"
+                      value={localConfig.llm_size_low_confidence_multiplier ?? 0.4}
+                      onChange={e => handleChange('llm_size_low_confidence_multiplier', Number(e.target.value))}
+                      disabled={!(localConfig.llm_size_conviction_scaling ?? true)}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      confidence 0.65 未満の BUY に適用します。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Medium Confidence Multiplier</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.1"
+                      max="1"
+                      className="hud-input w-full"
+                      value={localConfig.llm_size_medium_confidence_multiplier ?? 0.7}
+                      onChange={e => handleChange('llm_size_medium_confidence_multiplier', Number(e.target.value))}
+                      disabled={!(localConfig.llm_size_conviction_scaling ?? true)}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      confidence 0.65 以上 0.75 未満の BUY に適用します。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="hud-label mb-3 text-hud-primary">Close Window Guard</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="hud-label block mb-1">Entry Cutoff Before Close (min)</label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      max="120"
+                      className="hud-input w-full"
+                      value={localConfig.equity_entry_cutoff_minutes_before_close ?? 15}
+                      onChange={e => handleChange('equity_entry_cutoff_minutes_before_close', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      この分数以内に入った株の新規エントリーを止めます。引け間際の持ち越し事故を減らす用です。
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -342,6 +415,69 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                       value={localConfig.stop_loss_pct}
                       onChange={e => handleChange('stop_loss_pct', Number(e.target.value))}
                     />
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">After-Hours Exit Limit Buffer (%)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="5"
+                      className="hud-input w-full"
+                      value={localConfig.after_hours_exit_limit_buffer_pct ?? 0.25}
+                      onChange={e => handleChange('after_hours_exit_limit_buffer_pct', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      時間外に exit するとき、bid や直近価格からこの分だけ下げた limit で出します。大きいほど約定優先です。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="hud-label mb-3 text-hud-primary">LLM Exit Guard</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="hud-label block mb-1">LLM Min Hold (min)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="hud-input w-full"
+                      value={localConfig.llm_min_hold_minutes ?? 15}
+                      onChange={e => handleChange('llm_min_hold_minutes', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      通常の LLM SELL を抑制する最低保有時間です。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Force Sell Loss Threshold (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      className="hud-input w-full"
+                      value={localConfig.llm_force_sell_pnl_pct ?? 2}
+                      onChange={e => handleChange('llm_force_sell_pnl_pct', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      この損失幅を超えると、min hold 中でも強制 SELL を許可します。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Force Sell Min Confidence</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      className="hud-input w-full"
+                      value={localConfig.llm_force_sell_min_confidence ?? 0.65}
+                      onChange={e => handleChange('llm_force_sell_min_confidence', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      強制 SELL を許可する最低 confidence です。
+                    </p>
                   </div>
                 </div>
               </div>

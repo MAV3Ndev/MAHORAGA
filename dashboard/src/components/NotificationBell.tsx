@@ -52,7 +52,7 @@ export function NotificationBell({ overnightActivity, premarketPlan, compact = f
       <button
         onClick={() => setIsOpen(!isOpen)}
         className={clsx(
-          'relative flex items-center justify-center border border-hud-line/40 bg-hud-bg/45 transition-colors',
+          'hud-notification-trigger relative flex items-center justify-center border border-hud-line/40 bg-hud-bg/45 transition-colors',
           compact ? 'h-8 w-8 rounded-md p-1.5' : 'min-h-[48px] min-w-[48px] rounded-xl p-3',
           isOpen ? 'text-hud-primary' : 'text-hud-text-dim hover:text-hud-text'
         )}
@@ -91,7 +91,7 @@ export function NotificationBell({ overnightActivity, premarketPlan, compact = f
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-2 w-72 hud-panel z-50"
+            className="hud-notification-popover absolute right-0 top-full mt-2 w-72 hud-panel z-50"
           >
             <div className="px-3 py-2 border-b border-hud-line flex justify-between items-center">
               <span className="hud-label">OVERNIGHT ACTIVITY</span>

@@ -22,25 +22,25 @@ export function StatusIndicator({
   className,
 }: StatusIndicatorProps) {
   return (
-    <div className={clsx('flex items-center gap-2', className)}>
-      <div className="relative">
+    <div className={clsx('hud-status-indicator flex items-center gap-2', className)}>
+      <div className="hud-status-indicator__dot-wrap relative">
         <div
           className={clsx(
-            'w-2 h-2 rounded-full',
+            'hud-status-indicator__dot w-2 h-2 rounded-full',
             statusColors[status]
           )}
         />
         {pulse && status === 'active' && (
           <div
             className={clsx(
-              'absolute inset-0 w-2 h-2 rounded-full animate-ping',
+              'absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full animate-ping',
               statusColors[status],
               'opacity-75'
             )}
           />
         )}
       </div>
-      {label && <span className="hud-label">{label}</span>}
+      {label && <span className="hud-label hud-status-indicator__label">{label}</span>}
     </div>
   )
 }
@@ -60,9 +60,9 @@ export function StatusBar({
   className,
 }: StatusBarProps) {
   return (
-    <div className={clsx('flex flex-wrap items-center gap-3 sm:gap-6', className)}>
+    <div className={clsx('hud-statusbar flex flex-wrap items-center gap-3 sm:gap-6', className)}>
       {items.map((item, i) => (
-        <div key={i} className={clsx('hud-statusbar-item', item.multiline && 'hud-statusbar-item-multiline')}>
+        <div key={i} className={clsx('hud-statusbar-item hud-statusbar-chip', item.multiline && 'hud-statusbar-item-multiline')}>
           {item.status && (
             <div
               className={clsx('hud-statusbar-dot', statusColors[item.status], item.multiline && 'hud-statusbar-dot-multiline')}

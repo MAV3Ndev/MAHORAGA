@@ -6,6 +6,8 @@ const PANEL_WIDTH = 1660;
 const PANEL_HEIGHT = 980;
 const APP_USER_MODEL_ID = "jp.mahoraga.panel";
 const RESUME_RELOAD_DELAY_MS = 1200;
+const APP_TITLE = "MAHORAGA SENTINEL";
+const APP_ICON_PATH = path.join(__dirname, "..", "public", "icons", "app-icon.png");
 
 let mainWindow = null;
 
@@ -113,7 +115,8 @@ function createMainWindow() {
     minWidth: 1240,
     minHeight: 820,
     backgroundColor: "#04070a",
-    title: "MAHORAGA PANEL",
+    title: APP_TITLE,
+    icon: APP_ICON_PATH,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -206,7 +209,7 @@ app.whenReady().then(() => {
     }
 
     const notification = new Notification({
-      title: String(payload?.title || "MAHORAGA"),
+      title: String(payload?.title || APP_TITLE),
       body: String(payload?.body || ""),
       silent: false,
     });
