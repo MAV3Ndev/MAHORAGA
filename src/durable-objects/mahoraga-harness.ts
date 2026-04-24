@@ -12,13 +12,18 @@
 import { DurableObject } from "cloudflare:workers";
 import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy-broker";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
+import {
+  buildSocialSnapshot,
+  getSocialSnapshotCache,
+  serializeSocialSnapshot,
+  updateSocialHistoryFromSnapshot,
+} from "../core/social-snapshot";
 import type {
   AgentState,
   LogEntry,
   PositionEntry,
   ResearchResult,
   Signal,
-  SocialHistoryEntry,
   SocialSnapshotCacheEntry,
 } from "../core/types";
 import type { Env } from "../env.d";
@@ -501,16 +506,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     const recentSignals = allSignals.filter((s) => now - s.timestamp < MAX_AGE_MS);
     const eligibleSignals = await this.filterEligibleSignals(ctx, recentSignals);
 
-    const socialSnapshot = this.buildSocialSnapshot(eligibleSignals);
-    this.updateSocialHistoryFromSnapshot(socialSnapshot, now);
-    this.state.socialSnapshotCache = {};
-    for (const [symbol, s] of socialSnapshot) {
-      this.state.socialSnapshotCache[symbol] = {
-        volume: s.volume,
-        sentiment: s.sentiment,
-        sources: Array.from(s.sources),
-      };
-    }
+    const socialSnapshot = buildSocialSnapshot(eligibleSignals);
+    updateSocialHistoryFromSnapshot(this.state.socialHistory, socialSnapshot, now);
+    this.state.socialSnapshotCache = serializeSocialSnapshot(socialSnapshot);
     this.state.socialSnapshotCacheUpdatedAt = now;
 
     const freshSignals = eligibleSignals
@@ -596,101 +594,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     return filtered;
-  }
-
-  private buildSocialSnapshot(
-    signals: Signal[]
-  ): Map<string, { volume: number; sentiment: number; sources: Set<string> }> {
-    const aggregated = new Map<string, { volume: number; sentimentNumerator: number; sources: Set<string> }>();
-
-    for (const sig of signals) {
-      if (!sig.symbol) continue;
-      const volume = Number.isFinite(sig.volume) && sig.volume > 0 ? sig.volume : 1;
-
-      let entry = aggregated.get(sig.symbol);
-      if (!entry) {
-        entry = { volume: 0, sentimentNumerator: 0, sources: new Set() };
-        aggregated.set(sig.symbol, entry);
-      }
-      entry.volume += volume;
-      entry.sentimentNumerator += (Number.isFinite(sig.sentiment) ? sig.sentiment : 0) * volume;
-      entry.sources.add(sig.source_detail || sig.source);
-    }
-
-    const out = new Map<string, { volume: number; sentiment: number; sources: Set<string> }>();
-    for (const [symbol, entry] of aggregated) {
-      out.set(symbol, {
-        volume: entry.volume,
-        sentiment: entry.volume > 0 ? entry.sentimentNumerator / entry.volume : 0,
-        sources: entry.sources,
-      });
-    }
-    return out;
-  }
-
-  private pruneSocialHistoryInPlace(history: SocialHistoryEntry[], cutoffMs: number): void {
-    if (history.length === 0) return;
-    const pruned = history.filter((entry) => entry.timestamp >= cutoffMs);
-    pruned.sort((a, b) => a.timestamp - b.timestamp);
-    history.splice(0, history.length, ...pruned);
-  }
-
-  private updateSocialHistoryFromSnapshot(
-    snapshot: Map<string, { volume: number; sentiment: number; sources: Set<string> }>,
-    nowMs: number
-  ): void {
-    const SOCIAL_HISTORY_BUCKET_MS = 5 * 60 * 1000;
-    const SOCIAL_HISTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-    const cutoff = nowMs - SOCIAL_HISTORY_MAX_AGE_MS;
-
-    const touchedSymbols = new Set<string>();
-    for (const [symbol, s] of snapshot) {
-      touchedSymbols.add(symbol);
-      const history = this.state.socialHistory[symbol] ?? [];
-      if (history.length > 1) history.sort((a, b) => a.timestamp - b.timestamp);
-      const last = history[history.length - 1];
-
-      if (last && nowMs - last.timestamp < SOCIAL_HISTORY_BUCKET_MS) {
-        last.timestamp = nowMs;
-        last.volume = s.volume;
-        last.sentiment = s.sentiment;
-      } else {
-        history.push({ timestamp: nowMs, volume: s.volume, sentiment: s.sentiment });
-      }
-
-      this.pruneSocialHistoryInPlace(history, cutoff);
-      if (history.length === 0) {
-        delete this.state.socialHistory[symbol];
-      } else {
-        this.state.socialHistory[symbol] = history;
-      }
-    }
-
-    for (const symbol of Object.keys(this.state.socialHistory)) {
-      if (touchedSymbols.has(symbol)) continue;
-      const history = this.state.socialHistory[symbol];
-      if (!history || history.length === 0) {
-        delete this.state.socialHistory[symbol];
-        continue;
-      }
-      this.pruneSocialHistoryInPlace(history, cutoff);
-      if (history.length === 0) {
-        delete this.state.socialHistory[symbol];
-      }
-    }
-  }
-
-  private getSocialSnapshotCache(): Record<string, SocialSnapshotCacheEntry> {
-    if (this.state.socialSnapshotCacheUpdatedAt > 0) {
-      return this.state.socialSnapshotCache;
-    }
-
-    const fallback = this.buildSocialSnapshot(this.state.signalCache);
-    const out: Record<string, SocialSnapshotCacheEntry> = {};
-    for (const [symbol, s] of fallback) {
-      out[symbol] = { volume: s.volume, sentiment: s.sentiment, sources: Array.from(s.sources) };
-    }
-    return out;
   }
 
   private applyStateHygiene(): boolean {
@@ -1105,7 +1008,7 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private async syncTrackedPositionEntries(positions: Position[], orders?: Order[]): Promise<void> {
-    const socialSnapshot = this.getSocialSnapshotCache();
+    const socialSnapshot = getSocialSnapshotCache(this.state);
     const alpaca = createAlpacaProviders(this.env);
     const filledOrders =
       orders ||
@@ -1682,7 +1585,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     await this.syncTrackedPositionEntries(positions);
     const heldSymbols = new Set(positions.map((p) => p.symbol));
     const positionsBySymbol = new Map(positions.map((position) => [position.symbol, position]));
-    const socialSnapshot = this.getSocialSnapshotCache();
+    const socialSnapshot = getSocialSnapshotCache(this.state);
 
     // Strategy exit decisions
     const exits = activeStrategy.selectExits(ctx, positions, account);
@@ -1966,7 +1869,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     if (!account) return;
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
-    const socialSnapshot = this.getSocialSnapshotCache();
+    const socialSnapshot = getSocialSnapshotCache(this.state);
 
     this.log("System", "executing_premarket_plan", {
       recommendations: this.state.premarketPlan.recommendations.length,
