@@ -2,34 +2,19 @@ import { getHarnessStub } from "./durable-objects/mahoraga-harness";
 import { checkRateLimit, incrementRequest } from "./durable-objects/session";
 import type { Env } from "./env.d";
 import { handleCronEvent } from "./jobs/cron";
+import { bearerTokenMatches, jsonAuthResponse } from "./lib/auth";
 import { MahoragaMcpAgent } from "./mcp/agent";
 
 export { SessionDO } from "./durable-objects/session";
 export { MahoragaMcpAgent };
 export { MahoragaHarness } from "./durable-objects/mahoraga-harness";
 
-function constantTimeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
-
 function isAuthorized(request: Request, env: Env): boolean {
-  const token = env.MAHORAGA_API_TOKEN;
-  if (!token) return false;
-  const authHeader = request.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) return false;
-  return constantTimeCompare(authHeader.slice(7), token);
+  return bearerTokenMatches(request, env.MAHORAGA_API_TOKEN);
 }
 
 function unauthorizedResponse(): Response {
-  return new Response(JSON.stringify({ error: "Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>" }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
-  });
+  return jsonAuthResponse("Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>", 401);
 }
 
 function buildCorsHeaders(request: Request): Headers {

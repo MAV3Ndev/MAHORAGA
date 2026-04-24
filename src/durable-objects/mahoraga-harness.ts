@@ -31,6 +31,7 @@ import {
   shouldSendDailyReport,
   summarizeDailyActivity,
 } from "../lib/discord-report";
+import { bearerTokenMatches, jsonAuthResponse } from "../lib/auth";
 import { parseLlmJsonObject } from "../lib/llm-json";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
@@ -2017,39 +2018,19 @@ export class MahoragaHarness extends DurableObject<Env> {
   // HTTP HANDLER
   // ============================================================================
 
-  private constantTimeCompare(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    let mismatch = 0;
-    for (let i = 0; i < a.length; i++) {
-      mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    }
-    return mismatch === 0;
-  }
-
   private isAuthorized(request: Request): boolean {
-    const token = this.env.MAHORAGA_API_TOKEN;
-    if (!token) {
+    if (!this.env.MAHORAGA_API_TOKEN) {
       console.warn("[MahoragaHarness] MAHORAGA_API_TOKEN not set - denying request");
-      return false;
     }
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return false;
-    return this.constantTimeCompare(authHeader.slice(7), token);
+    return bearerTokenMatches(request, this.env.MAHORAGA_API_TOKEN);
   }
 
   private isKillSwitchAuthorized(request: Request): boolean {
-    const secret = this.env.KILL_SWITCH_SECRET;
-    if (!secret) return false;
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return false;
-    return this.constantTimeCompare(authHeader.slice(7), secret);
+    return bearerTokenMatches(request, this.env.KILL_SWITCH_SECRET);
   }
 
   private unauthorizedResponse(): Response {
-    return new Response(
-      JSON.stringify({ error: "Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>" }),
-      { status: 401, headers: { "Content-Type": "application/json" } }
-    );
+    return jsonAuthResponse("Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>", 401);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -2101,10 +2082,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
         case "kill":
           if (!this.isKillSwitchAuthorized(request)) {
-            return new Response(
-              JSON.stringify({ error: "Forbidden. Requires: Authorization: Bearer <KILL_SWITCH_SECRET>" }),
-              { status: 403, headers: { "Content-Type": "application/json" } }
-            );
+            return jsonAuthResponse("Forbidden. Requires: Authorization: Bearer <KILL_SWITCH_SECRET>", 403);
           }
           return this.handleKillSwitch();
         default:
