@@ -168,6 +168,8 @@ export const activeStrategy = myStrategy;
 
 You can reuse default gatherers, mix in custom ones, override prompts, and define your own entry/exit rules — all without touching core files.
 
+For the current responsibility boundaries, lifecycle hooks, optional capabilities, and extension rules, see `docs/strategy-architecture.md`.
+
 ### Adding a new data source
 
 Create a gatherer that returns `Signal[]`:
