@@ -19,7 +19,7 @@ import {
   normalizePortfolioHistoryTimeframe,
 } from "../core/position-history";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
-import { filterRecordBySymbols, limitTimestampedRecord } from "../core/record-utils";
+import { buildAgentStatusPayload } from "../core/status-payload";
 import {
   buildSocialSnapshot,
   getSocialSnapshotCache,
@@ -2011,38 +2011,19 @@ export class MahoragaHarness extends DurableObject<Env> {
       // Ignore - will return null
     }
 
-    const activePositionSymbols = new Set((positions || []).map((position) => position.symbol));
-    const recentSignalResearch = limitTimestampedRecord(
-      this.state.signalResearch,
-      this.MAX_STATUS_SIGNAL_RESEARCH_ENTRIES
-    );
-    const recentTwitterConfirmations = limitTimestampedRecord(
-      this.state.twitterConfirmations,
-      this.MAX_STATUS_TWITTER_CONFIRMATIONS
-    );
-
     return this.jsonResponse({
       ok: true,
-      data: {
-        enabled: this.state.enabled,
-        strategy: activeStrategy.name,
+      data: buildAgentStatusPayload({
+        state: this.state,
+        strategyName: activeStrategy.name,
         account,
         positions,
         clock,
         config: this.getDashboardConfig(),
-        signals: this.state.signalCache,
-        logs: this.state.logs.slice(-100),
-        costs: this.state.costTracker,
-        lastAnalystRun: this.state.lastAnalystRun,
-        lastResearchRun: this.state.lastResearchRun,
-        lastPositionResearchRun: this.state.lastPositionResearchRun,
-        signalResearch: recentSignalResearch,
-        positionResearch: this.state.positionResearch,
-        positionEntries: filterRecordBySymbols(this.state.positionEntries, activePositionSymbols),
-        twitterConfirmations: recentTwitterConfirmations,
-        premarketPlan: this.state.premarketPlan,
-        stalenessAnalysis: filterRecordBySymbols(this.state.stalenessAnalysis, activePositionSymbols),
-      },
+        maxLogs: 100,
+        maxSignalResearchEntries: this.MAX_STATUS_SIGNAL_RESEARCH_ENTRIES,
+        maxTwitterConfirmations: this.MAX_STATUS_TWITTER_CONFIRMATIONS,
+      }),
     });
   }
 
