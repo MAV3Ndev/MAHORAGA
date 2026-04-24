@@ -23,6 +23,7 @@ import {
 } from "../core/position-history";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
 import { buildAgentStatusPayload } from "../core/status-payload";
+import { isRateLimitError, isUnknownModelError, ResearchService } from "../core/research-service";
 import {
   buildSocialSnapshot,
   getSocialSnapshotCache,
@@ -48,7 +49,6 @@ import {
   summarizeDailyActivity,
 } from "../lib/discord-report";
 import { bearerTokenMatches, jsonAuthResponse } from "../lib/auth";
-import { parseLlmJsonObject } from "../lib/llm-json";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
@@ -254,6 +254,15 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   get llm(): LLMProvider | null {
     return this._llm;
+  }
+
+  private createResearchService(): ResearchService {
+    return new ResearchService({
+      getLlm: () => this._llm,
+      getConfig: () => this.state.config,
+      log: (agent, action, details) => this.log(agent, action, details),
+      trackLLMCost: (model, tokensIn, tokensOut) => this.trackLLMCost(model, tokensIn, tokensOut),
+    });
   }
 
   // ============================================================================
@@ -994,59 +1003,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     };
   }
 
-  private isUnknownModelError(error: unknown): boolean {
-    const message = String(error).toLowerCase();
-    return message.includes("unknown model") || message.includes("\"1211\"") || message.includes("code\":\"1211");
-  }
-
-  private isRateLimitError(error: unknown): boolean {
-    const message = String(error).toLowerCase();
-    return (
-      message.includes("429") ||
-      message.includes("rate_limit") ||
-      message.includes("temporarily overloaded") ||
-      message.includes("try again later")
-    );
-  }
-
-  private async completeWithFallback(
-    request: Parameters<LLMProvider["complete"]>[0],
-    preferredModel: string,
-    fallbackModel: string | undefined,
-    logAgent: string
-  ) {
-    if (!this._llm) {
-      throw new Error("LLM provider not initialized");
-    }
-
-    try {
-      const response = await this._llm.complete({
-        ...request,
-        model: preferredModel,
-      });
-      return { response, model: preferredModel };
-    } catch (error) {
-      const shouldRetryWithFallback =
-        !!fallbackModel && fallbackModel !== preferredModel && this.isUnknownModelError(error);
-
-      if (!shouldRetryWithFallback) {
-        throw error;
-      }
-
-      this.log(logAgent, "model_fallback", {
-        preferred_model: preferredModel,
-        fallback_model: fallbackModel,
-        reason: "unknown_model",
-      });
-
-      const response = await this._llm.complete({
-        ...request,
-        model: fallbackModel,
-      });
-      return { response, model: fallbackModel };
-    }
-  }
-
   private async syncTrackedPositionEntries(positions: Position[], orders?: Order[]): Promise<void> {
     const socialSnapshot = getSocialSnapshotCache(this.state);
     const alpaca = createAlpacaProviders(this.env);
@@ -1432,24 +1388,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const prompt = activeStrategy.prompts.researchSignal(symbol, sentiment, sources, price, ctx);
-      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
-      const fallbackModel = this.state.config.llm_model;
-      const { response, model } = await this.completeWithFallback({
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        max_tokens: prompt.maxTokens || 250,
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-      }, preferredModel, fallbackModel, "SignalResearch");
-
-      if (response.usage) {
-        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-      }
-
-      const content = response.content || "{}";
-      const analysis = parseLlmJsonObject<{
+      const { analysis } = await this.createResearchService().completePromptJson<{
         verdict: "BUY" | "SKIP" | "WAIT";
         confidence: number;
         entry_quality: "excellent" | "good" | "fair" | "poor";
@@ -1459,7 +1398,12 @@ export class MahoragaHarness extends DurableObject<Env> {
         recommended_entry_zone?: string;
         stop_loss_pct?: number;
         take_profit_pct?: number;
-      }>(content);
+      }>({
+        prompt,
+        logAgent: "SignalResearch",
+        defaultMaxTokens: 250,
+        temperature: 0.3,
+      });
 
       const result: ResearchResult = {
         symbol,
@@ -1486,8 +1430,8 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       return result;
     } catch (error) {
-      if (this.isRateLimitError(error) || this.isUnknownModelError(error)) {
-        this.setSignalResearchCooldown(symbol, this.isUnknownModelError(error) ? "unknown_model" : "rate_limit");
+      if (isRateLimitError(error) || isUnknownModelError(error)) {
+        this.setSignalResearchCooldown(symbol, isUnknownModelError(error) ? "unknown_model" : "rate_limit");
       }
       this.log("SignalResearch", "error", { symbol, message: String(error) });
       return null;
@@ -1501,30 +1445,18 @@ export class MahoragaHarness extends DurableObject<Env> {
     const prompt = activeStrategy.prompts.researchPosition(position.symbol, position, plPct, ctx);
 
     try {
-      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
-      const fallbackModel = this.state.config.llm_model;
-      const { response, model } = await this.completeWithFallback({
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        max_tokens: prompt.maxTokens || 200,
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-      }, preferredModel, fallbackModel, "PositionResearch");
-
-      if (response.usage) {
-        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-      }
-
-      const content = response.content || "{}";
-      const analysis = parseLlmJsonObject<{
+      const { analysis } = await this.createResearchService().completePromptJson<{
         recommendation?: "HOLD" | "SELL" | "ADD";
         risk_level?: "low" | "medium" | "high";
         reasoning?: string;
         key_factors?: string[];
         exit_strategy?: string;
-      }>(content);
+      }>({
+        prompt,
+        logAgent: "PositionResearch",
+        defaultMaxTokens: 200,
+        temperature: 0.3,
+      });
       this.state.positionResearch[position.symbol] = { ...analysis, timestamp: Date.now() };
       this.log("PositionResearch", "position_analyzed", {
         symbol: position.symbol,
@@ -1562,24 +1494,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     const prompt = activeStrategy.prompts.analyzeSignals(signals, positions, account, ctx);
 
     try {
-      const preferredModel = prompt.model || this.state.config.llm_analyst_model || this.state.config.llm_model;
-      const fallbackModel = this.state.config.llm_model;
-      const { response, model } = await this.completeWithFallback({
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        max_tokens: prompt.maxTokens || 800,
-        temperature: 0.4,
-        response_format: { type: "json_object" },
-      }, preferredModel, fallbackModel, "Analyst");
-
-      if (response.usage) {
-        this.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-      }
-
-      const content = response.content || "{}";
-      const analysis = parseLlmJsonObject<{
+      const { analysis } = await this.createResearchService().completePromptJson<{
         recommendations: Array<{
           action: "BUY" | "SELL" | "HOLD";
           symbol: string;
@@ -1589,7 +1504,12 @@ export class MahoragaHarness extends DurableObject<Env> {
         }>;
         market_summary: string;
         high_conviction_plays?: string[];
-      }>(content);
+      }>({
+        prompt,
+        logAgent: "Analyst",
+        defaultMaxTokens: 800,
+        temperature: 0.4,
+      });
 
       this.log("Analyst", "analysis_complete", {
         recommendations: analysis.recommendations?.length || 0,
