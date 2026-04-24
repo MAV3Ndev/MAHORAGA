@@ -11,6 +11,15 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
+import {
+  buildMarketSessionState,
+  POSITION_RESEARCH_INTERVAL_MS,
+  SIGNAL_RESEARCH_INTERVAL_MS,
+  shouldClearPremarketPlan,
+  shouldCreatePremarketPlan,
+  shouldExecutePremarketPlan,
+  shouldRunInterval,
+} from "../core/market-session";
 import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy-broker";
 import {
   buildPortfolioHistoryParams,
@@ -363,8 +372,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.applyStateHygiene();
 
     const now = Date.now();
-    const RESEARCH_INTERVAL_MS = 120_000;
-    const POSITION_RESEARCH_INTERVAL_MS = 300_000;
     const premarketPlanWindowMinutes = Math.max(1, this.state.config.premarket_plan_window_minutes ?? 5);
     const marketOpenExecuteWindowMinutes = Math.max(0, this.state.config.market_open_execute_window_minutes ?? 2);
 
@@ -372,28 +379,31 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     try {
       const clock = await ctx.broker.getClock();
-      const clockNowMs = Number.isFinite(new Date(clock.timestamp).getTime())
-        ? new Date(clock.timestamp).getTime()
-        : now;
+      const session = buildMarketSessionState({
+        clock,
+        nowMs: now,
+        lastKnownNextOpenMs: this.state.lastKnownNextOpenMs,
+        lastClockIsOpen: this.state.lastClockIsOpen,
+        marketOpenExecuteWindowMinutes,
+      });
+      const clockNowMs = session.clockNowMs;
       const etDay = this.getEtDayString(clockNowMs);
-      const nextOpenMs = new Date(clock.next_open).getTime();
-      const nextOpenValid = Number.isFinite(nextOpenMs);
 
-      if (!clock.is_open && nextOpenValid) {
-        this.state.lastKnownNextOpenMs = nextOpenMs;
+      if (!clock.is_open && session.nextOpenValid) {
+        this.state.lastKnownNextOpenMs = session.nextOpenMs;
       }
 
       await activeStrategy.hooks?.onCycleStart?.(ctx, clock);
 
       // Data gathering
-      if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
+      if (shouldRunInterval(now, this.state.lastDataGatherRun, this.state.config.data_poll_interval_ms)) {
         console.log("[Alarm] Starting data gatherers");
         await this.runDataGatherers(ctx);
         console.log("[Alarm] Data gatherers complete");
       }
 
       // Signal research
-      if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
+      if (shouldRunInterval(now, this.state.lastResearchRun, SIGNAL_RESEARCH_INTERVAL_MS)) {
         console.log("[Alarm] Starting signal research");
         await this.researchTopSignals(ctx, this.state.config.signal_research_limit ?? 5);
         console.log("[Alarm] Signal research complete");
@@ -402,9 +412,11 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Clear stale premarket plan from a previous day
       if (
-        this.state.premarketPlan &&
-        this.state.lastPremarketPlanDayEt &&
-        this.state.lastPremarketPlanDayEt !== etDay
+        shouldClearPremarketPlan({
+          hasPremarketPlan: !!this.state.premarketPlan,
+          lastPremarketPlanDayEt: this.state.lastPremarketPlanDayEt,
+          currentEtDay: etDay,
+        })
       ) {
         this.log("System", "clearing_stale_premarket_plan", {
           stale_day: this.state.lastPremarketPlanDayEt,
@@ -416,19 +428,22 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Pre-market planning window
       console.log("[Alarm] Checking premarket plan", { isOpen: clock.is_open, hasPlan: !!this.state.premarketPlan });
-      if (!clock.is_open && !this.state.premarketPlan) {
-        const minutesToOpen = nextOpenValid ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
-        const shouldPlan =
-          minutesToOpen > 0 &&
-          minutesToOpen <= premarketPlanWindowMinutes &&
-          this.state.lastPremarketPlanDayEt !== etDay;
-        console.log("[Alarm] Premarket check", { minutesToOpen, shouldPlan });
+      if (
+        shouldCreatePremarketPlan({
+          clock,
+          session,
+          hasPremarketPlan: !!this.state.premarketPlan,
+          premarketPlanWindowMinutes,
+          lastPremarketPlanDayEt: this.state.lastPremarketPlanDayEt,
+          currentEtDay: etDay,
+        })
+      ) {
+        const minutesToOpen = (session.nextOpenMs - clockNowMs) / 60_000;
+        console.log("[Alarm] Premarket check", { minutesToOpen, shouldPlan: true });
 
-        if (shouldPlan) {
-          console.log("[Alarm] Running premarket analysis");
-          await this.runPreMarketAnalysis(ctx);
-          if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
-        }
+        console.log("[Alarm] Running premarket analysis");
+        await this.runPreMarketAnalysis(ctx);
+        if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
       }
 
       // Positions snapshot
@@ -466,18 +481,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Market-hours logic
       if (clock.is_open) {
-        const lastKnownOpenMs = this.state.lastKnownNextOpenMs;
-        const hasOpenMs = typeof lastKnownOpenMs === "number" && Number.isFinite(lastKnownOpenMs);
-        const openWindowMs = marketOpenExecuteWindowMinutes * 60_000;
-        const withinOpenWindow =
-          hasOpenMs && clockNowMs >= lastKnownOpenMs && clockNowMs - lastKnownOpenMs <= openWindowMs;
-        const clockStateUnknown = this.state.lastClockIsOpen == null;
-        const marketJustOpened = this.state.lastClockIsOpen === false && clock.is_open;
-
-        const shouldExecutePremarketPlan =
-          !!this.state.premarketPlan &&
-          ((hasOpenMs && withinOpenWindow) || marketJustOpened || (!hasOpenMs && clockStateUnknown));
-        if (shouldExecutePremarketPlan) {
+        if (shouldExecutePremarketPlan({ hasPremarketPlan: !!this.state.premarketPlan, session })) {
           await this.executePremarketPlan(ctx);
         }
 
