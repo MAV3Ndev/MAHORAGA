@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPortfolioHistoryParams,
+  buildPortfolioHistoryPayload,
   getPeriodStartMs,
   getPositionHistoryLimit,
   getPositionHistoryTimeframeCandidates,
@@ -8,6 +10,61 @@ import {
 } from "./position-history";
 
 describe("position history helpers", () => {
+  it("builds portfolio history params from URL search params", () => {
+    const params = buildPortfolioHistoryParams(
+      new URLSearchParams({
+        period: "30D",
+        timeframe: "1Hour",
+        intraday_reporting: "market_hours",
+      })
+    );
+
+    expect(params).toEqual({
+      period: "30D",
+      timeframe: "1D",
+      intraday_reporting: "market_hours",
+    });
+  });
+
+  it("falls back to extended hours for invalid intraday reporting", () => {
+    const params = buildPortfolioHistoryParams(new URLSearchParams({ intraday_reporting: "invalid" }));
+
+    expect(params.intraday_reporting).toBe("extended_hours");
+  });
+
+  it("builds portfolio history response payloads", () => {
+    expect(
+      buildPortfolioHistoryPayload({
+        timestamp: [1_700_000_000, 1_700_000_060],
+        equity: [10_000, 10_100],
+        profit_loss: [0, 100],
+        profit_loss_pct: [0, 0.01],
+        base_value: 10_000,
+        timeframe: "1Min",
+      })
+    ).toEqual({
+      snapshots: [
+        { timestamp: 1_700_000_000_000, equity: 10_000, pl: 0, pl_pct: 0 },
+        { timestamp: 1_700_000_060_000, equity: 10_100, pl: 100, pl_pct: 0.01 },
+      ],
+      base_value: 10_000,
+      timeframe: "1Min",
+    });
+  });
+
+  it("skips incomplete portfolio history rows", () => {
+    expect(
+      buildPortfolioHistoryPayload({
+        timestamp: [1_700_000_000, 1_700_000_060],
+        equity: [10_000],
+        profit_loss: [0, 100],
+        profit_loss_pct: [0, 0.01],
+        base_value: 10_000,
+        timeframe: "1Min",
+      }).snapshots
+    ).toEqual([{ timestamp: 1_700_000_000_000, equity: 10_000, pl: 0, pl_pct: 0 }]);
+  });
+
   it("normalizes hourly history to daily for 30 day windows", () => {
     expect(normalizePortfolioHistoryTimeframe("30D", "1Hour")).toBe("1D");
     expect(normalizePortfolioHistoryTimeframe("30D", "1H")).toBe("1D");

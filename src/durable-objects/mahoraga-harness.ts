@@ -13,11 +13,12 @@ import { DurableObject } from "cloudflare:workers";
 import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
 import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy-broker";
 import {
+  buildPortfolioHistoryParams,
+  buildPortfolioHistoryPayload,
   getPeriodStartMs,
   getPositionHistoryLimit,
   getPositionHistoryTimeframeCandidates,
   getPositionHistoryTimeframeMs,
-  normalizePortfolioHistoryTimeframe,
 } from "../core/position-history";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
 import { buildAgentStatusPayload } from "../core/status-payload";
@@ -2074,32 +2075,14 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   private async handleGetHistory(url: URL): Promise<Response> {
     const alpaca = createAlpacaProviders(this.env);
-    const period = url.searchParams.get("period") || "1M";
-    const requestedTimeframe = url.searchParams.get("timeframe") || "1D";
-    const timeframe = normalizePortfolioHistoryTimeframe(period, requestedTimeframe);
-    const intradayReporting = url.searchParams.get("intraday_reporting") as
-      | "market_hours"
-      | "extended_hours"
-      | "continuous"
-      | null;
+    const historyParams = buildPortfolioHistoryParams(url.searchParams);
 
     try {
-      const history = await alpaca.trading.getPortfolioHistory({
-        period,
-        timeframe,
-        intraday_reporting: intradayReporting || "extended_hours",
-      });
-
-      const snapshots = history.timestamp.map((ts, i) => ({
-        timestamp: ts * 1000,
-        equity: history.equity[i],
-        pl: history.profit_loss[i],
-        pl_pct: history.profit_loss_pct[i],
-      }));
+      const history = await alpaca.trading.getPortfolioHistory(historyParams);
 
       return this.jsonResponse({
         ok: true,
-        data: { snapshots, base_value: history.base_value, timeframe: history.timeframe },
+        data: buildPortfolioHistoryPayload(history),
       });
     } catch (error) {
       this.log("System", "history_error", { error: String(error) });

@@ -1,3 +1,62 @@
+import type { PortfolioHistory, PortfolioHistoryParams } from "../providers/types";
+
+const PORTFOLIO_HISTORY_INTRADAY_REPORTING_VALUES = new Set(["market_hours", "extended_hours", "continuous"]);
+
+export interface PortfolioHistorySnapshot {
+  timestamp: number;
+  equity: number;
+  pl: number;
+  pl_pct: number;
+}
+
+export interface PortfolioHistoryPayload {
+  snapshots: PortfolioHistorySnapshot[];
+  base_value: number;
+  timeframe: string;
+}
+
+export function buildPortfolioHistoryParams(searchParams: URLSearchParams): PortfolioHistoryParams {
+  const period = searchParams.get("period") || "1M";
+  const requestedTimeframe = searchParams.get("timeframe") || "1D";
+  const intradayReporting = searchParams.get("intraday_reporting") || "extended_hours";
+
+  return {
+    period,
+    timeframe: normalizePortfolioHistoryTimeframe(period, requestedTimeframe),
+    intraday_reporting: PORTFOLIO_HISTORY_INTRADAY_REPORTING_VALUES.has(intradayReporting)
+      ? (intradayReporting as NonNullable<PortfolioHistoryParams["intraday_reporting"]>)
+      : "extended_hours",
+  };
+}
+
+export function buildPortfolioHistoryPayload(history: PortfolioHistory): PortfolioHistoryPayload {
+  const snapshots: PortfolioHistorySnapshot[] = [];
+
+  for (let i = 0; i < history.timestamp.length; i += 1) {
+    const ts = history.timestamp[i];
+    const equity = history.equity[i];
+    const pl = history.profit_loss[i];
+    const plPct = history.profit_loss_pct[i];
+
+    if (ts === undefined || equity === undefined || pl === undefined || plPct === undefined) {
+      continue;
+    }
+
+    snapshots.push({
+      timestamp: ts * 1000,
+      equity,
+      pl,
+      pl_pct: plPct,
+    });
+  }
+
+  return {
+    snapshots,
+    base_value: history.base_value,
+    timeframe: history.timeframe,
+  };
+}
+
 export function normalizePortfolioHistoryTimeframe(period: string, timeframe: string): string {
   const normalizedPeriod = period.trim().toUpperCase();
   const normalizedTimeframe = timeframe.trim();
