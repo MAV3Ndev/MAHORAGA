@@ -2263,6 +2263,8 @@ export default function App() {
               <>
                 <MetricInline label="MAX POS" value={`$${config.max_position_value}`} />
                 <MetricInline label="MIN SENT" value={`${(config.min_sentiment_score * 100).toFixed(0)}%`} />
+                <MetricInline label="MIN QUAL" value={`${((config.min_signal_quality_score ?? 0.35) * 100).toFixed(0)}%`} />
+                <MetricInline label="RISK/TRADE" value={`${config.risk_per_trade_pct ?? 0.75}%`} />
                 <MetricInline label="TAKE PROFIT" value={`${config.take_profit_pct}%`} />
                 <MetricInline label="STOP LOSS" value={`${config.stop_loss_pct}%`} />
                 <span className="hidden lg:inline text-hud-line">|</span>

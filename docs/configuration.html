@@ -200,9 +200,19 @@
           <td>Auto-sell at this % loss</td>
         </tr>
         <tr>
+          <td><code>risk_per_trade_pct</code></td>
+          <td>0.75</td>
+          <td>Maximum account risk per trade, applied with stop distance and ATR-aware sizing</td>
+        </tr>
+        <tr>
           <td><code>min_sentiment_score</code></td>
           <td>0.3</td>
           <td>Minimum sentiment to consider (0-1)</td>
+        </tr>
+        <tr>
+          <td><code>min_signal_quality_score</code></td>
+          <td>0.35</td>
+          <td>Minimum source quality, freshness, volume, and direction-agreement score before research</td>
         </tr>
         <tr>
           <td><code>min_analyst_confidence</code></td>
@@ -211,8 +221,23 @@
         </tr>
         <tr>
           <td><code>position_size_pct_of_cash</code></td>
-          <td>25</td>
-          <td>Max % of available cash per trade</td>
+          <td>15</td>
+          <td>Max % of available cash per trade before candidate score and risk-budget sizing</td>
+        </tr>
+        <tr>
+          <td><code>entry_require_technical_data</code></td>
+          <td>false</td>
+          <td>Require RSI/SMA/Bollinger data before allowing entry-timing-filtered buys</td>
+        </tr>
+        <tr>
+          <td><code>dynamic_tp_fallback_pct</code></td>
+          <td>12</td>
+          <td>Dynamic take-profit target used when ATR is unavailable</td>
+        </tr>
+        <tr>
+          <td><code>unknown_sector_max_positions</code></td>
+          <td>2</td>
+          <td>Separate concentration cap for symbols whose sector cannot be inferred</td>
         </tr>
       </table>
 

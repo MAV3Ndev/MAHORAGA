@@ -210,8 +210,13 @@ See `docs/harness.html` for the full customization guide.
 | `max_position_value` | 5000 | Maximum $ per position |
 | `take_profit_pct` | 10 | Take profit percentage |
 | `stop_loss_pct` | 5 | Stop loss percentage |
+| `risk_per_trade_pct` | 0.75 | Max account risk per trade, used with stop distance / ATR sizing |
+| `min_signal_quality_score` | 0.35 | Minimum signal quality before research and entry scoring |
 | `min_sentiment_score` | 0.3 | Minimum sentiment to consider |
 | `min_analyst_confidence` | 0.6 | Minimum LLM confidence to trade |
+| `entry_require_technical_data` | false | Require RSI/SMA/BB data before allowing timed entries |
+| `dynamic_tp_fallback_pct` | 12 | Dynamic take-profit target when ATR is unavailable |
+| `unknown_sector_max_positions` | 2 | Separate concentration cap for positions with unknown sector |
 | `options_enabled` | false | Enable options trading |
 | `crypto_enabled` | false | Enable 24/7 crypto trading |
 | `llm_model` | gpt-4o-mini | Research model (cheap, for bulk analysis) |

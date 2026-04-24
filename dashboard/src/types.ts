@@ -66,18 +66,30 @@ export interface Config {
   entry_candidate_limit: number
   take_profit_pct: number
   stop_loss_pct: number
+  risk_per_trade_pct?: number
   position_size_pct_of_cash: number
   equity_entry_cutoff_minutes_before_close?: number
   after_hours_exit_limit_buffer_pct?: number
   entry_timing_enabled?: boolean
+  entry_require_technical_data?: boolean
   entry_rsi_min?: number
   entry_rsi_max?: number
   entry_bb_lower_threshold?: number
+  min_signal_quality_score?: number
+  trailing_stop_enabled?: boolean
+  trailing_stop_pct?: number
+  trailing_stop_activation_pct?: number
+  dynamic_tp_enabled?: boolean
+  tp_atr_multiplier?: number
+  tp_min_pct?: number
+  tp_max_pct?: number
+  dynamic_tp_fallback_pct?: number
   market_regime_enabled?: boolean
   regime_low_threshold?: number
   regime_position_size_reduction?: number
   portfolio_risk_enabled?: boolean
   max_positions_per_sector?: number
+  unknown_sector_max_positions?: number
   llm_provider?: 'openai-raw' | 'ai-sdk' | 'cloudflare-gateway'
   llm_model: string
   llm_analyst_model?: string

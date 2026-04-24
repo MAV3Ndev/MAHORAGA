@@ -196,6 +196,9 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                       value={localConfig.position_size_pct_of_cash}
                       onChange={e => handleChange('position_size_pct_of_cash', Number(e.target.value))}
                     />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      候補スコアとリスク予算を掛ける前の最大キャッシュ配分です。
+                    </p>
                   </div>
                 </div>
               </div>
@@ -257,6 +260,21 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                       onChange={e => handleChange('min_analyst_confidence', Number(e.target.value))}
                     />
                   </div>
+                  <div>
+                    <label className="hud-label block mb-1">Min Signal Quality (0-1)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      className="hud-input w-full"
+                      value={localConfig.min_signal_quality_score ?? 0.35}
+                      onChange={e => handleChange('min_signal_quality_score', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      ソース品質、鮮度、出来高、方向一致度が低いシグナルをLLM調査前に落とします。
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -275,6 +293,21 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                     </label>
                     <p className="text-[9px] text-hud-text-dim mt-1">
                       RSI とボリンジャーバンド下限近接度で、飛びつき買いを抑えるフィルターです。
+                    </p>
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="hud-input w-4 h-4"
+                        checked={localConfig.entry_require_technical_data ?? false}
+                        onChange={e => handleChange('entry_require_technical_data', e.target.checked)}
+                        disabled={!(localConfig.entry_timing_enabled ?? true)}
+                      />
+                      <span className="hud-label">Require Technical Data</span>
+                    </label>
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      ONにすると、RSI/SMA/BBが取れない銘柄の新規エントリーを止めます。
                     </p>
                   </div>
                   <div>
@@ -417,6 +450,21 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                     />
                   </div>
                   <div>
+                    <label className="hud-label block mb-1">Risk Per Trade (%)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.05"
+                      max="5"
+                      className="hud-input w-full"
+                      value={localConfig.risk_per_trade_pct ?? 0.75}
+                      onChange={e => handleChange('risk_per_trade_pct', Number(e.target.value))}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      ATR または stop loss 幅から逆算する1トレードあたりの最大口座リスクです。
+                    </p>
+                  </div>
+                  <div>
                     <label className="hud-label block mb-1">After-Hours Exit Limit Buffer (%)</label>
                     <input
                       type="number"
@@ -430,6 +478,115 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                     <p className="text-[9px] text-hud-text-dim mt-1">
                       時間外に exit するとき、bid や直近価格からこの分だけ下げた limit で出します。大きいほど約定優先です。
                     </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="hud-label mb-3 text-hud-primary">Advanced Exits</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="hud-input w-4 h-4"
+                        checked={localConfig.trailing_stop_enabled ?? true}
+                        onChange={e => handleChange('trailing_stop_enabled', e.target.checked)}
+                      />
+                      <span className="hud-label">Enable Trailing Stop</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Trailing Stop (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="50"
+                      className="hud-input w-full"
+                      value={localConfig.trailing_stop_pct ?? 3.5}
+                      onChange={e => handleChange('trailing_stop_pct', Number(e.target.value))}
+                      disabled={!(localConfig.trailing_stop_enabled ?? true)}
+                    />
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Trailing Activation (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="50"
+                      className="hud-input w-full"
+                      value={localConfig.trailing_stop_activation_pct ?? 5}
+                      onChange={e => handleChange('trailing_stop_activation_pct', Number(e.target.value))}
+                      disabled={!(localConfig.trailing_stop_enabled ?? true)}
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="hud-input w-4 h-4"
+                        checked={localConfig.dynamic_tp_enabled ?? true}
+                        onChange={e => handleChange('dynamic_tp_enabled', e.target.checked)}
+                      />
+                      <span className="hud-label">Enable Dynamic Take Profit</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">ATR Multiplier</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="10"
+                      className="hud-input w-full"
+                      value={localConfig.tp_atr_multiplier ?? 3}
+                      onChange={e => handleChange('tp_atr_multiplier', Number(e.target.value))}
+                      disabled={!(localConfig.dynamic_tp_enabled ?? true)}
+                    />
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">TP Fallback (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="100"
+                      className="hud-input w-full"
+                      value={localConfig.dynamic_tp_fallback_pct ?? 12}
+                      onChange={e => handleChange('dynamic_tp_fallback_pct', Number(e.target.value))}
+                      disabled={!(localConfig.dynamic_tp_enabled ?? true)}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      ATRが無い銘柄で使う動的利確の代替ターゲットです。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">TP Min (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="50"
+                      className="hud-input w-full"
+                      value={localConfig.tp_min_pct ?? 5}
+                      onChange={e => handleChange('tp_min_pct', Number(e.target.value))}
+                      disabled={!(localConfig.dynamic_tp_enabled ?? true)}
+                    />
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">TP Max (%)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="100"
+                      className="hud-input w-full"
+                      value={localConfig.tp_max_pct ?? 25}
+                      onChange={e => handleChange('tp_max_pct', Number(e.target.value))}
+                      disabled={!(localConfig.dynamic_tp_enabled ?? true)}
+                    />
                   </div>
                 </div>
               </div>
@@ -556,6 +713,21 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                       onChange={e => handleChange('max_positions_per_sector', Number(e.target.value))}
                       disabled={!(localConfig.portfolio_risk_enabled ?? true)}
                     />
+                  </div>
+                  <div>
+                    <label className="hud-label block mb-1">Max Unknown-Sector Positions</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="10"
+                      className="hud-input w-full"
+                      value={localConfig.unknown_sector_max_positions ?? 2}
+                      onChange={e => handleChange('unknown_sector_max_positions', Number(e.target.value))}
+                      disabled={!(localConfig.portfolio_risk_enabled ?? true)}
+                    />
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      セクター推定できない銘柄を無制限に増やさないための別枠上限です。
+                    </p>
                   </div>
                 </div>
               </div>
