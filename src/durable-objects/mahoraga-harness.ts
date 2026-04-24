@@ -10,6 +10,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
 import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy-broker";
 import {
   getPeriodStartMs,
@@ -2028,34 +2029,12 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private async handleUpdateConfig(request: Request): Promise<Response> {
-    const body = (await request.json()) as Partial<AgentConfig>;
-    const normalizedBody = {
-      ...body,
-      llm_provider:
-        (body.llm_provider as string | undefined) === "openai-compatible" ? "openai-raw" : body.llm_provider,
-      openai_base_url: typeof body.openai_base_url === "string" ? body.openai_base_url.trim() : body.openai_base_url,
-      discord_daily_report_time:
-        typeof body.discord_daily_report_time === "string"
-          ? body.discord_daily_report_time.trim()
-          : body.discord_daily_report_time,
-      discord_daily_report_timezone:
-        typeof body.discord_daily_report_timezone === "string"
-          ? body.discord_daily_report_timezone.trim()
-          : body.discord_daily_report_timezone,
-    };
-    const merged = { ...this.state.config, ...normalizedBody };
-    const updatedLlmModel = typeof body.llm_model === "string" ? body.llm_model.trim() : null;
-    const analystModelExplicitlySet = Object.prototype.hasOwnProperty.call(body, "llm_analyst_model");
-    const shouldSyncAnalystModel =
-      !!updatedLlmModel &&
-      !analystModelExplicitlySet &&
-      (this.state.config.llm_analyst_model === this.state.config.llm_model ||
-        (!!(merged.openai_base_url?.trim() || this.env.OPENAI_BASE_URL) &&
-          ["gpt-4o", "gpt-4o-mini"].includes(this.state.config.llm_analyst_model)));
-
-    if (shouldSyncAnalystModel) {
-      merged.llm_analyst_model = updatedLlmModel;
-    }
+    const body = (await request.json()) as AgentConfigUpdate;
+    const merged = buildAgentConfigUpdateCandidate({
+      currentConfig: this.state.config,
+      update: body,
+      envOpenaiBaseUrl: this.env.OPENAI_BASE_URL,
+    });
 
     const validation = safeValidateAgentConfig(merged);
     if (!validation.success) {
