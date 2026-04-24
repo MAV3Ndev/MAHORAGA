@@ -162,6 +162,14 @@ export interface StrategyBreakingNewsItem {
   is_breaking: boolean;
 }
 
+export interface StrategySignalResearchCandidate {
+  symbol: string;
+  sentiment: number;
+  sources: string[];
+  score?: number;
+  quality?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Gatherer — a named data source that produces signals
 // ---------------------------------------------------------------------------
@@ -244,6 +252,11 @@ export interface Strategy {
       equity: number
     ) => Promise<StrategyOptionContract | null>;
     checkBreakingNews?: (ctx: StrategyContext, symbols: string[]) => Promise<StrategyBreakingNewsItem[]>;
+    selectSignalResearchCandidates?: (
+      ctx: StrategyContext,
+      signals: Signal[],
+      limit: number
+    ) => Promise<StrategySignalResearchCandidate[]> | StrategySignalResearchCandidate[];
   };
 
   /** Optional lifecycle hooks */

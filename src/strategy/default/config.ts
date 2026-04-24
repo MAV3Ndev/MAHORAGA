@@ -61,6 +61,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   entry_candidate_limit: 5,
   take_profit_pct: 10,
   stop_loss_pct: 5,
+  risk_per_trade_pct: 0.75,
   position_size_pct_of_cash: 15,
   equity_entry_cutoff_minutes_before_close: 15,
   after_hours_exit_limit_buffer_pct: 0.25,
@@ -113,12 +114,15 @@ export const DEFAULT_CONFIG: AgentConfig = {
   tp_atr_multiplier: 3,
   tp_min_pct: 5,
   tp_max_pct: 25,
+  dynamic_tp_fallback_pct: 12,
 
   // ── Entry Timing Filters ────────────────────────────────────────────────────
   entry_timing_enabled: true,
+  entry_require_technical_data: false,
   entry_rsi_min: 40,
   entry_rsi_max: 55,
   entry_bb_lower_threshold: 0.2,
+  min_signal_quality_score: 0.35,
 
   // ── Composite Scoring ──────────────────────────────────────────────────────
   scoring_enabled: true,
@@ -135,6 +139,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   // ── Portfolio Risk ─────────────────────────────────────────────────────────
   portfolio_risk_enabled: true,
   max_positions_per_sector: 2,
+  unknown_sector_max_positions: 2,
 };
 
 // ── Default agent state ──────────────────────────────────────────────────────

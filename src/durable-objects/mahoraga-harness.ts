@@ -10,10 +10,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import {
-  computeAnalystRecommendationNotional,
-  shouldBypassLlmMinHold,
-} from "../core/analyst-recommendations";
+import { computeAnalystRecommendationNotional, shouldBypassLlmMinHold } from "../core/analyst-recommendations";
 import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
 import { createInitialAgentState } from "../core/initial-state";
 import {
@@ -73,7 +70,7 @@ import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
 import { activeStrategy } from "../strategy";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
-import type { StrategyContext } from "../strategy/types";
+import type { StrategyContext, StrategySignalResearchCandidate } from "../strategy/types";
 
 interface TechnicalDataCacheEntry {
   updated_at: number;
@@ -458,13 +455,15 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       // Position research
-      if (shouldRunPositionResearch(
-        positions,
-        clock.is_open,
-        now,
-        this.state.lastPositionResearchRun,
-        POSITION_RESEARCH_INTERVAL_MS
-      )) {
+      if (
+        shouldRunPositionResearch(
+          positions,
+          clock.is_open,
+          now,
+          this.state.lastPositionResearchRun,
+          POSITION_RESEARCH_INTERVAL_MS
+        )
+      ) {
         const researchCandidates = getPositionResearchCandidates(positions, clock.is_open);
         for (const pos of researchCandidates) {
           await this.callPositionResearch(ctx, pos);
@@ -817,7 +816,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   private getSignalResearchCooldowns(): Record<string, { until: number; reason: string }> {
     const dynamicState = this.state as unknown as Record<string, unknown>;
-    const existing = dynamicState.signalResearchCooldowns as Record<string, { until: number; reason: string }> | undefined;
+    const existing = dynamicState.signalResearchCooldowns as
+      | Record<string, { until: number; reason: string }>
+      | undefined;
     if (existing) return existing;
 
     const created: Record<string, { until: number; reason: string }> = {};
@@ -825,7 +826,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     return created;
   }
 
-  private setSignalResearchCooldown(symbol: string, reason: string, ttlMs = this.SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS): void {
+  private setSignalResearchCooldown(
+    symbol: string,
+    reason: string,
+    ttlMs = this.SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS
+  ): void {
     const cooldowns = this.getSignalResearchCooldowns();
     cooldowns[symbol] = {
       until: Date.now() + ttlMs,
@@ -861,11 +866,18 @@ export class MahoragaHarness extends DurableObject<Env> {
     return false;
   }
 
-  private inferPositionEntryFromOrders(symbol: string, orders: Order[]): Pick<PositionEntry, "entry_time" | "entry_price"> | null {
+  private inferPositionEntryFromOrders(
+    symbol: string,
+    orders: Order[]
+  ): Pick<PositionEntry, "entry_time" | "entry_price"> | null {
     const aliases = new Set(this.getTrackedSymbolAliases(symbol).map((alias) => alias.toUpperCase()));
     const relevantOrders = orders
       .filter((order) => aliases.has(order.symbol.toUpperCase()) && !!order.filled_at)
-      .sort((a, b) => new Date(a.filled_at || a.submitted_at || a.created_at).getTime() - new Date(b.filled_at || b.submitted_at || b.created_at).getTime());
+      .sort(
+        (a, b) =>
+          new Date(a.filled_at || a.submitted_at || a.created_at).getTime() -
+          new Date(b.filled_at || b.submitted_at || b.created_at).getTime()
+      );
 
     if (relevantOrders.length === 0) return null;
 
@@ -897,7 +909,8 @@ export class MahoragaHarness extends DurableObject<Env> {
       return null;
     }
 
-    const entryTimeSource = currentEntryOrder.filled_at || currentEntryOrder.submitted_at || currentEntryOrder.created_at;
+    const entryTimeSource =
+      currentEntryOrder.filled_at || currentEntryOrder.submitted_at || currentEntryOrder.created_at;
     const entryTime = new Date(entryTimeSource).getTime();
     const entryPrice = Number.parseFloat(currentEntryOrder.filled_avg_price || "0");
 
@@ -919,10 +932,13 @@ export class MahoragaHarness extends DurableObject<Env> {
     return {
       symbol: position.symbol,
       entry_time: inferred?.entry_time ?? Date.now(),
-      entry_price: inferred?.entry_price && inferred.entry_price > 0 ? inferred.entry_price : position.avg_entry_price || 0,
+      entry_price:
+        inferred?.entry_price && inferred.entry_price > 0 ? inferred.entry_price : position.avg_entry_price || 0,
       entry_sentiment: sentiment,
       entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
-      entry_sources: aggregatedSocial ? aggregatedSocial.sources : originalSignal?.subreddits || [originalSignal?.source || "broker-sync"],
+      entry_sources: aggregatedSocial
+        ? aggregatedSocial.sources
+        : originalSignal?.subreddits || [originalSignal?.source || "broker-sync"],
       entry_reason: "Recovered from broker position",
       peak_price: position.current_price,
       peak_sentiment: sentiment,
@@ -955,7 +971,11 @@ export class MahoragaHarness extends DurableObject<Env> {
         entry.entry_time = inferredEntry?.entry_time || entry.entry_time;
       }
 
-      if ((entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) && inferredEntry?.entry_price && inferredEntry.entry_price > 0) {
+      if (
+        (entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) &&
+        inferredEntry?.entry_price &&
+        inferredEntry.entry_price > 0
+      ) {
         entry.entry_price = inferredEntry.entry_price;
       }
 
@@ -1017,15 +1037,30 @@ export class MahoragaHarness extends DurableObject<Env> {
     const normalized = `${symbol} ${assetName ?? ""}`.toLowerCase();
 
     const sectorPatterns: Array<{ sector: string; keywords: string[] }> = [
-      { sector: "index_etf", keywords: [" etf", " trust", " fund", " index", "spdr", "invesco", "ishares", "vanguard"] },
-      { sector: "technology", keywords: ["software", "semiconductor", "cloud", "internet", "systems", "technology", "digital"] },
+      {
+        sector: "index_etf",
+        keywords: [" etf", " trust", " fund", " index", "spdr", "invesco", "ishares", "vanguard"],
+      },
+      {
+        sector: "technology",
+        keywords: ["software", "semiconductor", "cloud", "internet", "systems", "technology", "digital"],
+      },
       { sector: "healthcare", keywords: ["health", "medical", "biotech", "therapeutic", "pharma", "diagnostic"] },
       { sector: "financials", keywords: ["bank", "capital", "financial", "insurance", "payment", "asset management"] },
       { sector: "energy", keywords: ["energy", "oil", "gas", "petroleum", "drilling"] },
-      { sector: "industrials", keywords: ["industrial", "aerospace", "defense", "machinery", "airlines", "railroad", "transport"] },
-      { sector: "consumer_cyclical", keywords: ["retail", "automotive", "restaurant", "apparel", "hotel", "travel", "leisure"] },
+      {
+        sector: "industrials",
+        keywords: ["industrial", "aerospace", "defense", "machinery", "airlines", "railroad", "transport"],
+      },
+      {
+        sector: "consumer_cyclical",
+        keywords: ["retail", "automotive", "restaurant", "apparel", "hotel", "travel", "leisure"],
+      },
       { sector: "consumer_defensive", keywords: ["food", "beverage", "household", "consumer staples", "tobacco"] },
-      { sector: "communication_services", keywords: ["telecom", "media", "entertainment", "streaming", "communications"] },
+      {
+        sector: "communication_services",
+        keywords: ["telecom", "media", "entertainment", "streaming", "communications"],
+      },
       { sector: "utilities", keywords: ["utility", "electric", "water"] },
       { sector: "real_estate", keywords: ["reit", "realty", "properties", "real estate"] },
       { sector: "materials", keywords: ["materials", "chemical", "mining", "steel", "copper", "gold", "silver"] },
@@ -1215,7 +1250,9 @@ export class MahoragaHarness extends DurableObject<Env> {
       entry_price: 0,
       entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
       entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
-      entry_sources: aggregatedSocial ? aggregatedSocial.sources : originalSignal?.subreddits || [originalSignal?.source || sourceLabel],
+      entry_sources: aggregatedSocial
+        ? aggregatedSocial.sources
+        : originalSignal?.subreddits || [originalSignal?.source || sourceLabel],
       entry_reason: reason,
       peak_price: 0,
       peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
@@ -1235,8 +1272,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const allSignals = this.state.signalCache;
     const notHeld = allSignals.filter((s) => !heldSymbols.has(s.symbol));
-    const aboveThreshold = notHeld.filter((s) => s.raw_sentiment >= this.state.config.min_sentiment_score);
-    const candidates = aboveThreshold.sort((a, b) => b.sentiment - a.sentiment).slice(0, limit);
+    const candidates = activeStrategy.capabilities?.selectSignalResearchCandidates
+      ? await activeStrategy.capabilities.selectSignalResearchCandidates(ctx, notHeld, limit)
+      : selectSignalResearchCandidatesFallback(notHeld, this.state.config.min_sentiment_score, limit);
 
     if (candidates.length === 0) {
       // Log sentiment distribution to help diagnose why no candidates passed
@@ -1249,8 +1287,9 @@ export class MahoragaHarness extends DurableObject<Env> {
       this.log("SignalResearch", "no_candidates", {
         total_signals: allSignals.length,
         not_held: notHeld.length,
-        above_threshold: aboveThreshold.length,
+        above_threshold: candidates.length,
         min_sentiment: this.state.config.min_sentiment_score,
+        min_signal_quality: this.state.config.min_signal_quality_score,
         sample_signals: sampleSignals,
       });
       return [];
@@ -1258,21 +1297,17 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.log("SignalResearch", "researching_signals", {
       count: candidates.length,
-      candidate_sentiments: candidates.map((c) => ({ symbol: c.symbol, raw_sentiment: c.raw_sentiment?.toFixed(3) })),
+      candidate_sentiments: candidates.map((c) => ({
+        symbol: c.symbol,
+        sentiment: c.sentiment.toFixed(3),
+        score: c.score?.toFixed(3),
+        quality: c.quality?.toFixed(3),
+      })),
     });
 
-    const aggregated = new Map<string, { symbol: string; sentiment: number; sources: string[] }>();
-    for (const sig of candidates) {
-      if (!aggregated.has(sig.symbol)) {
-        aggregated.set(sig.symbol, { symbol: sig.symbol, sentiment: sig.sentiment, sources: [sig.source] });
-      } else {
-        aggregated.get(sig.symbol)!.sources.push(sig.source);
-      }
-    }
-
     const results: ResearchResult[] = [];
-    for (const [symbol, data] of aggregated) {
-      const analysis = await this.callSignalResearch(ctx, symbol, data.sentiment, data.sources);
+    for (const candidate of candidates) {
+      const analysis = await this.callSignalResearch(ctx, candidate.symbol, candidate.sentiment, candidate.sources);
       if (analysis) results.push(analysis);
       await this.sleep(500);
     }
@@ -1515,14 +1550,22 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (activeStrategy.capabilities?.confirmEntry) {
         const originalSignal = this.state.signalCache.find((s) => s.symbol === entry.symbol);
         if (originalSignal) {
-          const confirmation = await activeStrategy.capabilities.confirmEntry(ctx, entry, originalSignal, finalConfidence);
+          const confirmation = await activeStrategy.capabilities.confirmEntry(
+            ctx,
+            entry,
+            originalSignal,
+            finalConfidence
+          );
           if (confirmation) {
             finalConfidence = confirmation.confidence;
             if (confirmation.confirmation) {
               this.state.twitterConfirmations[entry.symbol] =
                 confirmation.confirmation as AgentState["twitterConfirmations"][string];
             }
-            this.log("System", "entry_confirmation_adjusted", { symbol: entry.symbol, new_confidence: finalConfidence });
+            this.log("System", "entry_confirmation_adjusted", {
+              symbol: entry.symbol,
+              new_confidence: finalConfidence,
+            });
           }
         }
       }
@@ -1531,10 +1574,19 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Options routing
       if (entry.useOptions) {
-        const contract = await activeStrategy.capabilities?.findOptionsContract?.(ctx, entry.symbol, "bullish", account.equity);
+        const contract = await activeStrategy.capabilities?.findOptionsContract?.(
+          ctx,
+          entry.symbol,
+          "bullish",
+          account.equity
+        );
         if (contract) {
           const optionsReason = `${entry.reason} (options on ${entry.symbol})`;
-          const result = await ctx.broker.buyOption(contract.symbol, Math.min(1, contract.max_contracts), optionsReason);
+          const result = await ctx.broker.buyOption(
+            contract.symbol,
+            Math.min(1, contract.max_contracts),
+            optionsReason
+          );
           if (result) {
             heldSymbols.add(contract.symbol);
             currentOpenPositions = heldSymbols.size;
@@ -2024,16 +2076,13 @@ export class MahoragaHarness extends DurableObject<Env> {
         end: new Date(endMs).toISOString(),
         limit: getPositionHistoryLimit(period, timeframe),
       };
-      const requestVariants = isCrypto
-        ? [baseParams]
-        : [
-            { ...baseParams, feed: "iex" as const },
-            baseParams,
-          ];
+      const requestVariants = isCrypto ? [baseParams] : [{ ...baseParams, feed: "iex" as const }, baseParams];
 
       let bars: Awaited<ReturnType<typeof alpaca.marketData.getBars>> = [];
       for (const params of requestVariants) {
-        const requestBars = isCrypto ? alpaca.marketData.getCryptoBars.bind(alpaca.marketData) : alpaca.marketData.getBars.bind(alpaca.marketData);
+        const requestBars = isCrypto
+          ? alpaca.marketData.getCryptoBars.bind(alpaca.marketData)
+          : alpaca.marketData.getBars.bind(alpaca.marketData);
         bars = await requestBars(symbol, timeframe, params).catch(() => []);
         if (bars.length > 0) break;
       }
@@ -2181,9 +2230,19 @@ export class MahoragaHarness extends DurableObject<Env> {
           const entryTime = entry.entry_time || periodStartMs;
           const startMs = entryTime;
           const endMs = nowMs;
-          const isCryptoPosition = position.asset_class === "crypto" || isCryptoSymbol(position.symbol, this.state.config.crypto_symbols || []);
+          const isCryptoPosition =
+            position.asset_class === "crypto" ||
+            isCryptoSymbol(position.symbol, this.state.config.crypto_symbols || []);
           const historySymbol = isCryptoPosition ? normalizeCryptoSymbol(position.symbol) : position.symbol;
-          const bars = await this.fetchPositionHistoryBars(alpaca, historySymbol, isCryptoPosition, period, timeframe, startMs, endMs);
+          const bars = await this.fetchPositionHistoryBars(
+            alpaca,
+            historySymbol,
+            isCryptoPosition,
+            period,
+            timeframe,
+            startMs,
+            endMs
+          );
 
           const entryPrice = entry.entry_price > 0 ? entry.entry_price : position.avg_entry_price;
           if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
@@ -2217,7 +2276,15 @@ export class MahoragaHarness extends DurableObject<Env> {
             candidate.asset_class === "crypto" ||
             isCryptoSymbol(candidate.symbol, this.state.config.crypto_symbols || []);
           const historySymbol = isCryptoPosition ? normalizeCryptoSymbol(candidate.symbol) : candidate.symbol;
-          const bars = await this.fetchPositionHistoryBars(alpaca, historySymbol, isCryptoPosition, period, timeframe, startMs, endMs);
+          const bars = await this.fetchPositionHistoryBars(
+            alpaca,
+            historySymbol,
+            isCryptoPosition,
+            period,
+            timeframe,
+            startMs,
+            endMs
+          );
           const entryPrice = candidate.entry_price;
 
           if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
@@ -2302,7 +2369,8 @@ export class MahoragaHarness extends DurableObject<Env> {
     const bucket = this.state.dailyReportBuckets[bucketKey] || createDailyReportBucket(bucketStart);
 
     let relevant = false;
-    let symbol: string | null = typeof details.symbol === "string" && details.symbol.trim().length > 0 ? details.symbol.trim() : null;
+    let symbol: string | null =
+      typeof details.symbol === "string" && details.symbol.trim().length > 0 ? details.symbol.trim() : null;
 
     if (agent === "System" && action === "gathering_data") {
       bucket.data_gather_cycles++;
@@ -2358,9 +2426,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       bucket.symbol_counts[symbol] = (bucket.symbol_counts[symbol] || 0) + 1;
     }
     if (bucket.recent_trades.length > 10) {
-      bucket.recent_trades = bucket.recent_trades
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, 10);
+      bucket.recent_trades = bucket.recent_trades.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
     }
 
     this.state.dailyReportBuckets[bucketKey] = bucket;
@@ -2468,7 +2534,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     });
   }
 
-  private async maybeSendDailyDiscordReport(account: Account | null, positions: Position[], nowMs: number): Promise<void> {
+  private async maybeSendDailyDiscordReport(
+    account: Account | null,
+    positions: Position[],
+    nowMs: number
+  ): Promise<void> {
     if (!this.env.DISCORD_WEBHOOK_URL || !this.state.config.discord_daily_report_enabled) return;
 
     try {
@@ -2510,6 +2580,45 @@ export function getHarnessStub(env: Env): DurableObjectStub {
   }
   const id = env.MAHORAGA_HARNESS.idFromName("main");
   return env.MAHORAGA_HARNESS.get(id);
+}
+
+function selectSignalResearchCandidatesFallback(
+  signals: Signal[],
+  minSentimentScore: number,
+  limit: number
+): StrategySignalResearchCandidate[] {
+  const aggregated = new Map<string, { sentiment: number; rawSentiment: number; sources: string[]; count: number }>();
+  for (const signal of signals) {
+    const existing = aggregated.get(signal.symbol);
+    if (!existing) {
+      aggregated.set(signal.symbol, {
+        sentiment: signal.sentiment,
+        rawSentiment: signal.raw_sentiment,
+        sources: [signal.source],
+        count: 1,
+      });
+      continue;
+    }
+
+    existing.sentiment += signal.sentiment;
+    existing.rawSentiment += signal.raw_sentiment;
+    existing.sources.push(signal.source);
+    existing.count++;
+  }
+
+  return Array.from(aggregated.entries())
+    .map(([symbol, data]) => ({
+      symbol,
+      sentiment: data.sentiment / data.count,
+      sources: Array.from(new Set(data.sources)),
+      score: data.sentiment / data.count,
+      quality: undefined,
+      rawSentiment: data.rawSentiment / data.count,
+    }))
+    .filter((candidate) => candidate.rawSentiment >= minSentimentScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ rawSentiment: _rawSentiment, ...candidate }) => candidate);
 }
 
 export async function getHarnessStatus(env: Env): Promise<unknown> {

@@ -17,6 +17,7 @@ export const AgentConfigSchema = z
 
     take_profit_pct: z.number().min(1).max(100),
     stop_loss_pct: z.number().min(1).max(50),
+    risk_per_trade_pct: z.number().min(0.05).max(5),
     position_size_pct_of_cash: z.number().min(1).max(100),
     equity_entry_cutoff_minutes_before_close: z.number().int().min(0).max(120),
     after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
@@ -74,12 +75,15 @@ export const AgentConfigSchema = z
     tp_atr_multiplier: z.number().min(1).max(10),
     tp_min_pct: z.number().min(1).max(50),
     tp_max_pct: z.number().min(1).max(100),
+    dynamic_tp_fallback_pct: z.number().min(1).max(100),
 
     // ── Entry Timing Filters ──────────────────────────────────────────────────
     entry_timing_enabled: z.boolean(),
+    entry_require_technical_data: z.boolean(),
     entry_rsi_min: z.number().min(10).max(50),
     entry_rsi_max: z.number().min(50).max(90),
     entry_bb_lower_threshold: z.number().min(0).max(1),
+    min_signal_quality_score: z.number().min(0).max(1),
 
     // ── Composite Scoring ─────────────────────────────────────────────────────
     scoring_enabled: z.boolean(),
@@ -96,6 +100,7 @@ export const AgentConfigSchema = z
     // ── Portfolio Risk ───────────────────────────────────────────────────────
     portfolio_risk_enabled: z.boolean(),
     max_positions_per_sector: z.number().int().min(1).max(10),
+    unknown_sector_max_positions: z.number().int().min(0).max(10),
   })
   .refine((data) => data.options_min_delta < data.options_max_delta, {
     message: "options_min_delta must be less than options_max_delta",

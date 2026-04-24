@@ -25,6 +25,7 @@ import { premarketPrompt } from "./prompts/premarket";
 import { researchPositionPrompt, researchSignalPrompt } from "./prompts/research";
 import { filterDefaultEligibleSignals, prepareDefaultDataGathering } from "./helpers/signal-filter";
 import { runCryptoTrading } from "./rules/crypto-trading";
+import { rankSignalCandidates } from "./rules/candidate-score";
 import { selectEntries } from "./rules/entries";
 import { selectExits } from "./rules/exits";
 import { findBestOptionsContract } from "./rules/options";
@@ -70,5 +71,19 @@ export const defaultStrategy: Strategy = {
     },
     findOptionsContract: findBestOptionsContract,
     checkBreakingNews: checkTwitterBreakingNews,
+    selectSignalResearchCandidates(ctx, signals, limit) {
+      return rankSignalCandidates(
+        signals,
+        ctx.config.min_sentiment_score,
+        ctx.config.min_signal_quality_score,
+        limit
+      ).map((candidate) => ({
+        symbol: candidate.symbol,
+        sentiment: candidate.sentiment,
+        sources: candidate.sources,
+        score: candidate.score,
+        quality: candidate.quality,
+      }));
+    },
   },
 };

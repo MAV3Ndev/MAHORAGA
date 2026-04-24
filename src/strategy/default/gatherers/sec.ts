@@ -67,6 +67,27 @@ function calculateSECFreshness(updatedDate: string): number {
   return 0.3;
 }
 
+function classifySECFilingSentiment(entry: { title: string; form: string; company: string }): {
+  sentiment: number;
+  qualityScore: number;
+  label: string;
+} {
+  const text = `${entry.title} ${entry.company} ${entry.form}`.toLowerCase();
+  const bullish =
+    /approval|approved|award|contract|agreement|partnership|acquisition|merger|buyback|repurchase|guidance|earnings|fda|strategic/i.test(
+      text
+    );
+  const bearish =
+    /bankruptcy|delisting|offering|resignation|investigation|default|impairment|restatement|subpoena|going concern|termination/i.test(
+      text
+    );
+
+  if (bearish && !bullish) return { sentiment: -0.45, qualityScore: 0.75, label: "bearish" };
+  if (bullish && !bearish) return { sentiment: 0.45, qualityScore: 0.8, label: "bullish" };
+  if (entry.form === "8-K") return { sentiment: 0.12, qualityScore: 0.45, label: "neutral_8k" };
+  return { sentiment: 0.05, qualityScore: 0.35, label: "neutral" };
+}
+
 // ── Company name → ticker resolution ─────────────────────────────────────────
 
 const companyToTickerCache = new Map<string, string | null>();
@@ -150,7 +171,10 @@ async function gatherSECFilings(ctx: StrategyContext): Promise<Signal[]> {
       const sourceWeight = entry.form === "8-K" ? SOURCE_CONFIG.weights.sec_8k : SOURCE_CONFIG.weights.sec_4;
       const freshness = calculateSECFreshness(entry.updated);
 
-      const sentiment = entry.form === "8-K" ? 0.3 : 0.2;
+      const filingSentiment = classifySECFilingSentiment(entry);
+      if (filingSentiment.qualityScore < ctx.config.min_signal_quality_score) continue;
+
+      const sentiment = filingSentiment.sentiment;
       const weightedSentiment = sentiment * sourceWeight * freshness;
 
       signals.push({
@@ -162,7 +186,8 @@ async function gatherSECFilings(ctx: StrategyContext): Promise<Signal[]> {
         volume: 1,
         freshness,
         source_weight: sourceWeight,
-        reason: `SEC ${entry.form}: ${entry.company.slice(0, 50)}`,
+        quality_score: filingSentiment.qualityScore,
+        reason: `SEC ${entry.form} ${filingSentiment.label}: ${entry.company.slice(0, 50)}`,
         timestamp: Date.now(),
       });
     }

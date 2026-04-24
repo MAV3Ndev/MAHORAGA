@@ -89,8 +89,14 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
         const effectiveTotal = totalTimeDecay || 1;
         const score = effectiveTotal > 0 ? (bullish - bearish) / effectiveTotal : 0;
         const avgFreshness = total > 0 ? totalTimeDecay / total : 0;
+        const directionalTotal = bullish + bearish;
+        const directionalAgreement = directionalTotal > 0 ? Math.abs(bullish - bearish) / directionalTotal : 0;
+        const qualityScore = Math.min(
+          1,
+          avgFreshness * 0.45 + directionalAgreement * 0.35 + Math.min(1, total / 30) * 0.2
+        );
 
-        if (total >= 5) {
+        if (total >= 5 && Math.abs(score) >= 0.1 && qualityScore >= ctx.config.min_signal_quality_score) {
           const weightedSentiment = score * sourceWeight * avgFreshness;
 
           signals.push({
@@ -104,7 +110,8 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
             bearish: Math.round(bearish),
             freshness: avgFreshness,
             source_weight: sourceWeight,
-            reason: `StockTwits: ${Math.round(bullish)}B/${Math.round(bearish)}b (${(score * 100).toFixed(0)}%) [fresh:${(avgFreshness * 100).toFixed(0)}%]`,
+            quality_score: qualityScore,
+            reason: `StockTwits: ${Math.round(bullish)}B/${Math.round(bearish)}b (${(score * 100).toFixed(0)}%) [quality:${(qualityScore * 100).toFixed(0)}%]`,
             timestamp: Date.now(),
           });
         }
