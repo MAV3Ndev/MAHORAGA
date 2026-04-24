@@ -18,7 +18,7 @@ import type { Account, MarketClock, Order, Position, Snapshot } from "../provide
 import type { D1Client } from "../storage/d1/client";
 import type { RiskState } from "../storage/d1/queries/risk-state";
 import { getRiskState } from "../storage/d1/queries/risk-state";
-import { isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import { isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
 import type { StrategyContext } from "../strategy/types";
 
 export interface PolicyBrokerDeps {

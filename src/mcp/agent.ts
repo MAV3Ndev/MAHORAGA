@@ -35,7 +35,7 @@ import { getPolicyConfig } from "../storage/d1/queries/policy-config";
 import { disableKillSwitch, enableKillSwitch, getRiskState } from "../storage/d1/queries/risk-state";
 import { insertToolLog } from "../storage/d1/queries/tool-logs";
 import { createTrade } from "../storage/d1/queries/trades";
-import { areEquivalentAssetSymbols } from "../strategy/default/helpers/crypto";
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { OptionsOrderPreview } from "./types";
 import { failure, success } from "./types";
 

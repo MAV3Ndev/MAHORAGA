@@ -31,7 +31,7 @@ import type {
 } from "../mcp/types";
 import type { Account, MarketClock, Position } from "../providers/types";
 import type { RiskState } from "../storage/d1/queries/risk-state";
-import { areEquivalentAssetSymbols } from "../strategy/default/helpers/crypto";
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { OptionsStrategy, PolicyConfig } from "./config";
 
 export interface PolicyContext {

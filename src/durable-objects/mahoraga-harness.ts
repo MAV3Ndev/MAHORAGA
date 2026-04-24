@@ -60,7 +60,7 @@ import {
   gatherTwitterConfirmation,
   isTwitterEnabled,
 } from "../strategy/default/gatherers/twitter";
-import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
 import {
   computeAnalystRecommendationNotional,
   shouldBypassLlmMinHold,
