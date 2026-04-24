@@ -166,6 +166,71 @@ describe("createPolicyBroker", () => {
       client_order_id: "mahoraga-ahx-SKLZ",
     });
     expect(trading.closePosition).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(
+      "PolicyBroker",
+      "sell_submitted",
+      expect.objectContaining({
+        symbol: "SKLZ",
+        status: "accepted",
+        order_type: "limit",
+        extended_hours: true,
+      })
+    );
+  });
+
+  it("logs an existing after-hours exit order as open, not executed", async () => {
+    const { deps, trading } = createDeps({
+      openOrders: [
+        {
+          id: "order-1",
+          symbol: "SKLZ",
+          side: "sell",
+          qty: "10",
+          client_order_id: "mahoraga-ahx-SKLZ",
+          order_type: "limit",
+          limit_price: "6.78",
+          status: "new",
+        },
+      ],
+    });
+    const broker = createPolicyBroker(deps);
+
+    const result = await broker.sell("SKLZ", "After-hours stop loss");
+
+    expect(result).toBe(true);
+    expect(trading.createOrder).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(
+      "PolicyBroker",
+      "sell_order_open",
+      expect.objectContaining({
+        symbol: "SKLZ",
+        status: "new",
+        order_type: "limit",
+        extended_hours: true,
+      })
+    );
+  });
+
+  it("logs regular closePosition responses as submitted unless filled", async () => {
+    const { deps, trading } = createDeps({
+      clock: {
+        is_open: true,
+      },
+    });
+    const broker = createPolicyBroker(deps);
+
+    const result = await broker.sell("SKLZ", "Regular-hours exit");
+
+    expect(result).toBe(true);
+    expect(trading.closePosition).toHaveBeenCalledWith("SKLZ");
+    expect(deps.log).toHaveBeenCalledWith(
+      "PolicyBroker",
+      "sell_submitted",
+      expect.objectContaining({
+        symbol: "SKLZ",
+        status: "accepted",
+      })
+    );
   });
 
   it("creates protective stop orders for open long equity positions", async () => {

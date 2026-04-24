@@ -162,6 +162,10 @@ function parseOrderQty(order: Pick<Order, "qty">): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isFilledOrderStatus(status: unknown): boolean {
+  return String(status ?? "").toLowerCase() === "filled";
+}
+
 export function isTradingHaltMarketOrderError(error: unknown): boolean {
   const message = String(error).toLowerCase();
   return message.includes("trading halt") && message.includes("limit order instead");
@@ -727,7 +731,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
             approximatelyEqual(parseOrderPrice(existingAfterHoursExit), limitPrice, ORDER_PRICE_EPSILON) &&
             approximatelyEqual(parseOrderQty(existingAfterHoursExit), position.qty, ORDER_QTY_EPSILON)
           ) {
-            log("PolicyBroker", "sell_executed", {
+            log("PolicyBroker", "sell_order_open", {
               symbol,
               reason,
               status: existingAfterHoursExit.status,
@@ -758,7 +762,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
             client_order_id: buildManagedOrderId(AFTER_HOURS_EXIT_ORDER_PREFIX, symbol),
           });
 
-          log("PolicyBroker", "sell_executed", {
+          log("PolicyBroker", isFilledOrderStatus(order.status) ? "sell_executed" : "sell_submitted", {
             symbol,
             reason,
             status: order.status,
@@ -774,8 +778,13 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       }
 
       await cancelManagedOrders(symbol);
-      await alpaca.trading.closePosition(symbol);
-      log("PolicyBroker", "sell_executed", { symbol, reason });
+      const order = await alpaca.trading.closePosition(symbol);
+      log("PolicyBroker", isFilledOrderStatus(order.status) ? "sell_executed" : "sell_submitted", {
+        symbol,
+        reason,
+        status: order.status,
+        order_type: order.order_type ?? order.type,
+      });
 
       // Invalidate cache after order
       cachedAccount = null;
