@@ -48,6 +48,7 @@ export function selectExits(ctx: StrategyContext, positions: Position[], _accoun
         tp_atr_multiplier: ctx.config.tp_atr_multiplier,
         tp_min_pct: ctx.config.tp_min_pct,
         tp_max_pct: ctx.config.tp_max_pct,
+        dynamic_tp_fallback_pct: ctx.config.dynamic_tp_fallback_pct,
         stop_loss_pct: effectiveStopLossPct,
       },
       trailingState
@@ -55,11 +56,16 @@ export function selectExits(ctx: StrategyContext, positions: Position[], _accoun
 
     // Update trailing state if active
     if (ctx.config.trailing_stop_enabled && advancedResult.exitType !== "trailing_stop") {
-      const newState = getTrailingStopState(pos, entry, {
-        trailing_stop_enabled: ctx.config.trailing_stop_enabled,
-        trailing_stop_pct: ctx.config.trailing_stop_pct,
-        trailing_stop_activation_pct: ctx.config.trailing_stop_activation_pct,
-      }, trailingState);
+      const newState = getTrailingStopState(
+        pos,
+        entry,
+        {
+          trailing_stop_enabled: ctx.config.trailing_stop_enabled,
+          trailing_stop_pct: ctx.config.trailing_stop_pct,
+          trailing_stop_activation_pct: ctx.config.trailing_stop_activation_pct,
+        },
+        trailingState
+      );
       if (newState.active || trailingState?.active) {
         ctx.state.set(trailingStateKey, newState);
         trailingState = newState;
@@ -203,15 +209,17 @@ function getPositionEntry(symbol: string, ctx: StrategyContext) {
   return undefined;
 }
 
-function getPositionResearch(symbol: string, ctx: StrategyContext):
+function getPositionResearch(
+  symbol: string,
+  ctx: StrategyContext
+):
   | {
       recommendation?: "HOLD" | "SELL" | "ADD";
       reasoning?: string;
     }
   | undefined {
-  const research = ctx.state.get<Record<string, { recommendation?: "HOLD" | "SELL" | "ADD"; reasoning?: string }>>(
-    "positionResearch"
-  );
+  const research =
+    ctx.state.get<Record<string, { recommendation?: "HOLD" | "SELL" | "ADD"; reasoning?: string }>>("positionResearch");
   const directMatch = research?.[symbol];
   if (directMatch) return directMatch;
 
@@ -227,11 +235,7 @@ function getPositionResearch(symbol: string, ctx: StrategyContext):
   return undefined;
 }
 
-function getSnapshotValue<T>(
-  symbol: string,
-  snapshot: Record<string, T>,
-  ctx: StrategyContext
-): T | undefined {
+function getSnapshotValue<T>(symbol: string, snapshot: Record<string, T>, ctx: StrategyContext): T | undefined {
   const directMatch = snapshot[symbol];
   if (directMatch) return directMatch;
 

@@ -34,6 +34,7 @@ export function checkPortfolioRisk(
   config: {
     portfolio_risk_enabled: boolean;
     max_positions_per_sector: number;
+    unknown_sector_max_positions: number;
   }
 ): PortfolioRiskResult {
   if (!config.portfolio_risk_enabled) {
@@ -58,9 +59,26 @@ export function checkPortfolioRisk(
   // Check proposed addition
   const proposedSector = sectorMap[symbol] ?? "unknown";
   if (proposedSector === "unknown") {
+    const currentUnknownCount = sectorCounts.unknown?.length ?? 0;
+    if (currentUnknownCount >= config.unknown_sector_max_positions) {
+      return {
+        allowed: false,
+        reason: `Unknown sector would exceed max ${config.unknown_sector_max_positions} positions`,
+        sectorAllocations: Object.entries(sectorCounts).map(([sector, symbols]) => ({
+          sector,
+          positions: symbols,
+          count: symbols.length,
+        })),
+        overConcentratedSectors: ["unknown"],
+      };
+    }
+
+    sectorCounts.unknown ??= [];
+    sectorCounts.unknown.push(symbol);
+
     return {
       allowed: true,
-      reason: 'Sector unknown - concentration limit skipped until sector data is available',
+      reason: `Sector unknown has ${currentUnknownCount}/${config.unknown_sector_max_positions} positions`,
       sectorAllocations: Object.entries(sectorCounts).map(([sector, symbols]) => ({
         sector,
         positions: symbols,

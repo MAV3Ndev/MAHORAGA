@@ -7,10 +7,11 @@
 
 import type { Account, Position, ResearchResult } from "../../../core/types";
 import type { BuyCandidate, StrategyContext } from "../../types";
-import { applyCompositeScoring, type ScoredSignal } from "./scoring";
+import { calculateCandidateScores, type CandidateScore } from "./candidate-score";
 import { checkEntryTiming, type TechnicalData } from "./entry-timing";
 import { analyzeMarketRegime, type MarketRegimeData } from "./market-regime";
 import { checkPortfolioRisk } from "./portfolio-risk";
+import { computeRiskSizedNotional } from "./risk-sizing";
 
 /**
  * Select entry candidates from LLM-researched signals.
@@ -40,45 +41,41 @@ export function selectEntries(
   const promotableWaits = research.filter((r) => isPromotableWait(r, ctx));
   const entryResearch = [...buyResearch, ...promotableWaits];
 
-  // Build composite score map if scoring enabled
-  let compositeScoreMap: Record<string, number> = {};
-  let scoredSignals: ScoredSignal[] = [];
+  let candidateScoreMap: Record<string, CandidateScore> = {};
 
   if (ctx.config.scoring_enabled) {
     const momentumData = buildMomentumData(ctx.signals, ctx);
-    scoredSignals = applyCompositeScoring(
-      entryResearch,
-      ctx.signals,
-      momentumData,
-      {
-        sentiment: ctx.config.scoring_sentiment_weight,
-        technical: ctx.config.scoring_technical_weight,
-        catalyst: ctx.config.scoring_catalyst_weight,
-        momentum: ctx.config.scoring_momentum_weight,
-      }
-    );
+    const candidateScores = calculateCandidateScores(entryResearch, ctx.signals, momentumData, {
+      research: ctx.config.scoring_technical_weight + ctx.config.scoring_catalyst_weight,
+      sentiment: ctx.config.scoring_sentiment_weight,
+      signalQuality: 0.2,
+      momentum: ctx.config.scoring_momentum_weight,
+    });
 
-    // Build score map for quick lookup
-    for (const s of scoredSignals) {
-      compositeScoreMap[s.symbol] = s.compositeScore;
+    for (const candidate of candidateScores) {
+      candidateScoreMap[candidate.symbol] = candidate;
     }
 
     ctx.log("Entries", "scoring_applied", {
       original_count: entryResearch.length,
-      scored_count: scoredSignals.length,
+      scored_count: candidateScores.length,
     });
   }
 
   // Filter and sort by composite score (or original confidence if scoring disabled)
   const aboveConfidence = entryResearch.filter((r) => {
-    const score = compositeScoreMap[r.symbol] ?? r.confidence;
+    const candidateScore = candidateScoreMap[r.symbol];
+    if (candidateScore && candidateScore.quality > 0 && candidateScore.quality < ctx.config.min_signal_quality_score) {
+      return false;
+    }
+    const score = candidateScore?.score ?? r.confidence;
     return score >= getRequiredEntryScore(r, ctx);
   });
 
   const notHeld = aboveConfidence.filter((r) => !heldSymbols.has(r.symbol));
   const sorted = notHeld.sort((a, b) => {
-    const scoreA = compositeScoreMap[a.symbol] ?? a.confidence;
-    const scoreB = compositeScoreMap[b.symbol] ?? b.confidence;
+    const scoreA = candidateScoreMap[a.symbol]?.score ?? a.confidence;
+    const scoreB = candidateScoreMap[b.symbol]?.score ?? b.confidence;
     return scoreB - scoreA;
   });
 
@@ -131,6 +128,7 @@ export function selectEntries(
       const techData = getTechnicalData(r.symbol, ctx);
       const timingResult = checkEntryTiming(r.symbol, techData, {
         entry_timing_enabled: ctx.config.entry_timing_enabled,
+        entry_require_technical_data: ctx.config.entry_require_technical_data,
         entry_rsi_min: ctx.config.entry_rsi_min,
         entry_rsi_max: ctx.config.entry_rsi_max,
         entry_bb_lower_threshold: ctx.config.entry_bb_lower_threshold,
@@ -151,6 +149,7 @@ export function selectEntries(
       const riskResult = checkPortfolioRisk(r.symbol, sectorMap, positions, {
         portfolio_risk_enabled: ctx.config.portfolio_risk_enabled,
         max_positions_per_sector: ctx.config.max_positions_per_sector,
+        unknown_sector_max_positions: ctx.config.unknown_sector_max_positions,
       });
 
       if (!riskResult.allowed) {
@@ -159,15 +158,21 @@ export function selectEntries(
       }
     }
 
-    // Calculate position size with regime adjustment
-    const compositeScore = compositeScoreMap[r.symbol] ?? r.confidence;
-    const sizePct = ctx.config.position_size_pct_of_cash;
-    let notional = account.cash * (sizePct / 100) * compositeScore;
-
-    // Apply market regime reduction
-    notional *= regimeResult.positionSizeMultiplier;
-
-    notional = Math.min(notional, ctx.config.max_position_value);
+    const candidateScore = candidateScoreMap[r.symbol];
+    const compositeScore = candidateScore?.score ?? r.confidence;
+    const techData = getTechnicalData(r.symbol, ctx);
+    const sizing = computeRiskSizedNotional({
+      cash: account.cash,
+      maxPositionValue: ctx.config.max_position_value,
+      confidence: compositeScore,
+      positionSizePctOfCash: ctx.config.position_size_pct_of_cash,
+      riskPerTradePct: ctx.config.risk_per_trade_pct,
+      stopLossPct: r.stop_loss_pct ?? ctx.config.stop_loss_pct,
+      entryPrice: techData.current_price,
+      atr: techData.atr,
+      regimeMultiplier: regimeResult.positionSizeMultiplier,
+    });
+    const notional = Math.min(sizing.notional, ctx.config.max_position_value);
 
     if (notional < 100) {
       ctx.log("Entries", "skipped_too_small", { symbol: r.symbol, notional, min_notional: 100 });

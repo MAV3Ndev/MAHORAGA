@@ -10,6 +10,7 @@ describe("advanced exits", () => {
     tp_atr_multiplier: 3,
     tp_min_pct: 5,
     tp_max_pct: 25,
+    dynamic_tp_fallback_pct: 12,
     stop_loss_pct: 5,
   };
 
@@ -78,5 +79,28 @@ describe("advanced exits", () => {
 
     expect(result.shouldExit).toBe(true);
     expect(result.exitType).toBe("trailing_stop");
+  });
+
+  it("uses configured dynamic TP fallback when ATR is unavailable", () => {
+    const result = checkAdvancedExits(
+      {
+        symbol: "AAPL",
+        current_price: 113,
+        avg_entry_price: 100,
+      } as never,
+      undefined,
+      undefined,
+      {
+        ...baseConfig,
+        trailing_stop_enabled: false,
+        dynamic_tp_enabled: true,
+        dynamic_tp_fallback_pct: 12,
+      },
+      undefined
+    );
+
+    expect(result.shouldExit).toBe(true);
+    expect(result.exitType).toBe("dynamic_tp");
+    expect(result.dynamicTpPct).toBe(12);
   });
 });

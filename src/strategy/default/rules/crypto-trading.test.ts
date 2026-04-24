@@ -26,7 +26,8 @@ describe("crypto trading", () => {
         usage: { prompt_tokens: 10, completion_tokens: 20 },
       })
       .mockResolvedValueOnce({
-        content: '{"verdict":"BUY","confidence":0.72,"entry_quality":"good","reasoning":"Momentum is constructive.","red_flags":[],"catalysts":["Trend strength"]}',
+        content:
+          '{"verdict":"BUY","confidence":0.72,"entry_quality":"good","reasoning":"Momentum is constructive.","red_flags":[],"catalysts":["Trend strength"]}',
         usage: { prompt_tokens: 10, completion_tokens: 20 },
       });
 
@@ -104,7 +105,9 @@ describe("crypto trading", () => {
       entry_quality: "fair",
     });
     expect(result?.reasoning).toContain("malformed JSON");
-    expect(result?.red_flags).toContain("Fallback crypto research used because the LLM was unavailable or rate-limited.");
+    expect(result?.red_flags).toContain(
+      "Fallback crypto research used because the LLM was unavailable or rate-limited."
+    );
   });
 
   it("treats compact crypto position symbols as already held", async () => {
@@ -118,6 +121,7 @@ describe("crypto trading", () => {
         crypto_stop_loss_pct: 5,
         min_analyst_confidence: 0.6,
         position_size_pct_of_cash: 10,
+        risk_per_trade_pct: 0.75,
         crypto_max_position_value: 1000,
       },
       signals: [
@@ -143,19 +147,16 @@ describe("crypto trading", () => {
       },
     } as never;
 
-    await runCryptoTrading(
-      ctx,
-      [
-        {
-          symbol: "BTCUSD",
-          asset_class: "crypto",
-          avg_entry_price: 100,
-          current_price: 100,
-          market_value: 1000,
-          unrealized_pl: 0,
-        },
-      ] as never
-    );
+    await runCryptoTrading(ctx, [
+      {
+        symbol: "BTCUSD",
+        asset_class: "crypto",
+        avg_entry_price: 100,
+        current_price: 100,
+        market_value: 1000,
+        unrealized_pl: 0,
+      },
+    ] as never);
 
     expect(buy).not.toHaveBeenCalled();
   });
@@ -182,6 +183,7 @@ describe("crypto trading", () => {
         crypto_stop_loss_pct: 5,
         min_analyst_confidence: 0.6,
         position_size_pct_of_cash: 25,
+        risk_per_trade_pct: 0.75,
         crypto_max_position_value: 5000,
       },
       signals: [

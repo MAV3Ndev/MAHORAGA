@@ -30,6 +30,7 @@ export function checkEntryTiming(
   tech: TechnicalData,
   config: {
     entry_timing_enabled: boolean;
+    entry_require_technical_data: boolean;
     entry_rsi_min: number;
     entry_rsi_max: number;
     entry_bb_lower_threshold: number;
@@ -40,6 +41,16 @@ export function checkEntryTiming(
   // If disabled, pass all entries
   if (!config.entry_timing_enabled) {
     return { passes: true, reason: "Entry timing disabled", signals: [] };
+  }
+
+  if (
+    config.entry_require_technical_data &&
+    tech.rsi === undefined &&
+    tech.bb_lower === undefined &&
+    tech.sma_20 === undefined &&
+    tech.sma_50 === undefined
+  ) {
+    return { passes: false, reason: "Technical data required but unavailable", signals: [], atr: tech.atr };
   }
 
   // RSI pullback check (40-55 range = healthy pullback)

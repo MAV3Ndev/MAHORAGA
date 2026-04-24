@@ -42,6 +42,7 @@ export function checkAdvancedExits(
     tp_atr_multiplier: number;
     tp_min_pct: number;
     tp_max_pct: number;
+    dynamic_tp_fallback_pct: number;
     stop_loss_pct: number;
   },
   trailingState: TrailingStopState | undefined
@@ -55,11 +56,12 @@ export function checkAdvancedExits(
   const currentHigh = Math.max(trailingState?.highPrice ?? 0, entry?.peak_price ?? 0, pos.current_price);
 
   // Dynamic TP calculation
-  let dynamicTpPct = config.tp_max_pct; // default max
-  if (config.dynamic_tp_enabled && atr && atr > 0 && pos.current_price > 0) {
-    // TP = ATR * multiplier, converted to % of price
-    const atrPercent = (atr / pos.current_price) * 100;
-    dynamicTpPct = Math.min(config.tp_max_pct, Math.max(config.tp_min_pct, atrPercent * config.tp_atr_multiplier));
+  let dynamicTpPct = clamp(config.dynamic_tp_fallback_pct, config.tp_min_pct, config.tp_max_pct);
+  if (config.dynamic_tp_enabled) {
+    if (atr && atr > 0 && pos.current_price > 0) {
+      const atrPercent = (atr / pos.current_price) * 100;
+      dynamicTpPct = clamp(atrPercent * config.tp_atr_multiplier, config.tp_min_pct, config.tp_max_pct);
+    }
   }
 
   // Trailing stop logic
@@ -132,6 +134,10 @@ export function checkAdvancedExits(
     reason: `No exit signals (P&L: ${pnlPct.toFixed(1)}%, TP: ${dynamicTpPct.toFixed(1)}%)`,
     dynamicTpPct,
   };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 /**

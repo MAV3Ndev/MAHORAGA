@@ -11,6 +11,7 @@ import { createAlpacaProviders } from "../../../providers/alpaca";
 import { buildCryptoFallbackResearch } from "../helpers/research-fallback";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
 import type { StrategyContext } from "../../types";
+import { computeRiskSizedNotional } from "./risk-sizing";
 
 function stripJsonCodeFences(content: string): string {
   return content
@@ -354,7 +355,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
     const cachedResearch = ctx.state.get<ResearchResult>(`cryptoResearch_${signal.symbol}`);
     const cacheAge = cachedResearch ? Date.now() - cachedResearch.timestamp : null;
     // Cache is valid if: has cache AND (fresh OR not a failure)
-    const isFailure = cachedResearch && (cachedResearch.verdict === "SKIP" && cachedResearch.confidence < 0.2);
+    const isFailure = cachedResearch && cachedResearch.verdict === "SKIP" && cachedResearch.confidence < 0.2;
     const isCacheFresh = cachedResearch && cacheAge !== null && cacheAge < CRYPTO_RESEARCH_TTL_MS && !isFailure;
 
     ctx.log("Crypto", "research_cache_check", {
@@ -401,11 +402,17 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
     }
 
     const account = await ctx.broker.getAccount();
-    const sizePct = ctx.config.position_size_pct_of_cash;
-    const positionSize = Math.min(
-      account.cash * (sizePct / 100) * research.confidence,
-      ctx.config.crypto_max_position_value
-    );
+    const sizing = computeRiskSizedNotional({
+      cash: account.cash,
+      maxPositionValue: ctx.config.crypto_max_position_value,
+      confidence: research.confidence,
+      positionSizePctOfCash: ctx.config.position_size_pct_of_cash,
+      riskPerTradePct: ctx.config.risk_per_trade_pct,
+      stopLossPct: research.stop_loss_pct ?? ctx.config.crypto_stop_loss_pct,
+      entryPrice: signal.price,
+      atr: getCryptoAtr(ctx, signal.symbol),
+    });
+    const positionSize = Math.min(sizing.notional, ctx.config.crypto_max_position_value);
 
     if (positionSize < 10) {
       ctx.log("Crypto", "buy_skipped", { symbol: signal.symbol, reason: "Position too small" });
@@ -425,6 +432,15 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       break;
     }
   }
+}
+
+function getCryptoAtr(ctx: StrategyContext, symbol: string): number | undefined {
+  const atrCache = ctx.state.get<Record<string, number>>("atrCache");
+  for (const alias of getCryptoSymbolAliases(symbol)) {
+    const atr = atrCache?.[alias];
+    if (atr !== undefined) return atr;
+  }
+  return undefined;
 }
 
 function isPromotableCryptoWait(result: ResearchResult, ctx: StrategyContext): boolean {
