@@ -15,6 +15,7 @@ import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy
 import {
   buildPortfolioHistoryParams,
   buildPortfolioHistoryPayload,
+  buildPositionHistoryPoints,
   getPeriodStartMs,
   getPositionHistoryLimit,
   getPositionHistoryTimeframeCandidates,
@@ -2299,62 +2300,15 @@ export class MahoragaHarness extends DurableObject<Env> {
           const entryPrice = entry.entry_price > 0 ? entry.entry_price : position.avg_entry_price;
           if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
 
-          const points = bars
-            .map((bar) => {
-              const timestamp = new Date(bar.t).getTime();
-              if (!Number.isFinite(timestamp)) return null;
-
-              const changePct =
-                position.side === "short"
-                  ? ((entryPrice - bar.c) / entryPrice) * 100
-                  : ((bar.c - entryPrice) / entryPrice) * 100;
-
-              return {
-                timestamp,
-                price: bar.c,
-                change_pct: Number.isFinite(changePct) ? changePct : 0,
-              };
-            })
-            .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
-
-          const firstPoint = points[0];
-          if (!firstPoint || firstPoint.timestamp > entryTime) {
-            points.unshift({
-              timestamp: entryTime,
-              price: entryPrice,
-              change_pct: 0,
-            });
-          } else if (points.length > 0) {
-            points[0] = {
-              price: points[0]!.price,
-              timestamp: entryTime,
-              change_pct: 0,
-            };
-          }
-
-          const latestPrice = position.current_price > 0 ? position.current_price : points[points.length - 1]?.price;
-          if (latestPrice && points.length > 0) {
-            const latestChange =
-              position.side === "short"
-                ? ((entryPrice - latestPrice) / entryPrice) * 100
-                : ((latestPrice - entryPrice) / entryPrice) * 100;
-
-            const lastPoint = points[points.length - 1];
-            if (!lastPoint || Math.abs(lastPoint.timestamp - nowMs) > 60_000) {
-              points.push({
-                timestamp: nowMs,
-                price: latestPrice,
-                change_pct: Number.isFinite(latestChange) ? latestChange : 0,
-              });
-            } else {
-              lastPoint.price = latestPrice;
-              lastPoint.change_pct = Number.isFinite(latestChange) ? latestChange : lastPoint.change_pct;
-            }
-          }
-
-          const dedupedPoints = points
-            .sort((a, b) => a.timestamp - b.timestamp)
-            .filter((point, index, items) => index === 0 || items[index - 1]!.timestamp !== point.timestamp);
+          const latestPrice = position.current_price > 0 ? position.current_price : bars.at(-1)?.c;
+          const points = buildPositionHistoryPoints({
+            bars,
+            side: position.side,
+            entryTime,
+            entryPrice,
+            terminalTime: nowMs,
+            terminalPrice: latestPrice,
+          });
 
           return {
             symbol: position.symbol,
@@ -2362,7 +2316,7 @@ export class MahoragaHarness extends DurableObject<Env> {
             entry_price: entryPrice,
             current_price: latestPrice || entryPrice,
             status: "OPEN",
-            points: dedupedPoints,
+            points,
           };
         })
       );
@@ -2380,63 +2334,15 @@ export class MahoragaHarness extends DurableObject<Env> {
 
           if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
 
-          const points = bars
-            .map((bar) => {
-              const timestamp = new Date(bar.t).getTime();
-              if (!Number.isFinite(timestamp)) return null;
-
-              const changePct =
-                candidate.side === "short"
-                  ? ((entryPrice - bar.c) / entryPrice) * 100
-                  : ((bar.c - entryPrice) / entryPrice) * 100;
-
-              return {
-                timestamp,
-                price: bar.c,
-                change_pct: Number.isFinite(changePct) ? changePct : 0,
-              };
-            })
-            .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
-
-          const firstPoint = points[0];
-          if (!firstPoint || firstPoint.timestamp > candidate.entry_time) {
-            points.unshift({
-              timestamp: candidate.entry_time,
-              price: entryPrice,
-              change_pct: 0,
-            });
-          } else if (points.length > 0) {
-            points[0] = {
-              price: points[0]!.price,
-              timestamp: candidate.entry_time,
-              change_pct: 0,
-            };
-          }
-
-          const exitPrice = candidate.exit_price > 0 ? candidate.exit_price : points[points.length - 1]?.price;
-          if (exitPrice && points.length > 0) {
-            const exitChange =
-              candidate.side === "short"
-                ? ((entryPrice - exitPrice) / entryPrice) * 100
-                : ((exitPrice - entryPrice) / entryPrice) * 100;
-
-            const lastPoint = points[points.length - 1];
-            if (!lastPoint || Math.abs(lastPoint.timestamp - candidate.exit_time) > 60_000) {
-              points.push({
-                timestamp: candidate.exit_time,
-                price: exitPrice,
-                change_pct: Number.isFinite(exitChange) ? exitChange : 0,
-              });
-            } else {
-              lastPoint.timestamp = candidate.exit_time;
-              lastPoint.price = exitPrice;
-              lastPoint.change_pct = Number.isFinite(exitChange) ? exitChange : lastPoint.change_pct;
-            }
-          }
-
-          const dedupedPoints = points
-            .sort((a, b) => a.timestamp - b.timestamp)
-            .filter((point, index, items) => index === 0 || items[index - 1]!.timestamp !== point.timestamp);
+          const exitPrice = candidate.exit_price > 0 ? candidate.exit_price : bars.at(-1)?.c;
+          const points = buildPositionHistoryPoints({
+            bars,
+            side: candidate.side,
+            entryTime: candidate.entry_time,
+            entryPrice,
+            terminalTime: candidate.exit_time,
+            terminalPrice: exitPrice,
+          });
 
           return {
             symbol: candidate.symbol,
@@ -2446,7 +2352,7 @@ export class MahoragaHarness extends DurableObject<Env> {
             exit_time: candidate.exit_time,
             exit_price: exitPrice || entryPrice,
             status: "SOLD",
-            points: dedupedPoints,
+            points,
           };
         })
       );

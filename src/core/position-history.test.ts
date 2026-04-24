@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPortfolioHistoryParams,
   buildPortfolioHistoryPayload,
+  buildPositionHistoryPoints,
   getPeriodStartMs,
   getPositionHistoryLimit,
   getPositionHistoryTimeframeCandidates,
@@ -10,6 +11,60 @@ import {
 } from "./position-history";
 
 describe("position history helpers", () => {
+  it("builds long position history points with entry and terminal points", () => {
+    expect(
+      buildPositionHistoryPoints({
+        bars: [
+          { t: "2026-04-24T10:05:00.000Z", c: 105 },
+          { t: "2026-04-24T10:10:00.000Z", c: 110 },
+        ],
+        side: "long",
+        entryTime: Date.parse("2026-04-24T10:00:00.000Z"),
+        entryPrice: 100,
+        terminalTime: Date.parse("2026-04-24T10:15:00.000Z"),
+        terminalPrice: 120,
+      })
+    ).toEqual([
+      { timestamp: Date.parse("2026-04-24T10:00:00.000Z"), price: 100, change_pct: 0 },
+      { timestamp: Date.parse("2026-04-24T10:05:00.000Z"), price: 105, change_pct: 5 },
+      { timestamp: Date.parse("2026-04-24T10:10:00.000Z"), price: 110, change_pct: 10 },
+      { timestamp: Date.parse("2026-04-24T10:15:00.000Z"), price: 120, change_pct: 20 },
+    ]);
+  });
+
+  it("builds short position history points with inverted change percentages", () => {
+    expect(
+      buildPositionHistoryPoints({
+        bars: [{ t: "2026-04-24T10:05:00.000Z", c: 90 }],
+        side: "short",
+        entryTime: Date.parse("2026-04-24T10:00:00.000Z"),
+        entryPrice: 100,
+        terminalTime: Date.parse("2026-04-24T10:10:00.000Z"),
+        terminalPrice: 80,
+      })
+    ).toEqual([
+      { timestamp: Date.parse("2026-04-24T10:00:00.000Z"), price: 100, change_pct: 0 },
+      { timestamp: Date.parse("2026-04-24T10:05:00.000Z"), price: 90, change_pct: 10 },
+      { timestamp: Date.parse("2026-04-24T10:10:00.000Z"), price: 80, change_pct: 20 },
+    ]);
+  });
+
+  it("replaces nearby terminal points instead of adding duplicates", () => {
+    expect(
+      buildPositionHistoryPoints({
+        bars: [{ t: "2026-04-24T10:00:30.000Z", c: 101 }],
+        side: "long",
+        entryTime: Date.parse("2026-04-24T10:00:00.000Z"),
+        entryPrice: 100,
+        terminalTime: Date.parse("2026-04-24T10:01:00.000Z"),
+        terminalPrice: 102,
+      })
+    ).toEqual([
+      { timestamp: Date.parse("2026-04-24T10:00:00.000Z"), price: 100, change_pct: 0 },
+      { timestamp: Date.parse("2026-04-24T10:01:00.000Z"), price: 102, change_pct: 2 },
+    ]);
+  });
+
   it("builds portfolio history params from URL search params", () => {
     const params = buildPortfolioHistoryParams(
       new URLSearchParams({

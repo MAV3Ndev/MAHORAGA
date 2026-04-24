@@ -1,4 +1,4 @@
-import type { PortfolioHistory, PortfolioHistoryParams } from "../providers/types";
+import type { Bar, PortfolioHistory, PortfolioHistoryParams } from "../providers/types";
 
 const PORTFOLIO_HISTORY_INTRADAY_REPORTING_VALUES = new Set(["market_hours", "extended_hours", "continuous"]);
 
@@ -13,6 +13,33 @@ export interface PortfolioHistoryPayload {
   snapshots: PortfolioHistorySnapshot[];
   base_value: number;
   timeframe: string;
+}
+
+export interface PositionHistoryPoint {
+  timestamp: number;
+  price: number;
+  change_pct: number;
+}
+
+export interface BuildPositionHistoryPointsParams {
+  bars: Pick<Bar, "t" | "c">[];
+  side: "long" | "short";
+  entryTime: number;
+  entryPrice: number;
+  terminalTime: number;
+  terminalPrice?: number;
+}
+
+function getPositionChangePct(side: "long" | "short", entryPrice: number, price: number): number {
+  const changePct = side === "short" ? ((entryPrice - price) / entryPrice) * 100 : ((price - entryPrice) / entryPrice) * 100;
+
+  return Number.isFinite(changePct) ? changePct : 0;
+}
+
+function dedupePositionHistoryPoints(points: PositionHistoryPoint[]): PositionHistoryPoint[] {
+  return points
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .filter((point, index, items) => index === 0 || items[index - 1]!.timestamp !== point.timestamp);
 }
 
 export function buildPortfolioHistoryParams(searchParams: URLSearchParams): PortfolioHistoryParams {
@@ -55,6 +82,62 @@ export function buildPortfolioHistoryPayload(history: PortfolioHistory): Portfol
     base_value: history.base_value,
     timeframe: history.timeframe,
   };
+}
+
+export function buildPositionHistoryPoints({
+  bars,
+  side,
+  entryTime,
+  entryPrice,
+  terminalTime,
+  terminalPrice,
+}: BuildPositionHistoryPointsParams): PositionHistoryPoint[] {
+  const points = bars
+    .map((bar) => {
+      const timestamp = new Date(bar.t).getTime();
+      if (!Number.isFinite(timestamp)) return null;
+
+      return {
+        timestamp,
+        price: bar.c,
+        change_pct: getPositionChangePct(side, entryPrice, bar.c),
+      };
+    })
+    .filter((point): point is PositionHistoryPoint => point !== null);
+
+  const firstPoint = points[0];
+  if (!firstPoint || firstPoint.timestamp > entryTime) {
+    points.unshift({
+      timestamp: entryTime,
+      price: entryPrice,
+      change_pct: 0,
+    });
+  } else if (points.length > 0) {
+    points[0] = {
+      price: points[0]!.price,
+      timestamp: entryTime,
+      change_pct: 0,
+    };
+  }
+
+  if (terminalPrice && points.length > 0) {
+    const terminalChange = getPositionChangePct(side, entryPrice, terminalPrice);
+    const lastPoint = points[points.length - 1];
+
+    if (!lastPoint || Math.abs(lastPoint.timestamp - terminalTime) > 60_000) {
+      points.push({
+        timestamp: terminalTime,
+        price: terminalPrice,
+        change_pct: terminalChange,
+      });
+    } else {
+      lastPoint.timestamp = terminalTime;
+      lastPoint.price = terminalPrice;
+      lastPoint.change_pct = terminalChange;
+    }
+  }
+
+  return dedupePositionHistoryPoints(points);
 }
 
 export function normalizePortfolioHistoryTimeframe(period: string, timeframe: string): string {
