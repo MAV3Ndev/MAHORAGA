@@ -19,6 +19,7 @@ import {
   normalizePortfolioHistoryTimeframe,
 } from "../core/position-history";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
+import { filterRecordBySymbols, limitTimestampedRecord } from "../core/record-utils";
 import {
   buildSocialSnapshot,
   getSocialSnapshotCache,
@@ -786,21 +787,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     return changed;
-  }
-
-  private limitTimestampedRecord<T extends { timestamp?: number }>(
-    records: Record<string, T>,
-    maxEntries: number
-  ): Record<string, T> {
-    return Object.fromEntries(
-      Object.entries(records)
-        .sort(([, a], [, b]) => (b?.timestamp || 0) - (a?.timestamp || 0))
-        .slice(0, maxEntries)
-    );
-  }
-
-  private filterRecordBySymbols<T>(records: Record<string, T>, symbols: Set<string>): Record<string, T> {
-    return Object.fromEntries(Object.entries(records).filter(([symbol]) => symbols.has(symbol)));
   }
 
   private getTrackedSymbolAliases(symbol: string): string[] {
@@ -2026,11 +2012,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     const activePositionSymbols = new Set((positions || []).map((position) => position.symbol));
-    const recentSignalResearch = this.limitTimestampedRecord(
+    const recentSignalResearch = limitTimestampedRecord(
       this.state.signalResearch,
       this.MAX_STATUS_SIGNAL_RESEARCH_ENTRIES
     );
-    const recentTwitterConfirmations = this.limitTimestampedRecord(
+    const recentTwitterConfirmations = limitTimestampedRecord(
       this.state.twitterConfirmations,
       this.MAX_STATUS_TWITTER_CONFIRMATIONS
     );
@@ -2052,10 +2038,10 @@ export class MahoragaHarness extends DurableObject<Env> {
         lastPositionResearchRun: this.state.lastPositionResearchRun,
         signalResearch: recentSignalResearch,
         positionResearch: this.state.positionResearch,
-        positionEntries: this.filterRecordBySymbols(this.state.positionEntries, activePositionSymbols),
+        positionEntries: filterRecordBySymbols(this.state.positionEntries, activePositionSymbols),
         twitterConfirmations: recentTwitterConfirmations,
         premarketPlan: this.state.premarketPlan,
-        stalenessAnalysis: this.filterRecordBySymbols(this.state.stalenessAnalysis, activePositionSymbols),
+        stalenessAnalysis: filterRecordBySymbols(this.state.stalenessAnalysis, activePositionSymbols),
       },
     });
   }
