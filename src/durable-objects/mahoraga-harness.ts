@@ -59,11 +59,6 @@ import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
 import { activeStrategy } from "../strategy";
 import { DEFAULT_STATE } from "../strategy/default/config";
-import {
-  checkTwitterBreakingNews,
-  gatherTwitterConfirmation,
-  isTwitterEnabled,
-} from "../strategy/default/gatherers/twitter";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
 import {
   computeAnalystRecommendationNotional,
@@ -77,8 +72,6 @@ import {
   shouldRescueBuiltInBlacklistedTicker,
   tickerCache,
 } from "../strategy/default/helpers/ticker";
-import { runCryptoTrading } from "../strategy/default/rules/crypto-trading";
-import { findBestOptionsContract } from "../strategy/default/rules/options";
 import type { StrategyContext } from "../strategy/types";
 
 interface TechnicalDataCacheEntry {
@@ -135,12 +128,23 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<AgentState>("state");
       let stateChanged = false;
+      const baseConfig = { ...DEFAULT_STATE.config, ...activeStrategy.defaultConfig };
       if (stored) {
         this.state = { ...DEFAULT_STATE, ...stored };
-        this.state.config = { ...DEFAULT_STATE.config, ...this.state.config };
+        this.state.config = { ...baseConfig, ...this.state.config };
+      } else {
+        this.state.config = baseConfig;
       }
       stateChanged = this.applyStateHygiene() || stateChanged;
       this.initializeLLM();
+
+      const dynamicState = this.state as unknown as Record<string, unknown>;
+      const strategyInitKey = `strategy.${activeStrategy.name}.initialized`;
+      if (!dynamicState[strategyInitKey]) {
+        await activeStrategy.hooks?.onInit?.(this.buildStrategyContext());
+        dynamicState[strategyInitKey] = true;
+        stateChanged = true;
+      }
 
       if (this.state.enabled) {
         const existingAlarm = await this.ctx.storage.getAlarm();
@@ -184,6 +188,26 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.lastLLMReinitAttemptAt = now;
     this.initializeLLM();
+  }
+
+  private validateAgentConfigCandidate(
+    config: unknown
+  ): { success: true; data: AgentConfig } | { success: false; error: { issues: unknown[] } } {
+    const baseValidation = safeValidateAgentConfig(config);
+    if (!baseValidation.success) {
+      return baseValidation;
+    }
+
+    if (!activeStrategy.configSchema) {
+      return baseValidation;
+    }
+
+    const strategyValidation = activeStrategy.configSchema.safeParse(baseValidation.data);
+    if (!strategyValidation.success) {
+      return { success: false, error: { issues: strategyValidation.error.issues } };
+    }
+
+    return { success: true, data: strategyValidation.data as AgentConfig };
   }
 
   private getDashboardConfig(): AgentConfig {
@@ -240,6 +264,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.refreshLLMProviderIfNeeded();
 
     const self = this;
+    let strategyContext: StrategyContext;
     const db = createD1Client(this.env.DB);
     const alpaca = createAlpacaProviders(this.env);
     const policyConfig = getDefaultPolicyConfig(this.env, {
@@ -270,15 +295,26 @@ export class MahoragaHarness extends DurableObject<Env> {
       afterHoursExitLimitBufferPct: self.state.config.after_hours_exit_limit_buffer_pct,
       defaultStopLossPct: self.state.config.stop_loss_pct,
       onBuy: async (trade) => {
+        await activeStrategy.hooks?.onBuy?.(strategyContext, trade.symbol, trade.notional);
         await self.sendDiscordTradeNotification("BUY", trade);
       },
       onSell: async (trade) => {
         self.clearTrackedSymbolState(trade.symbol);
+        await activeStrategy.hooks?.onSell?.(strategyContext, trade.symbol, trade.reason);
         await self.sendDiscordTradeNotification("SELL", trade);
       },
     });
 
-    return {
+    const createNamespacedState = (prefix: string) => ({
+      get<T>(key: string): T | undefined {
+        return (self.state as unknown as Record<string, unknown>)[`${prefix}.${key}`] as T | undefined;
+      },
+      set<T>(key: string, value: T): void {
+        (self.state as unknown as Record<string, unknown>)[`${prefix}.${key}`] = value;
+      },
+    });
+
+    strategyContext = {
       env: this.env,
       config: this.state.config,
       llm: this._llm,
@@ -293,10 +329,15 @@ export class MahoragaHarness extends DurableObject<Env> {
         set<T>(key: string, value: T): void {
           (self.state as unknown as Record<string, unknown>)[key] = value;
         },
+        namespace(prefix: string) {
+          return createNamespacedState(prefix);
+        },
       },
       signals: this.state.signalCache,
       positionEntries: this.state.positionEntries,
     };
+
+    return strategyContext;
   }
 
   // ============================================================================
@@ -332,6 +373,8 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (!clock.is_open && nextOpenValid) {
         this.state.lastKnownNextOpenMs = nextOpenMs;
       }
+
+      await activeStrategy.hooks?.onCycleStart?.(ctx, clock);
 
       // Data gathering
       if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
@@ -393,8 +436,8 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       // Crypto trading (24/7)
-      if (this.state.config.crypto_enabled) {
-        await runCryptoTrading(ctx, positions);
+      if (this.state.config.crypto_enabled && activeStrategy.capabilities?.runCryptoTrading) {
+        await activeStrategy.capabilities.runCryptoTrading(ctx, positions);
       }
 
       // Position research
@@ -450,9 +493,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
 
         // Twitter breaking news
-        if (isTwitterEnabled(ctx)) {
+        if (activeStrategy.capabilities?.checkBreakingNews) {
           const heldSymbols = positions.map((p) => p.symbol);
-          const breakingNews = await checkTwitterBreakingNews(ctx, heldSymbols);
+          const breakingNews = await activeStrategy.capabilities.checkBreakingNews(ctx, heldSymbols);
           for (const news of breakingNews) {
             if (news.is_breaking) {
               this.log("System", "twitter_breaking_news", {
@@ -468,6 +511,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       await this.maybeSendDailyDiscordReport(account, positions, now);
 
       this.state.lastClockIsOpen = clock.is_open;
+      await activeStrategy.hooks?.onCycleEnd?.(ctx);
       console.log("[Alarm] Persisting state");
       await this.persist();
       console.log("[Alarm] State persisted");
@@ -1622,19 +1666,17 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       let finalConfidence = entry.confidence;
 
-      // Twitter confirmation
-      if (isTwitterEnabled(ctx)) {
+      if (activeStrategy.capabilities?.confirmEntry) {
         const originalSignal = this.state.signalCache.find((s) => s.symbol === entry.symbol);
         if (originalSignal) {
-          const twitterConfirm = await gatherTwitterConfirmation(ctx, entry.symbol, originalSignal.sentiment);
-          if (twitterConfirm) {
-            this.state.twitterConfirmations[entry.symbol] = twitterConfirm;
-            if (twitterConfirm.confirms_existing) {
-              finalConfidence = Math.min(1.0, finalConfidence * 1.15);
-              this.log("System", "twitter_boost", { symbol: entry.symbol, new_confidence: finalConfidence });
-            } else if (twitterConfirm.sentiment !== 0) {
-              finalConfidence *= 0.85;
+          const confirmation = await activeStrategy.capabilities.confirmEntry(ctx, entry, originalSignal, finalConfidence);
+          if (confirmation) {
+            finalConfidence = confirmation.confidence;
+            if (confirmation.confirmation) {
+              this.state.twitterConfirmations[entry.symbol] =
+                confirmation.confirmation as AgentState["twitterConfirmations"][string];
             }
+            this.log("System", "entry_confirmation_adjusted", { symbol: entry.symbol, new_confidence: finalConfidence });
           }
         }
       }
@@ -1643,7 +1685,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Options routing
       if (entry.useOptions) {
-        const contract = await findBestOptionsContract(ctx, entry.symbol, "bullish", account.equity);
+        const contract = await activeStrategy.capabilities?.findOptionsContract?.(ctx, entry.symbol, "bullish", account.equity);
         if (contract) {
           const optionsReason = `${entry.reason} (options on ${entry.symbol})`;
           const result = await ctx.broker.buyOption(contract.symbol, Math.min(1, contract.max_contracts), optionsReason);
@@ -2038,7 +2080,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       envOpenaiBaseUrl: this.env.OPENAI_BASE_URL,
     });
 
-    const validation = safeValidateAgentConfig(merged);
+    const validation = this.validateAgentConfigCandidate(merged);
     if (!validation.success) {
       return new Response(
         JSON.stringify({ ok: false, error: "Invalid configuration", issues: validation.error.issues }),

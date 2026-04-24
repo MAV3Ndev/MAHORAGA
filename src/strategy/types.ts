@@ -72,6 +72,10 @@ export interface StrategyContext {
   state: {
     get<T>(key: string): T | undefined;
     set<T>(key: string, value: T): void;
+    namespace?: (prefix: string) => {
+      get<T>(key: string): T | undefined;
+      set<T>(key: string, value: T): void;
+    };
   };
 
   /** Current signal cache for this cycle */
@@ -142,6 +146,22 @@ export interface SellCandidate {
   reason: string;
 }
 
+export interface EntryConfirmationResult {
+  confidence: number;
+  confirmation?: unknown;
+}
+
+export interface StrategyOptionContract {
+  symbol: string;
+  max_contracts: number;
+}
+
+export interface StrategyBreakingNewsItem {
+  symbol: string;
+  headline: string;
+  is_breaking: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Gatherer — a named data source that produces signals
 // ---------------------------------------------------------------------------
@@ -201,6 +221,28 @@ export interface Strategy {
    * Core ALWAYS enforces stop-loss/take-profit from config on top of this.
    */
   selectExits: (ctx: StrategyContext, positions: Position[], account: Account) => SellCandidate[];
+
+  /**
+   * Optional strategy capabilities for flows that are not universal across strategies.
+   * Core calls these only when present; custom strategies are not forced to inherit
+   * default Twitter, crypto, or options behavior.
+   */
+  capabilities?: {
+    runCryptoTrading?: (ctx: StrategyContext, positions: Position[]) => Promise<void>;
+    confirmEntry?: (
+      ctx: StrategyContext,
+      candidate: BuyCandidate,
+      signal: Signal,
+      confidence: number
+    ) => Promise<EntryConfirmationResult | null>;
+    findOptionsContract?: (
+      ctx: StrategyContext,
+      symbol: string,
+      direction: "bullish" | "bearish",
+      equity: number
+    ) => Promise<StrategyOptionContract | null>;
+    checkBreakingNews?: (ctx: StrategyContext, symbols: string[]) => Promise<StrategyBreakingNewsItem[]>;
+  };
 
   /** Optional lifecycle hooks */
   hooks?: {
