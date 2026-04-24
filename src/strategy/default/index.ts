@@ -23,6 +23,7 @@ import { checkTwitterBreakingNews, gatherTwitterConfirmation, isTwitterEnabled }
 import { analyzeSignalsPrompt } from "./prompts/analyst";
 import { premarketPrompt } from "./prompts/premarket";
 import { researchPositionPrompt, researchSignalPrompt } from "./prompts/research";
+import { filterDefaultEligibleSignals, prepareDefaultDataGathering } from "./helpers/signal-filter";
 import { runCryptoTrading } from "./rules/crypto-trading";
 import { selectEntries } from "./rules/entries";
 import { selectExits } from "./rules/exits";
@@ -46,6 +47,8 @@ export const defaultStrategy: Strategy = {
   selectExits,
 
   capabilities: {
+    prepareDataGathering: prepareDefaultDataGathering,
+    filterSignals: filterDefaultEligibleSignals,
     runCryptoTrading,
     async confirmEntry(ctx, _candidate, signal, confidence) {
       if (!isTwitterEnabled(ctx)) return null;

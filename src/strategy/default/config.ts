@@ -7,6 +7,7 @@
  */
 
 import type { AgentConfig, AgentState } from "../../core/types";
+import { createInitialAgentState } from "../../core/initial-state";
 
 // ── Source weights & tuning ──────────────────────────────────────────────────
 
@@ -138,30 +139,4 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
 // ── Default agent state ──────────────────────────────────────────────────────
 
-export const DEFAULT_STATE: AgentState = {
-  config: DEFAULT_CONFIG,
-  signalCache: [],
-  positionEntries: {},
-  socialHistory: {},
-  socialSnapshotCache: {},
-  socialSnapshotCacheUpdatedAt: 0,
-  logs: [],
-  dailyReportBuckets: {},
-  costTracker: { total_usd: 0, calls: 0, tokens_in: 0, tokens_out: 0 },
-  lastDataGatherRun: 0,
-  lastAnalystRun: 0,
-  lastResearchRun: 0,
-  lastPositionResearchRun: 0,
-  signalResearch: {},
-  positionResearch: {},
-  stalenessAnalysis: {},
-  twitterConfirmations: {},
-  twitterDailyReads: 0,
-  twitterDailyReadReset: 0,
-  lastKnownNextOpenMs: null,
-  premarketPlan: null,
-  lastPremarketPlanDayEt: null,
-  lastClockIsOpen: null,
-  lastDailyReportSentAt: null,
-  enabled: false,
-};
+export const DEFAULT_STATE: AgentState = createInitialAgentState(DEFAULT_CONFIG);

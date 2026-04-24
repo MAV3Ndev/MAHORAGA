@@ -186,8 +186,8 @@ export interface Strategy {
    */
   configSchema: z.ZodType | null;
 
-  /** Default config values (merged over core defaults at startup) */
-  defaultConfig: Partial<AgentConfig>;
+  /** Complete default config values for this strategy. */
+  defaultConfig: AgentConfig;
 
   /**
    * Data gatherers. Core calls all of them in parallel each data-gather cycle,
@@ -228,6 +228,8 @@ export interface Strategy {
    * default Twitter, crypto, or options behavior.
    */
   capabilities?: {
+    prepareDataGathering?: (ctx: StrategyContext) => Promise<void>;
+    filterSignals?: (ctx: StrategyContext, signals: Signal[]) => Promise<Signal[]>;
     runCryptoTrading?: (ctx: StrategyContext, positions: Position[]) => Promise<void>;
     confirmEntry?: (
       ctx: StrategyContext,

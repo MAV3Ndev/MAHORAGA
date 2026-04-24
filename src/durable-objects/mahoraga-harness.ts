@@ -10,7 +10,12 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import {
+  computeAnalystRecommendationNotional,
+  shouldBypassLlmMinHold,
+} from "../core/analyst-recommendations";
 import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
+import { createInitialAgentState } from "../core/initial-state";
 import {
   buildMarketSessionState,
   POSITION_RESEARCH_INTERVAL_MS,
@@ -67,20 +72,7 @@ import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
 import { activeStrategy } from "../strategy";
-import { DEFAULT_STATE } from "../strategy/default/config";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
-import {
-  computeAnalystRecommendationNotional,
-  shouldBypassLlmMinHold,
-} from "../strategy/default/helpers/analyst-guardrails";
-import {
-  isBroadMarketProxyTicker,
-  isBuiltInTickerBlacklisted,
-  isCustomTickerBlacklisted,
-  isTickerBlacklisted,
-  shouldRescueBuiltInBlacklistedTicker,
-  tickerCache,
-} from "../strategy/default/helpers/ticker";
 import type { StrategyContext } from "../strategy/types";
 
 interface TechnicalDataCacheEntry {
@@ -107,7 +99,7 @@ interface MomentumDataCacheEntry {
 // ============================================================================
 
 export class MahoragaHarness extends DurableObject<Env> {
-  private state: AgentState = { ...DEFAULT_STATE };
+  private state: AgentState = createInitialAgentState(activeStrategy.defaultConfig);
   private _llm: LLMProvider | null = null;
   private lastLLMReinitAttemptAt = 0;
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
@@ -137,9 +129,10 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<AgentState>("state");
       let stateChanged = false;
-      const baseConfig = { ...DEFAULT_STATE.config, ...activeStrategy.defaultConfig };
+      const defaultState = createInitialAgentState(activeStrategy.defaultConfig);
+      const baseConfig = activeStrategy.defaultConfig;
       if (stored) {
-        this.state = { ...DEFAULT_STATE, ...stored };
+        this.state = { ...defaultState, ...stored };
         this.state.config = { ...baseConfig, ...this.state.config };
       } else {
         this.state.config = baseConfig;
@@ -549,7 +542,7 @@ export class MahoragaHarness extends DurableObject<Env> {
   private async runDataGatherers(ctx: StrategyContext): Promise<void> {
     this.log("System", "gathering_data", {});
 
-    await tickerCache.refreshSecTickersIfNeeded();
+    await activeStrategy.capabilities?.prepareDataGathering?.(ctx);
     const positions = await ctx.broker.getPositions().catch(() => []);
 
     const results = await Promise.allSettled(activeStrategy.gatherers.map((g) => g.gather(ctx)));
@@ -572,7 +565,9 @@ export class MahoragaHarness extends DurableObject<Env> {
     const now = Date.now();
 
     const recentSignals = allSignals.filter((s) => now - s.timestamp < MAX_AGE_MS);
-    const eligibleSignals = await this.filterEligibleSignals(ctx, recentSignals);
+    const eligibleSignals = activeStrategy.capabilities?.filterSignals
+      ? await activeStrategy.capabilities.filterSignals(ctx, recentSignals)
+      : recentSignals;
 
     const socialSnapshot = buildSocialSnapshot(eligibleSignals);
     updateSocialHistoryFromSnapshot(this.state.socialHistory, socialSnapshot, now);
@@ -589,79 +584,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     await this.refreshMarketContext(ctx, freshSignals, positions);
 
     this.log("System", "data_gathered", { ...counts, total: this.state.signalCache.length });
-  }
-
-  private async filterEligibleSignals(ctx: StrategyContext, signals: Signal[]): Promise<Signal[]> {
-    const alpaca = createAlpacaProviders(this.env);
-    const filtered: Signal[] = [];
-
-    for (const signal of signals) {
-      const symbol = signal.symbol?.toUpperCase().trim();
-      if (!symbol) continue;
-
-      if (isBroadMarketProxyTicker(symbol)) {
-        ctx.log("System", "signal_filtered_broad_market_proxy", { symbol });
-        continue;
-      }
-
-      if (signal.isCrypto || isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
-        if (isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
-          filtered.push({ ...signal, symbol: normalizeCryptoSymbol(symbol), isCrypto: true });
-        } else {
-          ctx.log("System", "signal_filtered_unconfigured_crypto", { symbol });
-        }
-        continue;
-      }
-
-      const customBlacklisted = isCustomTickerBlacklisted(symbol, ctx.config.ticker_blacklist);
-      const builtInBlacklisted = isBuiltInTickerBlacklisted(symbol);
-      const blacklisted = builtInBlacklisted || customBlacklisted;
-
-      if (tickerCache.isKnownSecTicker(symbol)) {
-        if (isTickerBlacklisted(symbol, ctx.config.ticker_blacklist) && !shouldRescueBuiltInBlacklistedTicker(symbol, {
-          customBlacklist: ctx.config.ticker_blacklist,
-          knownSecTicker: true,
-        })) {
-          ctx.log("System", "signal_filtered_blacklist", { symbol });
-          continue;
-        }
-        if (shouldRescueBuiltInBlacklistedTicker(symbol, {
-          customBlacklist: ctx.config.ticker_blacklist,
-          knownSecTicker: true,
-        })) {
-          ctx.log("System", "signal_rescued_builtin_blacklist", { symbol, source: "sec" });
-        }
-        filtered.push({ ...signal, symbol });
-        continue;
-      }
-
-      if (blacklisted && customBlacklisted) {
-        ctx.log("System", "signal_filtered_blacklist", { symbol });
-        continue;
-      }
-
-      const cached = tickerCache.getCachedValidation(symbol);
-      const isValid = cached ?? (await tickerCache.validateWithAlpaca(symbol, alpaca));
-      if (!isValid) {
-        if (blacklisted) {
-          ctx.log("System", "signal_filtered_blacklist", { symbol });
-        } else {
-          ctx.log("System", "signal_filtered_invalid_ticker", { symbol });
-        }
-        continue;
-      }
-
-      if (shouldRescueBuiltInBlacklistedTicker(symbol, {
-        customBlacklist: ctx.config.ticker_blacklist,
-        alpacaValid: true,
-      })) {
-        ctx.log("System", "signal_rescued_builtin_blacklist", { symbol, source: "alpaca" });
-      }
-
-      filtered.push({ ...signal, symbol });
-    }
-
-    return filtered;
   }
 
   private applyStateHygiene(): boolean {
