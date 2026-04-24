@@ -6,10 +6,125 @@
  * because it trades 24/7 outside of market hours.
  */
 
-import type { Position, ResearchResult } from "../../../core/types";
+import type { Position, PositionEntry, ResearchResult, Signal, SocialSnapshotCacheEntry } from "../../../core/types";
 import { createAlpacaProviders } from "../../../providers/alpaca";
+import { buildCryptoFallbackResearch } from "../helpers/research-fallback";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
 import type { StrategyContext } from "../../types";
+
+function stripJsonCodeFences(content: string): string {
+  return content
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*$/gi, "")
+    .replace(/```\s*/gi, "")
+    .replace(/^[\n\r]+/, "")
+    .trim();
+}
+
+function extractFirstJSONObject(content: string): string {
+  const cleaned = stripJsonCodeFences(content);
+  const startIndex = cleaned.indexOf("{");
+
+  if (startIndex === -1) {
+    return cleaned;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let index = startIndex; index < cleaned.length; index++) {
+    const char = cleaned[index];
+
+    if (isEscaped) {
+      isEscaped = false;
+      continue;
+    }
+
+    if (char === "\\" && inString) {
+      isEscaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return cleaned.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return cleaned.slice(startIndex);
+}
+
+function parseResearchAnalysis(content: string): {
+  verdict: "BUY" | "SKIP" | "WAIT";
+  confidence: number;
+  entry_quality: "excellent" | "good" | "fair" | "poor";
+  reasoning: string;
+  red_flags?: string[];
+  catalysts?: string[];
+} {
+  const cleaned = stripJsonCodeFences(content);
+  const extracted = extractFirstJSONObject(content);
+  const candidates = extracted === cleaned ? [cleaned] : [cleaned, extracted];
+  let lastError: unknown = null;
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Failed to parse crypto research JSON");
+}
+
+function trackCryptoPositionEntry(
+  ctx: StrategyContext,
+  signal: Signal,
+  research: ResearchResult,
+  reason: string
+): void {
+  const socialSnapshot = ctx.state.get<Record<string, SocialSnapshotCacheEntry>>("socialSnapshotCache") ?? {};
+  const snapshotEntry = getCryptoSymbolAliases(signal.symbol)
+    .map((alias) => socialSnapshot[alias])
+    .find((entry) => !!entry);
+
+  const entry: PositionEntry = {
+    symbol: normalizeCryptoSymbol(signal.symbol),
+    entry_time: Date.now(),
+    entry_price: signal.price ?? 0,
+    entry_sentiment: snapshotEntry?.sentiment ?? signal.sentiment,
+    entry_social_volume: snapshotEntry?.volume ?? signal.volume ?? 0,
+    entry_sources: snapshotEntry?.sources ?? [signal.source || "crypto"],
+    entry_reason: reason,
+    peak_price: signal.price ?? 0,
+    peak_sentiment: snapshotEntry?.sentiment ?? signal.sentiment,
+    recommended_entry_zone: research.recommended_entry_zone,
+    recommended_stop_loss_pct: research.stop_loss_pct,
+    recommended_take_profit_pct: research.take_profit_pct,
+  };
+
+  for (const alias of getCryptoSymbolAliases(signal.symbol)) {
+    ctx.positionEntries[alias] = entry;
+  }
+}
 
 /**
  * Research a crypto symbol for BUY/SKIP/WAIT verdict.
@@ -75,6 +190,7 @@ JSON response:
         ],
         max_tokens: 1500,
         temperature: 0.3,
+        response_format: { type: "json_object" },
       });
 
       const usage = response.usage;
@@ -99,39 +215,27 @@ JSON response:
       };
 
       try {
-        // Strip markdown code blocks and normalize whitespace
-        let cleaned = content
-          .replace(/```json\s*/gi, "")
-          .replace(/```\s*$/gi, "")
-          .replace(/```\s*/gi, "")
-          .replace(/^[\n\r]+/, "")
-          .trim();
-
-        // Try to extract JSON object if content has extra text
-        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          cleaned = jsonMatch[0];
-        }
-
-        analysis = JSON.parse(cleaned);
+        analysis = parseResearchAnalysis(content);
       } catch (parseError) {
         ctx.log("Crypto", "research_parse_error", {
           symbol,
           attempt,
           content_preview: content.substring(0, 100),
+          content_length: content.length,
           error: String(parseError),
         });
-        // If parse fails, treat as SKIP with low confidence
-        return {
+
+        if (attempt < MAX_RETRIES - 1) {
+          continue;
+        }
+
+        return buildCryptoFallbackResearch(
+          ctx,
           symbol,
-          verdict: "SKIP",
-          confidence: 0.1,
-          entry_quality: "poor",
-          reasoning: "LLM returned invalid JSON: " + content.substring(0, 50),
-          red_flags: ["JSON parse failed"],
-          catalysts: [],
-          timestamp: Date.now(),
-        };
+          momentum,
+          sentiment,
+          `LLM returned malformed JSON after ${MAX_RETRIES} attempts`
+        );
       }
 
       // Validate verdict (case-insensitive)
@@ -313,6 +417,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       : `Crypto momentum: ${research.reasoning}`;
     const result = await ctx.broker.buy(signal.symbol, positionSize, tradeReason);
     if (result) {
+      trackCryptoPositionEntry(ctx, signal, research, tradeReason);
       for (const alias of getCryptoSymbolAliases(signal.symbol)) {
         heldCrypto.add(alias);
       }

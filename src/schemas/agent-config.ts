@@ -18,6 +18,8 @@ export const AgentConfigSchema = z
     take_profit_pct: z.number().min(1).max(100),
     stop_loss_pct: z.number().min(1).max(50),
     position_size_pct_of_cash: z.number().min(1).max(100),
+    equity_entry_cutoff_minutes_before_close: z.number().int().min(0).max(120),
+    after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
 
     stale_position_enabled: z.boolean(),
     stale_min_hold_hours: z.number().min(0).max(168),
@@ -32,6 +34,11 @@ export const AgentConfigSchema = z
     llm_analyst_model: z.string().min(1),
     openai_base_url: z.string().max(500),
     llm_min_hold_minutes: z.number().min(0).max(1440),
+    llm_force_sell_pnl_pct: z.number().min(0).max(50),
+    llm_force_sell_min_confidence: z.number().min(0).max(1),
+    llm_size_conviction_scaling: z.boolean(),
+    llm_size_low_confidence_multiplier: z.number().min(0.1).max(1),
+    llm_size_medium_confidence_multiplier: z.number().min(0.1).max(1),
 
     options_enabled: z.boolean(),
     options_min_confidence: z.number().min(0).max(1),

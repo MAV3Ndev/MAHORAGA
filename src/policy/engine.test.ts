@@ -392,6 +392,23 @@ describe("PolicyEngine", () => {
       expect(result.violations.some((v) => v.rule === "max_position_pct")).toBe(true);
     });
 
+    it("includes existing crypto position value across alias formats", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 100000,
+          notional: 3000,
+        }),
+        account: createTestAccount({ equity: 50000 }),
+        positions: [createTestPosition({ symbol: "BTCUSD", asset_class: "crypto", market_value: 2500 })],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "max_position_pct")).toBe(true);
+    });
+
     it("adds warning when approaching position size limit", () => {
       engine = new PolicyEngine(createTestConfig({ max_position_pct_equity: 0.1 }));
       const ctx = createTestContext({
@@ -429,6 +446,28 @@ describe("PolicyEngine", () => {
           createTestPosition({ symbol: "MSFT" }),
           createTestPosition({ symbol: "AMZN" }),
           createTestPosition({ symbol: "META" }),
+        ],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "max_open_positions")).toBe(false);
+    });
+
+    it("treats compact crypto holdings as an existing position", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 100000,
+          notional: 1000,
+        }),
+        positions: [
+          createTestPosition({ symbol: "BTCUSD", asset_class: "crypto" }),
+          createTestPosition({ symbol: "AAPL" }),
+          createTestPosition({ symbol: "GOOG" }),
+          createTestPosition({ symbol: "MSFT" }),
+          createTestPosition({ symbol: "AMZN" }),
         ],
       });
 

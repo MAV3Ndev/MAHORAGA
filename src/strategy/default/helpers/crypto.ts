@@ -21,6 +21,17 @@ export function compactCryptoSymbol(symbol: string): string {
   return normalizeCryptoSymbol(symbol).replace("/", "");
 }
 
+/** Check whether two symbols refer to the same asset, including crypto alias forms. */
+export function areEquivalentAssetSymbols(left: string, right: string): boolean {
+  const normalizedLeft = left.trim().toUpperCase();
+  const normalizedRight = right.trim().toUpperCase();
+
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (normalizedLeft === normalizedRight) return true;
+
+  return normalizeCryptoSymbol(normalizedLeft) === normalizeCryptoSymbol(normalizedRight);
+}
+
 /** Return all common aliases for a crypto symbol. */
 export function getCryptoSymbolAliases(symbol: string): string[] {
   const aliases = new Set<string>();

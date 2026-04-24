@@ -1,8 +1,112 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ResearchResult } from "../../../core/types";
-import { runCryptoTrading } from "./crypto-trading";
+import { createAlpacaProviders } from "../../../providers/alpaca";
+import { researchCrypto, runCryptoTrading } from "./crypto-trading";
+
+vi.mock("../../../providers/alpaca", () => ({
+  createAlpacaProviders: vi.fn(),
+}));
 
 describe("crypto trading", () => {
+  it("retries malformed crypto research JSON and requests json_object output", async () => {
+    vi.mocked(createAlpacaProviders).mockReturnValue({
+      marketData: {
+        getCryptoSnapshot: vi.fn(async () => ({
+          latest_trade: { price: 65000 },
+          daily_bar: { c: 66000 },
+          prev_daily_bar: { c: 64000 },
+        })),
+      },
+    } as never);
+
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: '{"verdict":"WAIT","confidence":0.6,"entry_quality":"fair","reasoning":"Momentum',
+        usage: { prompt_tokens: 10, completion_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: '{"verdict":"BUY","confidence":0.72,"entry_quality":"good","reasoning":"Momentum is constructive.","red_flags":[],"catalysts":["Trend strength"]}',
+        usage: { prompt_tokens: 10, completion_tokens: 20 },
+      });
+
+    const result = await researchCrypto(
+      {
+        env: {} as never,
+        config: {
+          llm_model: "test-model",
+          min_analyst_confidence: 0.6,
+          crypto_momentum_threshold: 2,
+        },
+        llm: { complete } as never,
+        log: () => {},
+        trackLLMCost: () => 0,
+        sleep: async () => {},
+        broker: {} as never,
+        state: {} as never,
+        signals: [],
+        positionEntries: {},
+      } as never,
+      "BTC/USD",
+      3,
+      0.6
+    );
+
+    expect(result).toMatchObject({
+      symbol: "BTC/USD",
+      verdict: "BUY",
+      confidence: 0.72,
+      entry_quality: "good",
+    });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete.mock.calls[0]?.[0]).toMatchObject({
+      response_format: { type: "json_object" },
+    });
+  });
+
+  it("falls back to heuristic crypto research after repeated parse failures", async () => {
+    vi.mocked(createAlpacaProviders).mockReturnValue({
+      marketData: {
+        getCryptoSnapshot: vi.fn(async () => null),
+      },
+    } as never);
+
+    const result = await researchCrypto(
+      {
+        env: {} as never,
+        config: {
+          llm_model: "test-model",
+          min_analyst_confidence: 0.6,
+          crypto_momentum_threshold: 2,
+        },
+        llm: {
+          complete: vi.fn(async () => ({
+            content: '{"verdict":"WAIT","confidence":0.6,"entry_quality":"fair","reasoning":"Broken',
+            usage: { prompt_tokens: 10, completion_tokens: 20 },
+          })),
+        } as never,
+        log: () => {},
+        trackLLMCost: () => 0,
+        sleep: async () => {},
+        broker: {} as never,
+        state: {} as never,
+        signals: [],
+        positionEntries: {},
+      } as never,
+      "BTC/USD",
+      3,
+      0.6
+    );
+
+    expect(result).toMatchObject({
+      symbol: "BTC/USD",
+      verdict: "BUY",
+      entry_quality: "fair",
+    });
+    expect(result?.reasoning).toContain("malformed JSON");
+    expect(result?.red_flags).toContain("Fallback crypto research used because the LLM was unavailable or rate-limited.");
+  });
+
   it("treats compact crypto position symbols as already held", async () => {
     const buy = vi.fn(async () => true);
 
@@ -58,6 +162,7 @@ describe("crypto trading", () => {
 
   it("promotes cached WAIT crypto research when confidence is actionable", async () => {
     const buy = vi.fn(async () => true);
+    const positionEntries: Record<string, ResearchResult | unknown> = {};
     const cachedResearch: ResearchResult = {
       symbol: "BTC/USD",
       verdict: "WAIT",
@@ -100,6 +205,7 @@ describe("crypto trading", () => {
         get: (key: string) => (key === "cryptoResearch_BTC/USD" ? cachedResearch : undefined),
         set: () => {},
       },
+      positionEntries,
     } as never;
 
     await runCryptoTrading(ctx, [] as never);
@@ -109,5 +215,7 @@ describe("crypto trading", () => {
       1500,
       "Crypto momentum (promoted WAIT): Momentum is constructive and pullbacks are shallow."
     );
+    expect(positionEntries["BTC/USD"]).toBeTruthy();
+    expect(positionEntries.BTCUSD).toBe(positionEntries["BTC/USD"]);
   });
 });

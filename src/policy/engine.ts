@@ -31,6 +31,7 @@ import type {
 } from "../mcp/types";
 import type { Account, MarketClock, Position } from "../providers/types";
 import type { RiskState } from "../storage/d1/queries/risk-state";
+import { areEquivalentAssetSymbols } from "../strategy/default/helpers/crypto";
 import type { OptionsStrategy, PolicyConfig } from "./config";
 
 export interface PolicyContext {
@@ -51,6 +52,10 @@ export interface OptionsPolicyContext {
 
 export class PolicyEngine {
   constructor(public config: PolicyConfig) {}
+
+  private findExistingPosition(positions: Position[], symbol: string): Position | undefined {
+    return positions.find((position) => areEquivalentAssetSymbols(position.symbol, symbol));
+  }
 
   evaluate(ctx: PolicyContext): PolicyResult {
     const violations: PolicyViolation[] = [];
@@ -226,7 +231,7 @@ export class PolicyEngine {
     if (ctx.order.side !== "buy") return;
 
     const estimatedNotional = this.estimateNotional(ctx.order);
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const existingValue = existingPosition?.market_value ?? 0;
     const totalPositionValue = estimatedNotional + existingValue;
     const positionPct = totalPositionValue / ctx.account.equity;
@@ -249,7 +254,7 @@ export class PolicyEngine {
   private checkOpenPositionsLimit(ctx: PolicyContext, violations: PolicyViolation[]): void {
     if (ctx.order.side !== "buy") return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const isNewPosition = !existingPosition;
     const openPositionCount = ctx.positions.length;
 
@@ -267,7 +272,7 @@ export class PolicyEngine {
     if (ctx.order.side !== "sell") return;
     if (this.config.allow_short_selling) return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
 
     if (!existingPosition) {
       violations.push({

@@ -120,14 +120,13 @@ export class AISDKProvider implements LLMProvider {
       let providerName = (parts[0] ?? "openai").toLowerCase() as SupportedProvider;
       const modelId = parts.slice(1).join(separator) || modelSpec;
 
-      // If model doesn't have provider prefix, or the prefix isn't a known provider, default to first available provider
+      // Require an explicit provider prefix so requests cannot silently route to a different provider.
       const hasValidPrefix = parts.length > 1 && providerName in SUPPORTED_PROVIDERS;
-      if (!hasValidPrefix || !this.providers[providerName]) {
-        // Use first available provider
-        const firstProvider = Object.keys(this.providers)[0] as SupportedProvider;
-        if (firstProvider) {
-          providerName = firstProvider;
-        }
+      if (!hasValidPrefix) {
+        throw createError(
+          ErrorCode.INVALID_INPUT,
+          `Model '${modelSpec}' must use provider/model format. Available providers: ${this.getAvailableProviders().join(", ")}`
+        );
       }
 
       // Get provider instance

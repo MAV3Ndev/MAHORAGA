@@ -10,7 +10,8 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { createPolicyBroker } from "../core/policy-broker";
+import { createPolicyBroker, isWithinExtendedHoursSession } from "../core/policy-broker";
+import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
 import type {
   AgentState,
   LogEntry,
@@ -30,6 +31,7 @@ import {
   shouldSendDailyReport,
   summarizeDailyActivity,
 } from "../lib/discord-report";
+import { parseLlmJsonObject } from "../lib/llm-json";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
@@ -46,6 +48,10 @@ import {
   isTwitterEnabled,
 } from "../strategy/default/gatherers/twitter";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import {
+  computeAnalystRecommendationNotional,
+  shouldBypassLlmMinHold,
+} from "../strategy/default/helpers/analyst-guardrails";
 import {
   isBroadMarketProxyTicker,
   isBuiltInTickerBlacklisted,
@@ -220,6 +226,10 @@ export class MahoragaHarness extends DurableObject<Env> {
     const db = createD1Client(this.env.DB);
     const alpaca = createAlpacaProviders(this.env);
     const policyConfig = getDefaultPolicyConfig(this.env, {
+      max_notional_per_trade: Math.max(
+        this.state.config.max_position_value,
+        this.state.config.crypto_max_position_value ?? 0
+      ),
       max_open_positions: this.state.config.max_positions,
       options: {
         options_enabled: this.state.config.options_enabled,
@@ -239,6 +249,9 @@ export class MahoragaHarness extends DurableObject<Env> {
       log: (agent, action, details) => self.log(agent, action, details),
       cryptoSymbols: self.state.config.crypto_symbols || [],
       allowedExchanges: self.state.config.allowed_exchanges ?? ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
+      equityEntryCutoffMinutesBeforeClose: self.state.config.equity_entry_cutoff_minutes_before_close,
+      afterHoursExitLimitBufferPct: self.state.config.after_hours_exit_limit_buffer_pct,
+      defaultStopLossPct: self.state.config.stop_loss_pct,
       onBuy: async (trade) => {
         await self.sendDiscordTradeNotification("BUY", trade);
       },
@@ -354,10 +367,32 @@ export class MahoragaHarness extends DurableObject<Env> {
       const positions = await ctx.broker.getPositions();
       console.log("[Alarm] Got positions", { count: positions.length });
       await this.syncTrackedPositionEntries(positions);
+      if (clock.is_open) {
+        await ctx.broker.syncProtectiveStops(positions);
+      }
+
+      if (!clock.is_open && isWithinExtendedHoursSession(clock.timestamp)) {
+        await this.runExtendedHoursExitSweep(ctx, positions);
+      }
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
         await runCryptoTrading(ctx, positions);
+      }
+
+      // Position research
+      if (shouldRunPositionResearch(
+        positions,
+        clock.is_open,
+        now,
+        this.state.lastPositionResearchRun,
+        POSITION_RESEARCH_INTERVAL_MS
+      )) {
+        const researchCandidates = getPositionResearchCandidates(positions, clock.is_open);
+        for (const pos of researchCandidates) {
+          await this.callPositionResearch(ctx, pos);
+        }
+        this.state.lastPositionResearchRun = now;
       }
 
       // Market-hours logic
@@ -381,16 +416,6 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (now - this.state.lastAnalystRun >= this.state.config.analyst_interval_ms) {
           await this.runAnalyst(ctx);
           this.state.lastAnalystRun = now;
-        }
-
-        // Position research
-        if (positions.length > 0 && now - this.state.lastPositionResearchRun >= POSITION_RESEARCH_INTERVAL_MS) {
-          for (const pos of positions) {
-            if (pos.asset_class !== "us_option") {
-              await this.callPositionResearch(ctx, pos);
-            }
-          }
-          this.state.lastPositionResearchRun = now;
         }
 
         // Options exits (checked every tick, not just analyst cycle)
@@ -872,11 +897,24 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private findTrackedPositionEntry(symbol: string): PositionEntry | undefined {
-    for (const alias of this.getTrackedSymbolAliases(symbol)) {
-      const entry = this.state.positionEntries[alias];
-      if (entry) return entry;
+    const candidates = this.getTrackedSymbolAliases(symbol)
+      .map((alias) => this.state.positionEntries[alias])
+      .filter((entry): entry is PositionEntry => !!entry);
+
+    if (candidates.length === 0) {
+      return undefined;
     }
-    return undefined;
+
+    candidates.sort((a, b) => {
+      const aRecovered = a.entry_reason === "Recovered from broker position" ? 1 : 0;
+      const bRecovered = b.entry_reason === "Recovered from broker position" ? 1 : 0;
+      if (aRecovered !== bRecovered) {
+        return aRecovered - bRecovered;
+      }
+      return (b.entry_time || 0) - (a.entry_time || 0);
+    });
+
+    return candidates[0];
   }
 
   private getSocialSnapshotEntry(
@@ -938,8 +976,10 @@ export class MahoragaHarness extends DurableObject<Env> {
       return true;
     }
 
-    // Repair legacy entries whose tracked time is much newer than the broker's filled order.
-    return entry.entry_time - inferredEntry.entry_time > 30 * 60 * 1000;
+    // For explicitly tracked entries created at buy time, trust the in-memory timestamp.
+    // Broker order history can lag or refer to an older round-trip, especially for crypto
+    // aliases like SOL/USD vs SOLUSD, and overwriting here can trigger false stale exits.
+    return false;
   }
 
   private inferPositionEntryFromOrders(symbol: string, orders: Order[]): Pick<PositionEntry, "entry_time" | "entry_price"> | null {
@@ -970,13 +1010,17 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
     }
 
-    const fallbackBuyOrder = [...relevantOrders].reverse().find((order) => order.side === "buy") ?? relevantOrders[relevantOrders.length - 1] ?? null;
-    const entryOrder = currentEntryOrder ?? fallbackBuyOrder;
-    if (!entryOrder) return null;
+    // Only infer an entry from closed orders when the historical fill sequence still
+    // implies an open lot. If the symbol was fully closed and then reopened recently,
+    // the new buy may not be in `closed` orders yet; falling back to the last historical
+    // buy would incorrectly age the fresh position and can trigger immediate stale exits.
+    if (netQty <= 0 || !currentEntryOrder) {
+      return null;
+    }
 
-    const entryTimeSource = entryOrder.filled_at || entryOrder.submitted_at || entryOrder.created_at;
+    const entryTimeSource = currentEntryOrder.filled_at || currentEntryOrder.submitted_at || currentEntryOrder.created_at;
     const entryTime = new Date(entryTimeSource).getTime();
-    const entryPrice = Number.parseFloat(entryOrder.filled_avg_price || "0");
+    const entryPrice = Number.parseFloat(currentEntryOrder.filled_avg_price || "0");
 
     return {
       entry_time: Number.isFinite(entryTime) ? entryTime : Date.now(),
@@ -1100,6 +1144,12 @@ export class MahoragaHarness extends DurableObject<Env> {
       const currentSentiment = this.getSocialSnapshotEntry(socialSnapshot, pos.symbol)?.sentiment;
       if (typeof currentSentiment === "number") {
         entry.peak_sentiment = Math.max(entry.peak_sentiment, currentSentiment);
+      }
+
+      // Keep crypto/equity aliases in sync so downstream consumers do not pick up
+      // an older recovered entry from one alias and a newer explicit entry from another.
+      for (const alias of this.getTrackedSymbolAliases(pos.symbol)) {
+        this.state.positionEntries[alias] = entry;
       }
     }
   }
@@ -1455,7 +1505,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim()) as {
+      const analysis = parseLlmJsonObject<{
         verdict: "BUY" | "SKIP" | "WAIT";
         confidence: number;
         entry_quality: "excellent" | "good" | "fair" | "poor";
@@ -1465,7 +1515,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         recommended_entry_zone?: string;
         stop_loss_pct?: number;
         take_profit_pct?: number;
-      };
+      }>(content);
 
       const result: ResearchResult = {
         symbol,
@@ -1524,12 +1574,21 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim());
+      const analysis = parseLlmJsonObject<{
+        recommendation?: "HOLD" | "SELL" | "ADD";
+        risk_level?: "low" | "medium" | "high";
+        reasoning?: string;
+        key_factors?: string[];
+        exit_strategy?: string;
+      }>(content);
       this.state.positionResearch[position.symbol] = { ...analysis, timestamp: Date.now() };
       this.log("PositionResearch", "position_analyzed", {
         symbol: position.symbol,
         recommendation: analysis.recommendation,
         risk: analysis.risk_level,
+        reasoning: analysis.reasoning,
+        key_factors: Array.isArray(analysis.key_factors) ? analysis.key_factors : [],
+        exit_strategy: analysis.exit_strategy,
       });
     } catch (error) {
       this.log("PositionResearch", "error", { symbol: position.symbol, message: String(error) });
@@ -1576,7 +1635,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       const content = response.content || "{}";
-      const analysis = JSON.parse(content.replace(/```json\n?|```/g, "").trim()) as {
+      const analysis = parseLlmJsonObject<{
         recommendations: Array<{
           action: "BUY" | "SELL" | "HOLD";
           symbol: string;
@@ -1586,7 +1645,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         }>;
         market_summary: string;
         high_conviction_plays?: string[];
-      };
+      }>(content);
 
       this.log("Analyst", "analysis_complete", {
         recommendations: analysis.recommendations?.length || 0,
@@ -1621,6 +1680,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     await this.syncTrackedPositionEntries(positions);
     const heldSymbols = new Set(positions.map((p) => p.symbol));
+    const positionsBySymbol = new Map(positions.map((position) => [position.symbol, position]));
     const socialSnapshot = this.getSocialSnapshotCache();
 
     // Strategy exit decisions
@@ -1745,8 +1805,21 @@ export class MahoragaHarness extends DurableObject<Env> {
         const posEntry = this.findTrackedPositionEntry(rec.symbol);
         const holdMinutes = posEntry ? (Date.now() - posEntry.entry_time) / (1000 * 60) : 0;
         const minHold = this.state.config.llm_min_hold_minutes ?? 30;
+        const position = positionsBySymbol.get(rec.symbol);
+        const pnlPct =
+          position && position.market_value - position.unrealized_pl > 0
+            ? (position.unrealized_pl / (position.market_value - position.unrealized_pl)) * 100
+            : null;
+        const bypassMinHold = shouldBypassLlmMinHold({
+          holdMinutes,
+          minHoldMinutes: minHold,
+          pnlPct,
+          confidence: rec.confidence,
+          forceSellPnlPct: this.state.config.llm_force_sell_pnl_pct,
+          forceSellMinConfidence: this.state.config.llm_force_sell_min_confidence,
+        });
 
-        if (holdMinutes < minHold) {
+        if (holdMinutes < minHold && !bypassMinHold) {
           this.log("Analyst", "llm_sell_blocked", {
             symbol: rec.symbol,
             holdMinutes: Math.round(holdMinutes),
@@ -1754,6 +1827,16 @@ export class MahoragaHarness extends DurableObject<Env> {
             reason: "Position held less than minimum hold time",
           });
           continue;
+        }
+
+        if (holdMinutes < minHold && bypassMinHold) {
+          this.log("Analyst", "llm_sell_override_min_hold", {
+            symbol: rec.symbol,
+            holdMinutes: Math.round(holdMinutes),
+            minRequired: minHold,
+            pnlPct: pnlPct?.toFixed(1) ?? "n/a",
+            confidence: rec.confidence,
+          });
         }
 
         const result = await ctx.broker.sell(rec.symbol, `LLM recommendation: ${rec.reasoning}`);
@@ -1786,15 +1869,27 @@ export class MahoragaHarness extends DurableObject<Env> {
           continue;
         }
 
-        const sizePct = this.state.config.position_size_pct_of_cash;
-        const notional = Math.min(
-          account.cash * (sizePct / 100) * rec.confidence,
-          this.state.config.max_position_value
-        );
+        const notional = computeAnalystRecommendationNotional({
+          cash: account.cash,
+          basePositionSizePct: this.state.config.position_size_pct_of_cash,
+          confidence: rec.confidence,
+          maxPositionValue: this.state.config.max_position_value,
+          suggestedSizePct: rec.suggested_size_pct,
+          convictionScalingEnabled: this.state.config.llm_size_conviction_scaling,
+          lowConfidenceMultiplier: this.state.config.llm_size_low_confidence_multiplier,
+          mediumConfidenceMultiplier: this.state.config.llm_size_medium_confidence_multiplier,
+        });
         if (notional < 100) {
           this.log("Analyst", "llm_buy_blocked_small_notional", { symbol: rec.symbol, notional, min_notional: 100 });
           continue;
         }
+
+        this.log("Analyst", "llm_buy_sized", {
+          symbol: rec.symbol,
+          confidence: rec.confidence,
+          suggested_size_pct: rec.suggested_size_pct,
+          notional: Number(notional.toFixed(2)),
+        });
 
         const result = await ctx.broker.buy(rec.symbol, notional, rec.reasoning);
         if (result) {
@@ -1889,11 +1984,16 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (heldSymbols.has(rec.symbol)) continue;
         if (positions.length >= this.state.config.max_positions) break;
 
-        const sizePct = this.state.config.position_size_pct_of_cash;
-        const notional = Math.min(
-          account.cash * (sizePct / 100) * rec.confidence,
-          this.state.config.max_position_value
-        );
+        const notional = computeAnalystRecommendationNotional({
+          cash: account.cash,
+          basePositionSizePct: this.state.config.position_size_pct_of_cash,
+          confidence: rec.confidence,
+          maxPositionValue: this.state.config.max_position_value,
+          suggestedSizePct: rec.suggested_size_pct,
+          convictionScalingEnabled: this.state.config.llm_size_conviction_scaling,
+          lowConfidenceMultiplier: this.state.config.llm_size_low_confidence_multiplier,
+          mediumConfidenceMultiplier: this.state.config.llm_size_medium_confidence_multiplier,
+        });
         if (notional < 100) continue;
 
         const result = await ctx.broker.buy(rec.symbol, notional, `Pre-market plan: ${rec.reasoning}`);
@@ -2176,6 +2276,29 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
   }
 
+  private async runExtendedHoursExitSweep(ctx: StrategyContext, positions: Position[]): Promise<void> {
+    const equityPositions = positions.filter((position) => position.asset_class === "us_equity");
+    if (equityPositions.length === 0) {
+      return;
+    }
+
+    const account = await ctx.broker.getAccount().catch(() => null);
+    if (!account) {
+      this.log("System", "after_hours_exit_sweep_skipped", { reason: "Account unavailable" });
+      return;
+    }
+
+    const exits = activeStrategy.selectExits(ctx, positions, account);
+    if (exits.length === 0) {
+      return;
+    }
+
+    this.log("System", "after_hours_exit_sweep", { exits: exits.length });
+    for (const exit of exits) {
+      await ctx.broker.sell(exit.symbol, `After-hours sweep: ${exit.reason}`);
+    }
+  }
+
   private normalizePortfolioHistoryTimeframe(period: string, timeframe: string): string {
     const normalizedPeriod = period.trim().toUpperCase();
     const normalizedTimeframe = timeframe.trim();
@@ -2234,6 +2357,15 @@ export class MahoragaHarness extends DurableObject<Env> {
     return period === "1D" ? 120 : period === "7D" ? 240 : 180;
   }
 
+  private getPositionHistoryTimeframeMs(timeframe: string): number {
+    if (timeframe === "1Min") return 60_000;
+    if (timeframe === "5Min") return 5 * 60_000;
+    if (timeframe === "15Min") return 15 * 60_000;
+    if (timeframe === "1Hour") return 60 * 60_000;
+    if (timeframe === "1Day") return 24 * 60 * 60_000;
+    return 60 * 60_000;
+  }
+
   private async fetchPositionHistoryBars(
     alpaca: ReturnType<typeof createAlpacaProviders>,
     symbol: string,
@@ -2244,6 +2376,8 @@ export class MahoragaHarness extends DurableObject<Env> {
     endMs: number
   ) {
     let bestBars: Awaited<ReturnType<typeof alpaca.marketData.getBars>> = [];
+    let bestSpanMs = 0;
+    const desiredSpanMs = Math.max(0, endMs - startMs);
 
     for (const timeframe of this.getPositionHistoryTimeframeCandidates(period, preferredTimeframe)) {
       const baseParams = {
@@ -2265,11 +2399,27 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (bars.length > 0) break;
       }
 
-      if (bars.length > bestBars.length) {
+      const firstBar = bars[0];
+      const lastBar = bars.at(-1);
+      const firstBarMs = firstBar?.t ? new Date(firstBar.t).getTime() : NaN;
+      const lastBarMs = lastBar?.t ? new Date(lastBar.t).getTime() : NaN;
+      const coveredSpanMs =
+        Number.isFinite(firstBarMs) && Number.isFinite(lastBarMs) ? Math.max(0, lastBarMs - firstBarMs) : 0;
+      const timeframeMs = this.getPositionHistoryTimeframeMs(timeframe);
+      const expectedSpanMs = Math.max(0, this.getPositionHistoryLimit(period, timeframe) - 1) * timeframeMs;
+      const hasFullCoverage =
+        bars.length > 1 &&
+        Number.isFinite(firstBarMs) &&
+        Number.isFinite(lastBarMs) &&
+        firstBarMs <= startMs + timeframeMs &&
+        (lastBarMs >= endMs - timeframeMs || expectedSpanMs >= desiredSpanMs);
+
+      if (coveredSpanMs > bestSpanMs || (coveredSpanMs === bestSpanMs && bars.length > bestBars.length)) {
         bestBars = bars;
+        bestSpanMs = coveredSpanMs;
       }
 
-      if (bars.length > 2) {
+      if (hasFullCoverage) {
         return bars;
       }
     }
@@ -2389,8 +2539,8 @@ export class MahoragaHarness extends DurableObject<Env> {
           const entry = this.findTrackedPositionEntry(position.symbol);
           if (!entry) return null;
 
-          const visibleEntryTime = Math.max(periodStartMs, entry.entry_time || periodStartMs);
-          const startMs = visibleEntryTime;
+          const entryTime = entry.entry_time || periodStartMs;
+          const startMs = entryTime;
           const endMs = nowMs;
           const isCryptoPosition = position.asset_class === "crypto" || isCryptoSymbol(position.symbol, this.state.config.crypto_symbols || []);
           const historySymbol = isCryptoPosition ? normalizeCryptoSymbol(position.symbol) : position.symbol;
@@ -2418,16 +2568,16 @@ export class MahoragaHarness extends DurableObject<Env> {
             .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
 
           const firstPoint = points[0];
-          if (!firstPoint || firstPoint.timestamp > visibleEntryTime) {
+          if (!firstPoint || firstPoint.timestamp > entryTime) {
             points.unshift({
-              timestamp: visibleEntryTime,
+              timestamp: entryTime,
               price: entryPrice,
               change_pct: 0,
             });
           } else if (points.length > 0) {
             points[0] = {
               price: points[0]!.price,
-              timestamp: visibleEntryTime,
+              timestamp: entryTime,
               change_pct: 0,
             };
           }
@@ -2469,8 +2619,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       const closedHistories = await Promise.all(
         closedCandidates.map(async (candidate) => {
-          const visibleEntryTime = Math.max(periodStartMs, candidate.entry_time);
-          const startMs = visibleEntryTime;
+          const startMs = candidate.entry_time;
           const endMs = candidate.exit_time;
           const isCryptoPosition =
             candidate.asset_class === "crypto" ||
@@ -2500,16 +2649,16 @@ export class MahoragaHarness extends DurableObject<Env> {
             .filter((point): point is { timestamp: number; price: number; change_pct: number } => point !== null);
 
           const firstPoint = points[0];
-          if (!firstPoint || firstPoint.timestamp > visibleEntryTime) {
+          if (!firstPoint || firstPoint.timestamp > candidate.entry_time) {
             points.unshift({
-              timestamp: visibleEntryTime,
+              timestamp: candidate.entry_time,
               price: entryPrice,
               change_pct: 0,
             });
           } else if (points.length > 0) {
             points[0] = {
               price: points[0]!.price,
-              timestamp: visibleEntryTime,
+              timestamp: candidate.entry_time,
               change_pct: 0,
             };
           }

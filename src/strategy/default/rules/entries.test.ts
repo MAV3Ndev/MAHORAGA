@@ -35,6 +35,7 @@ function createTestContext(): StrategyContext {
       buy: async () => true,
       buyOption: async () => true,
       sell: async () => true,
+      syncProtectiveStops: async () => {},
     },
     state: {
       get: <T>(key: string) => state.get(key) as T | undefined,

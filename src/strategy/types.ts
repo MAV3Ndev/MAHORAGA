@@ -60,6 +60,8 @@ export interface StrategyContext {
     buyOption(contractSymbol: string, quantity: number, reason: string): Promise<boolean>;
     /** Close a position. Returns true if the close was submitted. */
     sell(symbol: string, reason: string): Promise<boolean>;
+    /** Ensure broker-native protection exists for open equity positions. */
+    syncProtectiveStops(positions: Position[]): Promise<void>;
   };
 
   /**

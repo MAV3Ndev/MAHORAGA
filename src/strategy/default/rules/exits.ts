@@ -109,6 +109,16 @@ export function selectExits(ctx: StrategyContext, positions: Position[], _accoun
       continue;
     }
 
+    const positionResearch = getPositionResearch(pos.symbol, ctx);
+    if (positionResearch?.recommendation === "SELL") {
+      const reasoning = positionResearch.reasoning?.trim();
+      exits.push({
+        symbol: pos.symbol,
+        reason: reasoning ? `Position research SELL: ${reasoning}` : "Position research SELL recommendation",
+      });
+      continue;
+    }
+
     // Staleness check
     if (ctx.config.stale_position_enabled) {
       // Get current social volume from strategy state
@@ -187,6 +197,30 @@ function getPositionEntry(symbol: string, ctx: StrategyContext) {
 
   for (const alias of getCryptoSymbolAliases(symbol)) {
     const candidate = ctx.positionEntries[alias];
+    if (candidate) return candidate;
+  }
+
+  return undefined;
+}
+
+function getPositionResearch(symbol: string, ctx: StrategyContext):
+  | {
+      recommendation?: "HOLD" | "SELL" | "ADD";
+      reasoning?: string;
+    }
+  | undefined {
+  const research = ctx.state.get<Record<string, { recommendation?: "HOLD" | "SELL" | "ADD"; reasoning?: string }>>(
+    "positionResearch"
+  );
+  const directMatch = research?.[symbol];
+  if (directMatch) return directMatch;
+
+  if (!isCryptoSymbol(symbol, ctx.config.crypto_symbols || [])) {
+    return undefined;
+  }
+
+  for (const alias of getCryptoSymbolAliases(symbol)) {
+    const candidate = research?.[alias];
     if (candidate) return candidate;
   }
 

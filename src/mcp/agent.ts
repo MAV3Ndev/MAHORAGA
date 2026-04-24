@@ -35,6 +35,7 @@ import { getPolicyConfig } from "../storage/d1/queries/policy-config";
 import { disableKillSwitch, enableKillSwitch, getRiskState } from "../storage/d1/queries/risk-state";
 import { insertToolLog } from "../storage/d1/queries/tool-logs";
 import { createTrade } from "../storage/d1/queries/trades";
+import { areEquivalentAssetSymbols } from "../strategy/default/helpers/crypto";
 import type { OptionsOrderPreview } from "./types";
 import { failure, success } from "./types";
 
@@ -244,7 +245,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
         try {
           const positions = await alpaca.trading.getPositions();
           const filtered = symbol
-            ? positions.filter((p) => p.symbol.toUpperCase() === symbol.toUpperCase())
+            ? positions.filter((p) => areEquivalentAssetSymbols(p.symbol, symbol))
             : positions;
 
           const result = success({
@@ -1061,7 +1062,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
             alpaca.trading.getPositions(),
           ]);
 
-          const position = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+          const position = positions.find((p) => areEquivalentAssetSymbols(p.symbol, symbol));
 
           const result = success({
             symbol: symbol.toUpperCase(),
@@ -1637,7 +1638,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
           ]);
 
           const technicals = computeTechnicals(symbol.toUpperCase(), bars);
-          const position = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+          const position = positions.find((p) => areEquivalentAssetSymbols(p.symbol, symbol));
 
           const report = await generateResearchReport(this.llm, symbol.toUpperCase(), {
             overview: {
