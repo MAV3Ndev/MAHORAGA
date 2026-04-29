@@ -21,6 +21,7 @@
  * within the configured TTL (default 5 minutes) to execute the order.
  */
 
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type {
   OptionsOrderPreview,
   OptionsPolicyResult,
@@ -52,6 +53,10 @@ export interface OptionsPolicyContext {
 export class PolicyEngine {
   constructor(public config: PolicyConfig) {}
 
+  private findExistingPosition(positions: Position[], symbol: string): Position | undefined {
+    return positions.find((position) => areEquivalentAssetSymbols(position.symbol, symbol));
+  }
+
   evaluate(ctx: PolicyContext): PolicyResult {
     const violations: PolicyViolation[] = [];
     const warnings: PolicyWarning[] = [];
@@ -63,6 +68,8 @@ export class PolicyEngine {
     this.checkSymbolFilters(ctx, violations);
     this.checkOrderType(ctx, violations);
     this.checkNotionalLimit(ctx, violations);
+    this.checkMinPrice(ctx, violations);
+    this.checkAverageVolume(ctx, violations);
     this.checkPositionSize(ctx, violations, warnings);
     this.checkOpenPositionsLimit(ctx, violations);
     this.checkShortSelling(ctx, violations);
@@ -188,11 +195,43 @@ export class PolicyEngine {
     }
   }
 
+  private checkMinPrice(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy" || ctx.order.asset_class !== "us_equity") return;
+
+    const price = ctx.order.estimated_price ?? ctx.order.limit_price ?? ctx.order.stop_price;
+    if (!Number.isFinite(price) || !price || price <= 0) return;
+
+    if (price < this.config.min_price) {
+      violations.push({
+        rule: "min_price",
+        message: `Estimated price $${price.toFixed(2)} is below minimum allowed price of $${this.config.min_price.toFixed(2)}`,
+        current_value: price,
+        limit_value: this.config.min_price,
+      });
+    }
+  }
+
+  private checkAverageVolume(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy" || ctx.order.asset_class !== "us_equity") return;
+
+    const avgVolume = ctx.order.avg_volume_20d;
+    if (!Number.isFinite(avgVolume) || !avgVolume || avgVolume <= 0) return;
+
+    if (avgVolume < this.config.min_avg_volume) {
+      violations.push({
+        rule: "min_avg_volume",
+        message: `Average daily volume ${Math.round(avgVolume).toLocaleString()} is below minimum ${Math.round(this.config.min_avg_volume).toLocaleString()}`,
+        current_value: avgVolume,
+        limit_value: this.config.min_avg_volume,
+      });
+    }
+  }
+
   private checkPositionSize(ctx: PolicyContext, violations: PolicyViolation[], warnings: PolicyWarning[]): void {
     if (ctx.order.side !== "buy") return;
 
     const estimatedNotional = this.estimateNotional(ctx.order);
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const existingValue = existingPosition?.market_value ?? 0;
     const totalPositionValue = estimatedNotional + existingValue;
     const positionPct = totalPositionValue / ctx.account.equity;
@@ -215,7 +254,7 @@ export class PolicyEngine {
   private checkOpenPositionsLimit(ctx: PolicyContext, violations: PolicyViolation[]): void {
     if (ctx.order.side !== "buy") return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const isNewPosition = !existingPosition;
     const openPositionCount = ctx.positions.length;
 
@@ -233,7 +272,7 @@ export class PolicyEngine {
     if (ctx.order.side !== "sell") return;
     if (this.config.allow_short_selling) return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
 
     if (!existingPosition) {
       violations.push({

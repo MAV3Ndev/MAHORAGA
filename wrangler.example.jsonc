@@ -25,17 +25,21 @@
 	// - KILL_SWITCH_SECRET (emergency kill switch + approval token signing)
 	// 
 	// LLM Provider (choose one mode):
-	// - LLM_PROVIDER ("openai-raw" | "ai-sdk" | "vercel-gateway", default: "openai-raw")
+	// - LLM_PROVIDER ("openai-raw" | "ai-sdk" | "cloudflare-gateway", default: "openai-raw")
 	// - LLM_MODEL (model identifier, e.g. "gpt-4o-mini" or "anthropic/claude-sonnet-4")
 	//
 	// Provider API Keys (based on LLM_PROVIDER mode):
 	// - OPENAI_API_KEY (for openai-raw, or ai-sdk with OpenAI models)
 	// - OPENAI_BASE_URL (optional override for OpenAI-compatible proxy; affects openai-raw and ai-sdk OpenAI models)
 	// - ANTHROPIC_API_KEY (for ai-sdk with Anthropic models)
+	// - ANTHROPIC_AUTH_TOKEN (optional alternative Bearer token for Anthropic-compatible proxies)
+	// - ANTHROPIC_BASE_URL (optional override for Anthropic-compatible proxy)
 	// - GOOGLE_GENERATIVE_AI_API_KEY (for ai-sdk with Google models)
 	// - XAI_API_KEY (for ai-sdk with xAI/Grok models)
 	// - DEEPSEEK_API_KEY (for ai-sdk with DeepSeek models)
-	// - AI_GATEWAY_API_KEY (for vercel-gateway unified access)
+	// - CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID (for cloudflare-gateway)
+	// - CLOUDFLARE_AI_GATEWAY_ID (for cloudflare-gateway)
+	// - CLOUDFLARE_AI_GATEWAY_TOKEN (for cloudflare-gateway)
 	//
 	// Optional:
 	// - ALPACA_PAPER ("true" for paper trading)

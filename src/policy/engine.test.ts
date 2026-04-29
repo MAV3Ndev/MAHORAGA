@@ -325,6 +325,51 @@ describe("PolicyEngine", () => {
     });
   });
 
+  describe("price and liquidity filters", () => {
+    it("blocks equity buys below the minimum share price", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "PENNY",
+          estimated_price: 0.75,
+          notional: 750,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_price")).toBe(true);
+    });
+
+    it("blocks equity buys below the minimum average volume", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "THIN",
+          avg_volume_20d: 25_000,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_avg_volume")).toBe(true);
+    });
+
+    it("does not apply equity liquidity checks to crypto", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 0.5,
+          avg_volume_20d: 1,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "min_price")).toBe(false);
+      expect(result.violations.some((v) => v.rule === "min_avg_volume")).toBe(false);
+    });
+  });
+
   describe("position size limits", () => {
     it("blocks buy orders that would exceed position % of equity", () => {
       const ctx = createTestContext({
@@ -341,6 +386,23 @@ describe("PolicyEngine", () => {
         order: createTestOrder({ notional: 4000 }),
         account: createTestAccount({ equity: 50000 }),
         positions: [createTestPosition({ symbol: "AAPL", market_value: 3000 })],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "max_position_pct")).toBe(true);
+    });
+
+    it("includes existing crypto position value across alias formats", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 100000,
+          notional: 3000,
+        }),
+        account: createTestAccount({ equity: 50000 }),
+        positions: [createTestPosition({ symbol: "BTCUSD", asset_class: "crypto", market_value: 2500 })],
       });
 
       const result = engine.evaluate(ctx);
@@ -384,6 +446,28 @@ describe("PolicyEngine", () => {
           createTestPosition({ symbol: "MSFT" }),
           createTestPosition({ symbol: "AMZN" }),
           createTestPosition({ symbol: "META" }),
+        ],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "max_open_positions")).toBe(false);
+    });
+
+    it("treats compact crypto holdings as an existing position", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({
+          symbol: "BTC/USD",
+          asset_class: "crypto",
+          time_in_force: "gtc",
+          estimated_price: 100000,
+          notional: 1000,
+        }),
+        positions: [
+          createTestPosition({ symbol: "BTCUSD", asset_class: "crypto" }),
+          createTestPosition({ symbol: "AAPL" }),
+          createTestPosition({ symbol: "GOOG" }),
+          createTestPosition({ symbol: "MSFT" }),
+          createTestPosition({ symbol: "AMZN" }),
         ],
       });
 

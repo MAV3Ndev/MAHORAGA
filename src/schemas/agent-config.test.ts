@@ -11,9 +11,14 @@ function createValidConfig() {
     max_positions: 5,
     min_sentiment_score: 0.3,
     min_analyst_confidence: 0.6,
+    signal_research_limit: 8,
+    entry_candidate_limit: 5,
     take_profit_pct: 10,
     stop_loss_pct: 5,
+    risk_per_trade_pct: 0.75,
     position_size_pct_of_cash: 10,
+    equity_entry_cutoff_minutes_before_close: 15,
+    after_hours_exit_limit_buffer_pct: 0.25,
     stale_position_enabled: true,
     stale_min_hold_hours: 4,
     stale_max_hold_days: 7,
@@ -24,7 +29,13 @@ function createValidConfig() {
     llm_provider: "openai-raw" as const,
     llm_model: "gpt-4o-mini",
     llm_analyst_model: "gpt-4o",
-    llm_min_hold_minutes: 30,
+    openai_base_url: "",
+    llm_min_hold_minutes: 15,
+    llm_force_sell_pnl_pct: 2,
+    llm_force_sell_min_confidence: 0.65,
+    llm_size_conviction_scaling: true,
+    llm_size_low_confidence_multiplier: 0.4,
+    llm_size_medium_confidence_multiplier: 0.7,
     options_enabled: false,
     options_min_confidence: 0.8,
     options_max_pct_per_trade: 0.02,
@@ -43,6 +54,34 @@ function createValidConfig() {
     crypto_stop_loss_pct: 10,
     ticker_blacklist: [],
     allowed_exchanges: ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
+    discord_daily_report_enabled: false,
+    discord_daily_report_time: "21:00",
+    discord_daily_report_timezone: "Asia/Tokyo",
+    trailing_stop_enabled: true,
+    trailing_stop_pct: 3.5,
+    trailing_stop_activation_pct: 5,
+    dynamic_tp_enabled: true,
+    tp_atr_multiplier: 3,
+    tp_min_pct: 5,
+    tp_max_pct: 25,
+    dynamic_tp_fallback_pct: 12,
+    entry_timing_enabled: true,
+    entry_require_technical_data: false,
+    entry_rsi_min: 40,
+    entry_rsi_max: 55,
+    entry_bb_lower_threshold: 0.2,
+    min_signal_quality_score: 0.35,
+    scoring_enabled: true,
+    scoring_sentiment_weight: 0.3,
+    scoring_technical_weight: 0.35,
+    scoring_catalyst_weight: 0.2,
+    scoring_momentum_weight: 0.15,
+    market_regime_enabled: true,
+    regime_low_threshold: 0.5,
+    regime_position_size_reduction: 0.45,
+    portfolio_risk_enabled: true,
+    max_positions_per_sector: 2,
+    unknown_sector_max_positions: 2,
   };
 }
 
@@ -93,6 +132,16 @@ describe("AgentConfigSchema", () => {
       const config = { ...createValidConfig(), max_positions: 0 };
       const result = AgentConfigSchema.safeParse(config);
       expect(result.success).toBe(false);
+    });
+
+    it("rejects signal_research_limit outside 1-20", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), signal_research_limit: 0 }).success).toBe(false);
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), signal_research_limit: 21 }).success).toBe(false);
+    });
+
+    it("rejects entry_candidate_limit outside 1-10", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), entry_candidate_limit: 0 }).success).toBe(false);
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), entry_candidate_limit: 11 }).success).toBe(false);
     });
 
     it("rejects sentiment scores outside 0-1 range", () => {
@@ -151,6 +200,22 @@ describe("AgentConfigSchema", () => {
 
     it("rejects stop_loss_pct over 50", () => {
       const config = { ...createValidConfig(), stop_loss_pct: 75 };
+      const result = AgentConfigSchema.safeParse(config);
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects invalid risk controls", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), risk_per_trade_pct: 0 }).success).toBe(false);
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), min_signal_quality_score: 1.5 }).success).toBe(
+        false
+      );
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), unknown_sector_max_positions: -1 }).success).toBe(
+        false
+      );
+    });
+
+    it("rejects invalid discord daily report time", () => {
+      const config = { ...createValidConfig(), discord_daily_report_time: "25:99" };
       const result = AgentConfigSchema.safeParse(config);
       expect(result.success).toBe(false);
     });

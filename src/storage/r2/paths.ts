@@ -11,6 +11,8 @@ export const R2Paths = {
     `scraped/${domain}/${encodeURIComponent(path)}/${timestamp}.html`,
 
   tradeSnapshot: (tradeId: string) => `trades/${tradeId}/snapshot.json`,
+
+  tradeDecisionSnapshot: (date: string, decisionId: string) => `trade-decisions/${date}/${decisionId}.json`,
 } as const;
 
 export function parseNewsPath(key: string): {

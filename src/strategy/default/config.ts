@@ -6,6 +6,7 @@
  * DEFAULT_STATE: Initial state for a fresh agent
  */
 
+import { createInitialAgentState } from "../../core/initial-state";
 import type { AgentConfig, AgentState } from "../../core/types";
 
 // ── Source weights & tuning ──────────────────────────────────────────────────
@@ -13,11 +14,11 @@ import type { AgentConfig, AgentState } from "../../core/types";
 export const SOURCE_CONFIG = {
   weights: {
     stocktwits: 0.85,
-    reddit_wallstreetbets: 0.6,
+    reddit_wallstreetbets: 0.45,
     reddit_stocks: 0.9,
     reddit_investing: 0.8,
     reddit_options: 0.85,
-    twitter_fintwit: 0.95,
+    twitter_fintwit: 0.85,
     twitter_news: 0.9,
     sec_8k: 0.95,
     sec_4: 0.9,
@@ -54,22 +55,33 @@ export const DEFAULT_CONFIG: AgentConfig = {
   market_open_execute_window_minutes: 2,
   max_position_value: 5000,
   max_positions: 5,
-  min_sentiment_score: 0.3,
-  min_analyst_confidence: 0.6,
+  min_sentiment_score: 0.4,
+  min_analyst_confidence: 0.68,
+  signal_research_limit: 8,
+  entry_candidate_limit: 5,
   take_profit_pct: 10,
   stop_loss_pct: 5,
-  position_size_pct_of_cash: 25,
+  risk_per_trade_pct: 0.75,
+  position_size_pct_of_cash: 15,
+  equity_entry_cutoff_minutes_before_close: 15,
+  after_hours_exit_limit_buffer_pct: 0.25,
   stale_position_enabled: true,
-  stale_min_hold_hours: 24,
-  stale_max_hold_days: 3,
+  stale_min_hold_hours: 12,
+  stale_max_hold_days: 2,
   stale_min_gain_pct: 5,
-  stale_mid_hold_days: 2,
+  stale_mid_hold_days: 1,
   stale_mid_min_gain_pct: 3,
   stale_social_volume_decay: 0.3,
   llm_provider: "openai-raw",
   llm_model: "gpt-4o-mini",
   llm_analyst_model: "gpt-4o",
-  llm_min_hold_minutes: 30,
+  openai_base_url: "",
+  llm_min_hold_minutes: 15,
+  llm_force_sell_pnl_pct: 2,
+  llm_force_sell_min_confidence: 0.65,
+  llm_size_conviction_scaling: true,
+  llm_size_low_confidence_multiplier: 0.4,
+  llm_size_medium_confidence_multiplier: 0.7,
   options_enabled: false,
   options_min_confidence: 0.8,
   options_max_pct_per_trade: 0.02,
@@ -88,32 +100,48 @@ export const DEFAULT_CONFIG: AgentConfig = {
   crypto_stop_loss_pct: 5,
   ticker_blacklist: [],
   allowed_exchanges: ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
+  discord_daily_report_enabled: false,
+  discord_daily_report_time: "21:00",
+  discord_daily_report_timezone: "UTC",
+
+  // ── Trailing Stop ──────────────────────────────────────────────────────────
+  trailing_stop_enabled: true,
+  trailing_stop_pct: 3.5,
+  trailing_stop_activation_pct: 5,
+
+  // ── Dynamic Take Profit ────────────────────────────────────────────────────
+  dynamic_tp_enabled: true,
+  tp_atr_multiplier: 3,
+  tp_min_pct: 5,
+  tp_max_pct: 25,
+  dynamic_tp_fallback_pct: 12,
+
+  // ── Entry Timing Filters ────────────────────────────────────────────────────
+  entry_timing_enabled: true,
+  entry_require_technical_data: false,
+  entry_rsi_min: 40,
+  entry_rsi_max: 55,
+  entry_bb_lower_threshold: 0.2,
+  min_signal_quality_score: 0.35,
+
+  // ── Composite Scoring ──────────────────────────────────────────────────────
+  scoring_enabled: true,
+  scoring_sentiment_weight: 0.3,
+  scoring_technical_weight: 0.35,
+  scoring_catalyst_weight: 0.2,
+  scoring_momentum_weight: 0.15,
+
+  // ── Market Regime ──────────────────────────────────────────────────────────
+  market_regime_enabled: true,
+  regime_low_threshold: 0.5,
+  regime_position_size_reduction: 0.45,
+
+  // ── Portfolio Risk ─────────────────────────────────────────────────────────
+  portfolio_risk_enabled: true,
+  max_positions_per_sector: 2,
+  unknown_sector_max_positions: 2,
 };
 
 // ── Default agent state ──────────────────────────────────────────────────────
 
-export const DEFAULT_STATE: AgentState = {
-  config: DEFAULT_CONFIG,
-  signalCache: [],
-  positionEntries: {},
-  socialHistory: {},
-  socialSnapshotCache: {},
-  socialSnapshotCacheUpdatedAt: 0,
-  logs: [],
-  costTracker: { total_usd: 0, calls: 0, tokens_in: 0, tokens_out: 0 },
-  lastDataGatherRun: 0,
-  lastAnalystRun: 0,
-  lastResearchRun: 0,
-  lastPositionResearchRun: 0,
-  signalResearch: {},
-  positionResearch: {},
-  stalenessAnalysis: {},
-  twitterConfirmations: {},
-  twitterDailyReads: 0,
-  twitterDailyReadReset: 0,
-  lastKnownNextOpenMs: null,
-  premarketPlan: null,
-  lastPremarketPlanDayEt: null,
-  lastClockIsOpen: null,
-  enabled: false,
-};
+export const DEFAULT_STATE: AgentState = createInitialAgentState(DEFAULT_CONFIG);

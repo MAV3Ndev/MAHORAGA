@@ -214,6 +214,43 @@ describe("LLM Provider Factory", () => {
         expect(createAnthropicMock).toHaveBeenCalledWith({ apiKey: "sk-ant-test" });
       });
 
+      it("creates AI SDK provider with Anthropic auth token", async () => {
+        const createOpenAIMock = vi.fn(
+          () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
+        );
+        const createAnthropicMock = vi.fn(
+          () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
+        );
+        const createGoogleMock = vi.fn(
+          () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
+        );
+        const createXaiMock = vi.fn(() => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>);
+        const createDeepSeekMock = vi.fn(
+          () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
+        );
+
+        vi.doMock("@ai-sdk/openai", () => ({ createOpenAI: createOpenAIMock }));
+        vi.doMock("@ai-sdk/anthropic", () => ({ createAnthropic: createAnthropicMock }));
+        vi.doMock("@ai-sdk/google", () => ({ createGoogleGenerativeAI: createGoogleMock }));
+        vi.doMock("@ai-sdk/xai", () => ({ createXai: createXaiMock }));
+        vi.doMock("@ai-sdk/deepseek", () => ({ createDeepSeek: createDeepSeekMock }));
+
+        const { createLLMProvider } = await import("./factory");
+        const env = {
+          ANTHROPIC_AUTH_TOKEN: "sk-kimi-test",
+          ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/",
+          LLM_PROVIDER: "ai-sdk",
+          LLM_MODEL: "anthropic/claude-sonnet-4",
+        } as unknown as Env;
+
+        const provider = createLLMProvider(env);
+        expect(provider).not.toBeNull();
+        expect(createAnthropicMock).toHaveBeenCalledWith({
+          authToken: "sk-kimi-test",
+          baseURL: "https://api.kimi.com/coding",
+        });
+      });
+
       it("returns null when no API keys are set", async () => {
         const { createLLMProvider } = await import("./factory");
         const env = {

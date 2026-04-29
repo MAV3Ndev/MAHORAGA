@@ -12,10 +12,15 @@ export const AgentConfigSchema = z
     max_positions: z.number().int().min(1).max(50),
     min_sentiment_score: z.number().min(0).max(1),
     min_analyst_confidence: z.number().min(0).max(1),
+    signal_research_limit: z.number().int().min(1).max(20),
+    entry_candidate_limit: z.number().int().min(1).max(10),
 
     take_profit_pct: z.number().min(1).max(100),
     stop_loss_pct: z.number().min(1).max(50),
+    risk_per_trade_pct: z.number().min(0.05).max(5),
     position_size_pct_of_cash: z.number().min(1).max(100),
+    equity_entry_cutoff_minutes_before_close: z.number().int().min(0).max(120),
+    after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
 
     stale_position_enabled: z.boolean(),
     stale_min_hold_hours: z.number().min(0).max(168),
@@ -28,7 +33,13 @@ export const AgentConfigSchema = z
     llm_provider: z.enum(["openai-raw", "ai-sdk", "cloudflare-gateway"]),
     llm_model: z.string().min(1),
     llm_analyst_model: z.string().min(1),
+    openai_base_url: z.string().max(500),
     llm_min_hold_minutes: z.number().min(0).max(1440),
+    llm_force_sell_pnl_pct: z.number().min(0).max(50),
+    llm_force_sell_min_confidence: z.number().min(0).max(1),
+    llm_size_conviction_scaling: z.boolean(),
+    llm_size_low_confidence_multiplier: z.number().min(0.1).max(1),
+    llm_size_medium_confidence_multiplier: z.number().min(0.1).max(1),
 
     options_enabled: z.boolean(),
     options_min_confidence: z.number().min(0).max(1),
@@ -50,6 +61,46 @@ export const AgentConfigSchema = z
 
     ticker_blacklist: z.array(z.string()),
     allowed_exchanges: z.array(z.string()),
+    discord_daily_report_enabled: z.boolean(),
+    discord_daily_report_time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+    discord_daily_report_timezone: z.string().min(1).max(100),
+
+    // ── Trailing Stop ────────────────────────────────────────────────────────
+    trailing_stop_enabled: z.boolean(),
+    trailing_stop_pct: z.number().min(1).max(50),
+    trailing_stop_activation_pct: z.number().min(1).max(50),
+
+    // ── Dynamic Take Profit ───────────────────────────────────────────────────
+    dynamic_tp_enabled: z.boolean(),
+    tp_atr_multiplier: z.number().min(1).max(10),
+    tp_min_pct: z.number().min(1).max(50),
+    tp_max_pct: z.number().min(1).max(100),
+    dynamic_tp_fallback_pct: z.number().min(1).max(100),
+
+    // ── Entry Timing Filters ──────────────────────────────────────────────────
+    entry_timing_enabled: z.boolean(),
+    entry_require_technical_data: z.boolean(),
+    entry_rsi_min: z.number().min(10).max(50),
+    entry_rsi_max: z.number().min(50).max(90),
+    entry_bb_lower_threshold: z.number().min(0).max(1),
+    min_signal_quality_score: z.number().min(0).max(1),
+
+    // ── Composite Scoring ─────────────────────────────────────────────────────
+    scoring_enabled: z.boolean(),
+    scoring_sentiment_weight: z.number().min(0).max(1),
+    scoring_technical_weight: z.number().min(0).max(1),
+    scoring_catalyst_weight: z.number().min(0).max(1),
+    scoring_momentum_weight: z.number().min(0).max(1),
+
+    // ── Market Regime ────────────────────────────────────────────────────────
+    market_regime_enabled: z.boolean(),
+    regime_low_threshold: z.number().min(0).max(1),
+    regime_position_size_reduction: z.number().min(0).max(1),
+
+    // ── Portfolio Risk ───────────────────────────────────────────────────────
+    portfolio_risk_enabled: z.boolean(),
+    max_positions_per_sector: z.number().int().min(1).max(10),
+    unknown_sector_max_positions: z.number().int().min(0).max(10),
   })
   .refine((data) => data.options_min_delta < data.options_max_delta, {
     message: "options_min_delta must be less than options_max_delta",

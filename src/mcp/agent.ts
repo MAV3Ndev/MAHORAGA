@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { Env } from "../env.d";
 import { ErrorCode } from "../lib/errors";
 import { generateId, hmacVerify } from "../lib/utils";
@@ -243,9 +244,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
       async ({ symbol }) => {
         try {
           const positions = await alpaca.trading.getPositions();
-          const filtered = symbol
-            ? positions.filter((p) => p.symbol.toUpperCase() === symbol.toUpperCase())
-            : positions;
+          const filtered = symbol ? positions.filter((p) => areEquivalentAssetSymbols(p.symbol, symbol)) : positions;
 
           const result = success({
             count: filtered.length,
@@ -366,18 +365,6 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
             getRiskState(db),
           ]);
 
-          let estimatedPrice = input.limit_price ?? input.stop_price;
-          if (!estimatedPrice) {
-            try {
-              const quote = await alpaca.marketData.getQuote(input.symbol);
-              estimatedPrice = input.side === "buy" ? quote.ask_price : quote.bid_price;
-            } catch {
-              estimatedPrice = 0;
-            }
-          }
-
-          const estimatedCost = input.notional ?? (input.qty ?? 0) * estimatedPrice;
-
           let assetClass: "crypto" | "us_equity" = "us_equity";
           try {
             const asset = await alpaca.trading.getAsset(input.symbol);
@@ -389,6 +376,28 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
               assetClass = "crypto";
             }
           }
+
+          let estimatedPrice = input.limit_price ?? input.stop_price;
+          let avgVolume20d: number | undefined;
+          if (!estimatedPrice) {
+            try {
+              const quote = await alpaca.marketData.getQuote(input.symbol);
+              estimatedPrice = input.side === "buy" ? quote.ask_price : quote.bid_price;
+            } catch {
+              estimatedPrice = 0;
+            }
+          }
+
+          if (assetClass === "us_equity") {
+            const bars = await alpaca.marketData
+              .getBars(input.symbol.toUpperCase(), "1Day", { limit: 20 })
+              .catch(() => []);
+            if (bars.length > 0) {
+              avgVolume20d = bars.reduce((sum, bar) => sum + bar.v, 0) / bars.length;
+            }
+          }
+
+          const estimatedCost = input.notional ?? (input.qty ?? 0) * estimatedPrice;
 
           let effectiveTimeInForce = input.time_in_force;
           if (assetClass === "crypto" && (effectiveTimeInForce === "day" || effectiveTimeInForce === "fok")) {
@@ -406,6 +415,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
             stop_price: input.stop_price,
             time_in_force: effectiveTimeInForce,
             estimated_price: estimatedPrice,
+            avg_volume_20d: avgVolume20d,
             estimated_cost: estimatedCost,
           };
 
@@ -1052,7 +1062,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
             alpaca.trading.getPositions(),
           ]);
 
-          const position = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+          const position = positions.find((p) => areEquivalentAssetSymbols(p.symbol, symbol));
 
           const result = success({
             symbol: symbol.toUpperCase(),
@@ -1628,7 +1638,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
           ]);
 
           const technicals = computeTechnicals(symbol.toUpperCase(), bars);
-          const position = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+          const position = positions.find((p) => areEquivalentAssetSymbols(p.symbol, symbol));
 
           const report = await generateResearchReport(this.llm, symbol.toUpperCase(), {
             overview: {

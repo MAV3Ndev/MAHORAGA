@@ -93,6 +93,20 @@ describe("AI SDK Provider", () => {
       expect(createAnthropic).toHaveBeenCalledWith({ apiKey: "sk-ant-test" });
     });
 
+    it("creates provider with Anthropic auth token", () => {
+      const provider = createAISDKProvider({
+        model: "anthropic/claude-sonnet-4",
+        apiKeys: { anthropic: "unused-when-auth-token-is-set" },
+        anthropicAuthToken: "sk-kimi-test",
+        anthropicBaseUrl: "https://api.kimi.com/coding/",
+      });
+      expect(provider).toBeInstanceOf(AISDKProvider);
+      expect(createAnthropic).toHaveBeenCalledWith({
+        authToken: "sk-kimi-test",
+        baseURL: "https://api.kimi.com/coding",
+      });
+    });
+
     it("creates provider with Google API key", () => {
       const provider = createAISDKProvider({
         model: "google/gemini-2.5-pro",

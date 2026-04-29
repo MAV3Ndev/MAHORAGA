@@ -221,6 +221,7 @@ export interface BrokerProvider {
 
 export interface MarketDataProvider {
   getBars(symbol: string, timeframe: string, params?: BarsParams): Promise<Bar[]>;
+  getCryptoBars(symbol: string, timeframe: string, params?: BarsParams): Promise<Bar[]>;
   getLatestBar(symbol: string): Promise<Bar>;
   getLatestBars(symbols: string[]): Promise<Record<string, Bar>>;
   getQuote(symbol: string): Promise<Quote>;

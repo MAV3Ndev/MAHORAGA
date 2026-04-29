@@ -19,11 +19,16 @@ import { cryptoGatherer } from "./gatherers/crypto";
 import { redditGatherer } from "./gatherers/reddit";
 import { secGatherer } from "./gatherers/sec";
 import { stocktwitsGatherer } from "./gatherers/stocktwits";
+import { checkTwitterBreakingNews, gatherTwitterConfirmation, isTwitterEnabled } from "./gatherers/twitter";
+import { filterDefaultEligibleSignals, prepareDefaultDataGathering } from "./helpers/signal-filter";
 import { analyzeSignalsPrompt } from "./prompts/analyst";
 import { premarketPrompt } from "./prompts/premarket";
 import { researchPositionPrompt, researchSignalPrompt } from "./prompts/research";
+import { rankSignalCandidates } from "./rules/candidate-score";
+import { runCryptoTrading } from "./rules/crypto-trading";
 import { selectEntries } from "./rules/entries";
 import { selectExits } from "./rules/exits";
+import { findBestOptionsContract } from "./rules/options";
 
 export const defaultStrategy: Strategy = {
   name: "sentiment-momentum",
@@ -41,4 +46,44 @@ export const defaultStrategy: Strategy = {
 
   selectEntries,
   selectExits,
+
+  capabilities: {
+    prepareDataGathering: prepareDefaultDataGathering,
+    filterSignals: filterDefaultEligibleSignals,
+    runCryptoTrading,
+    async confirmEntry(ctx, _candidate, signal, confidence) {
+      if (!isTwitterEnabled(ctx)) return null;
+
+      const twitterConfirm = await gatherTwitterConfirmation(ctx, signal.symbol, signal.sentiment);
+      if (!twitterConfirm) return null;
+
+      if (twitterConfirm.confirms_existing) {
+        return {
+          confidence: Math.min(1.0, confidence * 1.15),
+          confirmation: twitterConfirm,
+        };
+      }
+
+      return {
+        confidence: twitterConfirm.sentiment !== 0 ? confidence * 0.85 : confidence,
+        confirmation: twitterConfirm,
+      };
+    },
+    findOptionsContract: findBestOptionsContract,
+    checkBreakingNews: checkTwitterBreakingNews,
+    selectSignalResearchCandidates(ctx, signals, limit) {
+      return rankSignalCandidates(
+        signals,
+        ctx.config.min_sentiment_score,
+        ctx.config.min_signal_quality_score,
+        limit
+      ).map((candidate) => ({
+        symbol: candidate.symbol,
+        sentiment: candidate.sentiment,
+        sources: candidate.sources,
+        score: candidate.score,
+        quality: candidate.quality,
+      }));
+    },
+  },
 };

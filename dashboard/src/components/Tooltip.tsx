@@ -162,6 +162,7 @@ interface TooltipProps {
   position?: TooltipPosition
   delay?: number
   className?: string
+  triggerClassName?: string
 }
 
 export function Tooltip({ 
@@ -169,7 +170,8 @@ export function Tooltip({
   content, 
   position = 'top',
   delay = 200,
-  className = ''
+  className = '',
+  triggerClassName = 'inline-block'
 }: TooltipProps) {
   const { triggerRef, triggerProps, tooltipProps } = useTooltip<HTMLDivElement>({ position, delay })
 
@@ -178,7 +180,7 @@ export function Tooltip({
       <div
         ref={triggerRef}
         {...triggerProps}
-        className="inline-block"
+        className={triggerClassName}
       >
         {children}
       </div>
