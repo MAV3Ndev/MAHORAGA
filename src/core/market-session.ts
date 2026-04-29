@@ -55,9 +55,7 @@ export function shouldClearPremarketPlan(params: {
   currentEtDay: string;
 }): boolean {
   return (
-    params.hasPremarketPlan &&
-    !!params.lastPremarketPlanDayEt &&
-    params.lastPremarketPlanDayEt !== params.currentEtDay
+    params.hasPremarketPlan && !!params.lastPremarketPlanDayEt && params.lastPremarketPlanDayEt !== params.currentEtDay
   );
 }
 

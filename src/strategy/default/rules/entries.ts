@@ -7,7 +7,7 @@
 
 import type { Account, Position, ResearchResult } from "../../../core/types";
 import type { BuyCandidate, StrategyContext } from "../../types";
-import { calculateCandidateScores, type CandidateScore } from "./candidate-score";
+import { type CandidateScore, calculateCandidateScores } from "./candidate-score";
 import { checkEntryTiming, type TechnicalData } from "./entry-timing";
 import { analyzeMarketRegime, type MarketRegimeData } from "./market-regime";
 import { checkPortfolioRisk } from "./portfolio-risk";
@@ -41,7 +41,7 @@ export function selectEntries(
   const promotableWaits = research.filter((r) => isPromotableWait(r, ctx));
   const entryResearch = [...buyResearch, ...promotableWaits];
 
-  let candidateScoreMap: Record<string, CandidateScore> = {};
+  const candidateScoreMap: Record<string, CandidateScore> = {};
 
   if (ctx.config.scoring_enabled) {
     const momentumData = buildMomentumData(ctx.signals, ctx);
@@ -296,13 +296,9 @@ function getSectorMap(_ctx: StrategyContext): Record<string, string> {
   return _ctx.state.get<Record<string, string>>("sectorMap") ?? {};
 }
 
-function isPromotableWait(result: ResearchResult, ctx: StrategyContext): boolean {
+function isPromotableWait(result: ResearchResult, _ctx: StrategyContext): boolean {
   if (result.verdict !== "WAIT") return false;
-  if (!["excellent", "good", "fair"].includes(result.entry_quality)) return false;
-  if (result.red_flags.length > 1) return false;
-
-  const minimumWaitConfidence = Math.max(0.55, ctx.config.min_analyst_confidence - 0.05);
-  return result.confidence >= minimumWaitConfidence;
+  return false;
 }
 
 function getRequiredEntryScore(result: ResearchResult, ctx: StrategyContext): number {

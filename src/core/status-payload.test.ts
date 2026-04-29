@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_STATE } from "../strategy/default/config";
-import type { AgentState, Position, PositionEntry, ResearchResult, TwitterConfirmation } from "./types";
 import { buildAgentStatusPayload } from "./status-payload";
+import type { AgentState, Position, PositionEntry, ResearchResult, TwitterConfirmation } from "./types";
 
 function createState(overrides: Partial<AgentState> = {}): AgentState {
   return {

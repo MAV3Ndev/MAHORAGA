@@ -31,7 +31,8 @@ export interface BuildPositionHistoryPointsParams {
 }
 
 function getPositionChangePct(side: "long" | "short", entryPrice: number, price: number): number {
-  const changePct = side === "short" ? ((entryPrice - price) / entryPrice) * 100 : ((price - entryPrice) / entryPrice) * 100;
+  const changePct =
+    side === "short" ? ((entryPrice - price) / entryPrice) * 100 : ((price - entryPrice) / entryPrice) * 100;
 
   return Number.isFinite(changePct) ? changePct : 0;
 }
@@ -176,10 +177,10 @@ export function getPeriodStartMs(period: string, nowMs: number): number {
 
 export function getPositionHistoryTimeframeCandidates(period: string, preferredTimeframe: string): string[] {
   const candidates =
-    period === "5Min" || period === "1H"
-      ? [preferredTimeframe, "1Min", "5Min", "15Min"]
-      : period === "6H"
-        ? [preferredTimeframe, "5Min", "15Min", "1Hour"]
+    period === "6H"
+      ? ["5Min"]
+      : period === "5Min" || period === "1H"
+        ? [preferredTimeframe, "1Min", "5Min", "15Min"]
         : period === "1D"
           ? [preferredTimeframe, "5Min", "15Min", "1Hour"]
           : period === "7D"

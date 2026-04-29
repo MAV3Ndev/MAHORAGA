@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { Env } from "../env.d";
 import { ErrorCode } from "../lib/errors";
 import { generateId, hmacVerify } from "../lib/utils";
@@ -35,7 +36,6 @@ import { getPolicyConfig } from "../storage/d1/queries/policy-config";
 import { disableKillSwitch, enableKillSwitch, getRiskState } from "../storage/d1/queries/risk-state";
 import { insertToolLog } from "../storage/d1/queries/tool-logs";
 import { createTrade } from "../storage/d1/queries/trades";
-import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { OptionsOrderPreview } from "./types";
 import { failure, success } from "./types";
 
@@ -244,9 +244,7 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
       async ({ symbol }) => {
         try {
           const positions = await alpaca.trading.getPositions();
-          const filtered = symbol
-            ? positions.filter((p) => areEquivalentAssetSymbols(p.symbol, symbol))
-            : positions;
+          const filtered = symbol ? positions.filter((p) => areEquivalentAssetSymbols(p.symbol, symbol)) : positions;
 
           const result = success({
             count: filtered.length,
@@ -391,7 +389,9 @@ export class MahoragaMcpAgent extends McpAgent<Env> {
           }
 
           if (assetClass === "us_equity") {
-            const bars = await alpaca.marketData.getBars(input.symbol.toUpperCase(), "1Day", { limit: 20 }).catch(() => []);
+            const bars = await alpaca.marketData
+              .getBars(input.symbol.toUpperCase(), "1Day", { limit: 20 })
+              .catch(() => []);
             if (bars.length > 0) {
               avgVolume20d = bars.reduce((sum, bar) => sum + bar.v, 0) / bars.length;
             }

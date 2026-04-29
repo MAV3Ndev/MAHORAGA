@@ -10,8 +10,13 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { computeAnalystRecommendationNotional, shouldBypassLlmMinHold } from "../core/analyst-recommendations";
-import { buildAgentConfigUpdateCandidate, type AgentConfigUpdate } from "../core/config-update";
+import {
+  computeAnalystRecommendationNotional,
+  evaluateAnalystBuyGuard,
+  shouldBypassLlmMinHold,
+} from "../core/analyst-recommendations";
+import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
+import { type AgentConfigUpdate, buildAgentConfigUpdateCandidate } from "../core/config-update";
 import { createInitialAgentState } from "../core/initial-state";
 import {
   buildMarketSessionState,
@@ -33,7 +38,6 @@ import {
   getPositionHistoryTimeframeMs,
 } from "../core/position-history";
 import { getPositionResearchCandidates, shouldRunPositionResearch } from "../core/position-research";
-import { buildAgentStatusPayload } from "../core/status-payload";
 import { isRateLimitError, isUnknownModelError, ResearchService } from "../core/research-service";
 import {
   buildSocialSnapshot,
@@ -41,6 +45,7 @@ import {
   serializeSocialSnapshot,
   updateSocialHistoryFromSnapshot,
 } from "../core/social-snapshot";
+import { buildAgentStatusPayload } from "../core/status-payload";
 import type {
   AgentState,
   LogEntry,
@@ -50,6 +55,7 @@ import type {
   SocialSnapshotCacheEntry,
 } from "../core/types";
 import type { Env } from "../env.d";
+import { bearerTokenMatches, jsonAuthResponse } from "../lib/auth";
 import {
   createDailyReportBucket,
   DAILY_REPORT_RETENTION_MS,
@@ -59,7 +65,7 @@ import {
   shouldSendDailyReport,
   summarizeDailyActivity,
 } from "../lib/discord-report";
-import { bearerTokenMatches, jsonAuthResponse } from "../lib/auth";
+import { generateId } from "../lib/utils";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
@@ -68,9 +74,11 @@ import type { Account, LLMProvider, MarketClock, Order, Position } from "../prov
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
+import { getTradeDecisionStats, insertTradeDecision, queryTradeDecisions } from "../storage/d1/queries/trade-decisions";
+import { createR2Client } from "../storage/r2/client";
+import { R2Paths } from "../storage/r2/paths";
 import { activeStrategy } from "../strategy";
-import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../core/asset-symbols";
-import type { StrategyContext, StrategySignalResearchCandidate } from "../strategy/types";
+import type { BuyCandidate, SellCandidate, StrategyContext, StrategySignalResearchCandidate } from "../strategy/types";
 
 interface TechnicalDataCacheEntry {
   updated_at: number;
@@ -91,6 +99,26 @@ interface MomentumDataCacheEntry {
   volume_change?: number;
 }
 
+const ANALYST_BUY_MAX_NOTIONAL = 2_500;
+const ANALYST_BUY_RESEARCH_MAX_AGE_MS = 15 * 60 * 1000;
+const ANALYST_BUY_COOLDOWN_AFTER_SELL_MS = 2 * 60 * 60 * 1000;
+const ANALYST_BUY_MAX_ABS_PRICE_CHANGE_24H_PCT = 30;
+const ANALYST_BUY_MAX_ABS_PRICE_CHANGE_1H_PCT = 15;
+
+interface TradeDecisionLogParams {
+  source: string;
+  symbol: string;
+  action: string;
+  status: string;
+  confidence?: number | null;
+  reason?: string | null;
+  notional?: number | null;
+  price?: number | null;
+  pnlPct?: number | null;
+  metadata?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+}
+
 // ============================================================================
 // DURABLE OBJECT CLASS
 // ============================================================================
@@ -98,6 +126,7 @@ interface MomentumDataCacheEntry {
 export class MahoragaHarness extends DurableObject<Env> {
   private state: AgentState = createInitialAgentState(activeStrategy.defaultConfig);
   private _llm: LLMProvider | null = null;
+  private currentDecisionCycleId: string | null = null;
   private lastLLMReinitAttemptAt = 0;
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
   private readonly MARKET_CONTEXT_TTL_MS = 10 * 60 * 1000;
@@ -359,6 +388,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       return;
     }
 
+    this.currentDecisionCycleId = generateId();
     this.applyStateHygiene();
 
     const now = Date.now();
@@ -673,12 +703,24 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
     };
 
-    this.state.signalCache.forEach((signal) => rememberSymbol(signal.symbol));
-    Object.keys(this.state.positionEntries).forEach((symbol) => rememberSymbol(symbol));
-    Object.keys(this.state.signalResearch).forEach((symbol) => rememberSymbol(symbol));
-    Object.keys(this.state.positionResearch).forEach((symbol) => rememberSymbol(symbol));
-    Object.keys(this.state.socialSnapshotCache).forEach((symbol) => rememberSymbol(symbol));
-    Object.keys(this.state.socialHistory).forEach((symbol) => rememberSymbol(symbol));
+    this.state.signalCache.forEach((signal) => {
+      rememberSymbol(signal.symbol);
+    });
+    Object.keys(this.state.positionEntries).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.signalResearch).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.positionResearch).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.socialSnapshotCache).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.socialHistory).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
 
     return retained;
   }
@@ -774,6 +816,12 @@ export class MahoragaHarness extends DurableObject<Env> {
     return isCryptoSymbol(symbol, this.state.config.crypto_symbols || []) ? getCryptoSymbolAliases(symbol) : [symbol];
   }
 
+  private getTimelineSymbolKey(symbol: string): string {
+    return isCryptoSymbol(symbol, this.state.config.crypto_symbols || [])
+      ? normalizeCryptoSymbol(symbol)
+      : symbol.toUpperCase();
+  }
+
   private findTrackedPositionEntry(symbol: string): PositionEntry | undefined {
     const candidates = this.getTrackedSymbolAliases(symbol)
       .map((alias) => this.state.positionEntries[alias])
@@ -811,7 +859,30 @@ export class MahoragaHarness extends DurableObject<Env> {
       delete this.state.positionEntries[alias];
       delete this.state.socialHistory[alias];
       delete this.state.stalenessAnalysis[alias];
+      delete this.state.analystBuyCooldowns?.[alias];
     }
+  }
+
+  private setAnalystBuyCooldown(symbol: string, now = Date.now()): void {
+    this.state.analystBuyCooldowns ??= {};
+    const cooldownUntil = now + ANALYST_BUY_COOLDOWN_AFTER_SELL_MS;
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      this.state.analystBuyCooldowns[alias] = cooldownUntil;
+    }
+  }
+
+  private getAnalystBuyCooldown(symbol: string, now = Date.now()): number | null {
+    this.state.analystBuyCooldowns ??= {};
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      const cooldownUntil = this.state.analystBuyCooldowns[alias];
+      if (!cooldownUntil) continue;
+      if (cooldownUntil <= now) {
+        delete this.state.analystBuyCooldowns[alias];
+        continue;
+      }
+      return cooldownUntil;
+    }
+    return null;
   }
 
   private getSignalResearchCooldowns(): Record<string, { until: number; reason: string }> {
@@ -1388,6 +1459,27 @@ export class MahoragaHarness extends DurableObject<Env> {
         confidence: result.confidence,
         quality: result.entry_quality,
       });
+      await this.recordTradeDecision({
+        source: "signal_research",
+        symbol,
+        action: result.verdict,
+        status: "researched",
+        confidence: result.confidence,
+        reason: result.reasoning,
+        price,
+        metadata: {
+          entry_quality: result.entry_quality,
+          red_flags: result.red_flags,
+          catalysts: result.catalysts,
+          recommended_entry_zone: result.recommended_entry_zone,
+          stop_loss_pct: result.stop_loss_pct,
+          take_profit_pct: result.take_profit_pct,
+        },
+        snapshot: this.buildTradeDecisionSnapshot(symbol, {
+          research: result,
+          prompt_inputs: { sentiment, sources, price },
+        }),
+      });
 
       return result;
     } catch (error) {
@@ -1512,7 +1604,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     const exits = activeStrategy.selectExits(ctx, positions, account);
     for (const exit of exits) {
       const result = await ctx.broker.sell(exit.symbol, exit.reason);
-      if (result) heldSymbols.delete(exit.symbol);
+      await this.recordExitDecision("strategy_exit", exit, result ? "submitted" : "blocked", account, positions);
+      if (result) {
+        heldSymbols.delete(exit.symbol);
+        this.setAnalystBuyCooldown(exit.symbol);
+      }
     }
 
     let currentOpenPositions = heldSymbols.size;
@@ -1570,7 +1666,17 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
       }
 
-      if (finalConfidence < this.state.config.min_analyst_confidence) continue;
+      if (finalConfidence < this.state.config.min_analyst_confidence) {
+        await this.recordEntryDecision(
+          "strategy_entry",
+          { ...entry, confidence: finalConfidence },
+          "filtered",
+          account,
+          positions,
+          { reason: "below_min_confidence", min_confidence: this.state.config.min_analyst_confidence }
+        );
+        continue;
+      }
 
       // Options routing
       if (entry.useOptions) {
@@ -1587,6 +1693,25 @@ export class MahoragaHarness extends DurableObject<Env> {
             Math.min(1, contract.max_contracts),
             optionsReason
           );
+          await this.recordTradeDecision({
+            source: "strategy_entry_options",
+            symbol: contract.symbol,
+            action: "BUY",
+            status: result ? "submitted" : "blocked",
+            confidence: finalConfidence,
+            reason: optionsReason,
+            notional: null,
+            metadata: {
+              underlying_symbol: entry.symbol,
+              max_contracts: contract.max_contracts,
+            },
+            snapshot: this.buildTradeDecisionSnapshot(entry.symbol, {
+              account,
+              positions,
+              candidate: entry,
+              options_contract: contract,
+            }),
+          });
           if (result) {
             heldSymbols.add(contract.symbol);
             currentOpenPositions = heldSymbols.size;
@@ -1606,6 +1731,13 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Execute buy via policy broker
       const result = await ctx.broker.buy(entry.symbol, entry.notional, entry.reason);
+      await this.recordEntryDecision(
+        "strategy_entry",
+        { ...entry, confidence: finalConfidence },
+        result ? "submitted" : "blocked",
+        account,
+        positions
+      );
       if (result) {
         heldSymbols.add(entry.symbol);
         currentOpenPositions = heldSymbols.size;
@@ -1622,6 +1754,8 @@ export class MahoragaHarness extends DurableObject<Env> {
     // LLM analyst for additional recommendations
     const analysis = await this.callAnalystLLM(ctx, this.state.signalCache, positions, account);
     const entrySymbols = new Set(entries.map((e) => e.symbol));
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
 
     this.log("Analyst", "llm_recommendations", {
       total: analysis.recommendations.length,
@@ -1637,6 +1771,16 @@ export class MahoragaHarness extends DurableObject<Env> {
           action: rec.action,
           symbol: rec.symbol,
           confidence: rec.confidence,
+        });
+        await this.recordTradeDecision({
+          source: "analyst_recommendation",
+          symbol: rec.symbol,
+          action: rec.action,
+          status: "filtered",
+          confidence: rec.confidence,
+          reason: rec.reasoning,
+          metadata: { reason: "below_min_confidence", min_confidence: this.state.config.min_analyst_confidence },
+          snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
         });
         continue;
       }
@@ -1666,6 +1810,17 @@ export class MahoragaHarness extends DurableObject<Env> {
             minRequired: minHold,
             reason: "Position held less than minimum hold time",
           });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "SELL",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            pnlPct,
+            metadata: { reason: "min_hold", hold_minutes: Math.round(holdMinutes), min_hold_minutes: minHold },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
           continue;
         }
 
@@ -1680,8 +1835,19 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
 
         const result = await ctx.broker.sell(rec.symbol, `LLM recommendation: ${rec.reasoning}`);
+        await this.recordTradeDecision({
+          source: "analyst_recommendation",
+          symbol: rec.symbol,
+          action: "SELL",
+          status: result ? "submitted" : "blocked",
+          confidence: rec.confidence,
+          reason: rec.reasoning,
+          pnlPct,
+          snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+        });
         if (result) {
           heldSymbols.delete(rec.symbol);
+          this.setAnalystBuyCooldown(rec.symbol);
           this.log("Analyst", "llm_sell_executed", {
             symbol: rec.symbol,
             confidence: rec.confidence,
@@ -1698,14 +1864,72 @@ export class MahoragaHarness extends DurableObject<Env> {
             positions: currentOpenPositions,
             max: this.state.config.max_positions,
           });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            metadata: {
+              reason: "max_positions",
+              positions: currentOpenPositions,
+              max: this.state.config.max_positions,
+            },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
           continue;
         }
         if (heldSymbols.has(rec.symbol)) {
           this.log("Analyst", "llm_buy_blocked_held", { symbol: rec.symbol });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            metadata: { reason: "already_held" },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
           continue;
         }
         if (entrySymbols.has(rec.symbol)) {
           this.log("Analyst", "llm_buy_blocked_already_selected", { symbol: rec.symbol });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            metadata: { reason: "already_selected_by_strategy_entry" },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
+          continue;
+        }
+
+        const guard = evaluateAnalystBuyGuard({
+          research: this.state.signalResearch[rec.symbol] ?? null,
+          momentum: momentumCache?.[rec.symbol] ?? null,
+          cooldownUntil: this.getAnalystBuyCooldown(rec.symbol),
+          now: Date.now(),
+          maxResearchAgeMs: ANALYST_BUY_RESEARCH_MAX_AGE_MS,
+          maxAbsPriceChange24hPct: ANALYST_BUY_MAX_ABS_PRICE_CHANGE_24H_PCT,
+          maxAbsPriceChange1hPct: ANALYST_BUY_MAX_ABS_PRICE_CHANGE_1H_PCT,
+        });
+        if (!guard.allowed) {
+          this.log("Analyst", "llm_buy_blocked_guard", { symbol: rec.symbol, reason: guard.reason });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            metadata: { reason: guard.reason, ...(guard.metadata ?? {}) },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
           continue;
         }
 
@@ -1713,7 +1937,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           cash: account.cash,
           basePositionSizePct: this.state.config.position_size_pct_of_cash,
           confidence: rec.confidence,
-          maxPositionValue: this.state.config.max_position_value,
+          maxPositionValue: Math.min(this.state.config.max_position_value, ANALYST_BUY_MAX_NOTIONAL),
           suggestedSizePct: rec.suggested_size_pct,
           convictionScalingEnabled: this.state.config.llm_size_conviction_scaling,
           lowConfidenceMultiplier: this.state.config.llm_size_low_confidence_multiplier,
@@ -1721,6 +1945,17 @@ export class MahoragaHarness extends DurableObject<Env> {
         });
         if (notional < 100) {
           this.log("Analyst", "llm_buy_blocked_small_notional", { symbol: rec.symbol, notional, min_notional: 100 });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            notional,
+            metadata: { reason: "too_small", min_notional: 100 },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
           continue;
         }
 
@@ -1728,10 +1963,22 @@ export class MahoragaHarness extends DurableObject<Env> {
           symbol: rec.symbol,
           confidence: rec.confidence,
           suggested_size_pct: rec.suggested_size_pct,
+          max_analyst_notional: ANALYST_BUY_MAX_NOTIONAL,
           notional: Number(notional.toFixed(2)),
         });
 
         const result = await ctx.broker.buy(rec.symbol, notional, rec.reasoning);
+        await this.recordTradeDecision({
+          source: "analyst_recommendation",
+          symbol: rec.symbol,
+          action: "BUY",
+          status: result ? "submitted" : "blocked",
+          confidence: rec.confidence,
+          reason: rec.reasoning,
+          notional,
+          metadata: { suggested_size_pct: rec.suggested_size_pct, max_analyst_notional: ANALYST_BUY_MAX_NOTIONAL },
+          snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+        });
         if (result) {
           heldSymbols.add(rec.symbol);
           currentOpenPositions = heldSymbols.size;
@@ -1814,29 +2061,88 @@ export class MahoragaHarness extends DurableObject<Env> {
     // Sells first
     for (const rec of this.state.premarketPlan.recommendations) {
       if (rec.action === "SELL" && rec.confidence >= this.state.config.min_analyst_confidence) {
-        await ctx.broker.sell(rec.symbol, `Pre-market plan: ${rec.reasoning}`);
+        const result = await ctx.broker.sell(rec.symbol, `Pre-market plan: ${rec.reasoning}`);
+        await this.recordTradeDecision({
+          source: "premarket_plan",
+          symbol: rec.symbol,
+          action: "SELL",
+          status: result ? "submitted" : "blocked",
+          confidence: rec.confidence,
+          reason: rec.reasoning,
+          snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+        });
+        if (result) this.setAnalystBuyCooldown(rec.symbol);
       }
     }
 
     // Then buys
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
     for (const rec of this.state.premarketPlan.recommendations) {
       if (rec.action === "BUY" && rec.confidence >= this.state.config.min_analyst_confidence) {
         if (heldSymbols.has(rec.symbol)) continue;
         if (positions.length >= this.state.config.max_positions) break;
 
+        const guard = evaluateAnalystBuyGuard({
+          research: this.state.signalResearch[rec.symbol] ?? null,
+          momentum: momentumCache?.[rec.symbol] ?? null,
+          cooldownUntil: this.getAnalystBuyCooldown(rec.symbol),
+          now: Date.now(),
+          maxResearchAgeMs: PLAN_STALE_MS,
+          maxAbsPriceChange24hPct: ANALYST_BUY_MAX_ABS_PRICE_CHANGE_24H_PCT,
+          maxAbsPriceChange1hPct: ANALYST_BUY_MAX_ABS_PRICE_CHANGE_1H_PCT,
+        });
+        if (!guard.allowed) {
+          await this.recordTradeDecision({
+            source: "premarket_plan",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            metadata: { reason: guard.reason, ...(guard.metadata ?? {}) },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
+          continue;
+        }
+
         const notional = computeAnalystRecommendationNotional({
           cash: account.cash,
           basePositionSizePct: this.state.config.position_size_pct_of_cash,
           confidence: rec.confidence,
-          maxPositionValue: this.state.config.max_position_value,
+          maxPositionValue: Math.min(this.state.config.max_position_value, ANALYST_BUY_MAX_NOTIONAL),
           suggestedSizePct: rec.suggested_size_pct,
           convictionScalingEnabled: this.state.config.llm_size_conviction_scaling,
           lowConfidenceMultiplier: this.state.config.llm_size_low_confidence_multiplier,
           mediumConfidenceMultiplier: this.state.config.llm_size_medium_confidence_multiplier,
         });
-        if (notional < 100) continue;
+        if (notional < 100) {
+          await this.recordTradeDecision({
+            source: "premarket_plan",
+            symbol: rec.symbol,
+            action: "BUY",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            notional,
+            metadata: { reason: "too_small", min_notional: 100 },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+          });
+          continue;
+        }
 
         const result = await ctx.broker.buy(rec.symbol, notional, `Pre-market plan: ${rec.reasoning}`);
+        await this.recordTradeDecision({
+          source: "premarket_plan",
+          symbol: rec.symbol,
+          action: "BUY",
+          status: result ? "submitted" : "blocked",
+          confidence: rec.confidence,
+          reason: rec.reasoning,
+          notional,
+          metadata: { suggested_size_pct: rec.suggested_size_pct, max_analyst_notional: ANALYST_BUY_MAX_NOTIONAL },
+          snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
+        });
         if (result) {
           heldSymbols.add(rec.symbol);
           this.state.positionEntries[rec.symbol] = this.createPositionEntry(
@@ -1883,6 +2189,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       "trigger",
       "status",
       "logs",
+      "trade-review",
       "costs",
       "signals",
       "history",
@@ -1908,6 +2215,8 @@ export class MahoragaHarness extends DurableObject<Env> {
           return this.handleDisable();
         case "logs":
           return this.handleGetLogs(url);
+        case "trade-review":
+          return this.handleGetTradeReview(url);
         case "costs":
           return this.jsonResponse({ costs: this.state.costTracker });
         case "signals":
@@ -2014,6 +2323,56 @@ export class MahoragaHarness extends DurableObject<Env> {
     return this.jsonResponse({ logs });
   }
 
+  private parseTradeDecisionMetadata(metadataJson: string | null): Record<string, unknown> | null {
+    if (!metadataJson) return null;
+    try {
+      const parsed = JSON.parse(metadataJson);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handleGetTradeReview(url: URL): Promise<Response> {
+    const db = createD1Client(this.env.DB);
+    const days = Math.min(365, Math.max(1, parseInt(url.searchParams.get("days") || "30", 10)));
+    const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10)));
+    const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10));
+    const includeSnapshots = url.searchParams.get("include_snapshots") === "true";
+    const symbol = url.searchParams.get("symbol") || undefined;
+    const action = url.searchParams.get("action") || undefined;
+    const source = url.searchParams.get("source") || undefined;
+    const status = url.searchParams.get("status") || undefined;
+
+    const [decisions, stats] = await Promise.all([
+      queryTradeDecisions(db, { symbol, action, source, status, days, limit, offset }),
+      getTradeDecisionStats(db, { symbol, days }),
+    ]);
+
+    const reviewDecisions = decisions.map(({ metadata_json, ...decision }) => ({
+      ...decision,
+      metadata: this.parseTradeDecisionMetadata(metadata_json),
+    }));
+
+    const snapshots: Record<string, unknown> = {};
+    if (includeSnapshots) {
+      const r2 = createR2Client(this.env.ARTIFACTS);
+      for (const decision of decisions.slice(0, 25)) {
+        if (!decision.snapshot_r2_key) continue;
+        snapshots[decision.id] = await r2.getJson(decision.snapshot_r2_key).catch(() => null);
+      }
+    }
+
+    return this.jsonResponse({
+      ok: true,
+      data: {
+        decisions: reviewDecisions,
+        stats,
+        snapshots: includeSnapshots ? snapshots : undefined,
+      },
+    });
+  }
+
   private async handleGetHistory(url: URL): Promise<Response> {
     const alpaca = createAlpacaProviders(this.env);
     const historyParams = buildPortfolioHistoryParams(url.searchParams);
@@ -2053,7 +2412,8 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.log("System", "after_hours_exit_sweep", { exits: exits.length });
     for (const exit of exits) {
-      await ctx.broker.sell(exit.symbol, `After-hours sweep: ${exit.reason}`);
+      const result = await ctx.broker.sell(exit.symbol, `After-hours sweep: ${exit.reason}`);
+      if (result) this.setAnalystBuyCooldown(exit.symbol);
     }
   }
 
@@ -2131,10 +2491,12 @@ export class MahoragaHarness extends DurableObject<Env> {
     const groupedOrders = new Map<string, Order[]>();
 
     for (const order of orders) {
-      if (!order.symbol || !order.filled_at || openSymbols.has(order.symbol)) continue;
-      const existing = groupedOrders.get(order.symbol) ?? [];
+      if (!order.symbol || !order.filled_at) continue;
+      const symbolKey = this.getTimelineSymbolKey(order.symbol);
+      if (openSymbols.has(symbolKey)) continue;
+      const existing = groupedOrders.get(symbolKey) ?? [];
       existing.push(order);
-      groupedOrders.set(order.symbol, existing);
+      groupedOrders.set(symbolKey, existing);
     }
 
     const candidates: Array<{
@@ -2213,13 +2575,13 @@ export class MahoragaHarness extends DurableObject<Env> {
     try {
       const [positions, orders] = await Promise.all([
         alpaca.trading.getPositions(),
-        alpaca.trading.listOrders({ status: "closed", limit: 200, direction: "desc" }).catch(() => []),
+        alpaca.trading.listOrders({ status: "closed", limit: 500, direction: "desc" }).catch(() => []),
       ]);
 
       await this.syncTrackedPositionEntries(positions, orders);
 
       const periodStartMs = getPeriodStartMs(period, nowMs);
-      const openSymbols = new Set(positions.map((position) => position.symbol));
+      const openSymbols = new Set(positions.map((position) => this.getTimelineSymbolKey(position.symbol)));
       const closedCandidates = this.buildClosedTimelineCandidates(orders, openSymbols, periodStartMs);
 
       const openHistories = await Promise.all(
@@ -2347,6 +2709,124 @@ export class MahoragaHarness extends DurableObject<Env> {
   // UTILITIES
   // ============================================================================
 
+  private getDecisionCycleId(): string {
+    if (!this.currentDecisionCycleId) {
+      this.currentDecisionCycleId = generateId();
+    }
+    return this.currentDecisionCycleId;
+  }
+
+  private buildTradeDecisionSnapshot(symbol: string, extras: Record<string, unknown> = {}): Record<string, unknown> {
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalData = dynamicState.technicalDataCache as Record<string, unknown> | undefined;
+    const momentumData = dynamicState.momentumDataCache as Record<string, unknown> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+    const marketRegime = dynamicState.marketRegimeCache as Record<string, unknown> | undefined;
+    const socialSnapshot = getSocialSnapshotCache(this.state);
+
+    return {
+      strategy: activeStrategy.name,
+      symbol,
+      config: this.state.config,
+      signals: this.state.signalCache.filter((signal) => signal.symbol === symbol).slice(-20),
+      signal_research: this.state.signalResearch[symbol] ?? null,
+      position_research: this.state.positionResearch[symbol] ?? null,
+      position_entry: this.findTrackedPositionEntry(symbol) ?? null,
+      social_snapshot: this.getSocialSnapshotEntry(socialSnapshot, symbol) ?? null,
+      technicals: technicalData?.[symbol] ?? null,
+      momentum: momentumData?.[symbol] ?? null,
+      sector: sectorMap?.[symbol] ?? null,
+      market_regime: marketRegime ?? null,
+      ...extras,
+    };
+  }
+
+  private async recordTradeDecision(params: TradeDecisionLogParams): Promise<void> {
+    const id = generateId();
+    const decisionAt = new Date().toISOString();
+    const date = decisionAt.slice(0, 10);
+    let snapshotR2Key: string | null = null;
+
+    if (params.snapshot) {
+      snapshotR2Key = R2Paths.tradeDecisionSnapshot(date, id);
+      try {
+        const r2 = createR2Client(this.env.ARTIFACTS);
+        await r2.putJson(snapshotR2Key, { decision_id: id, decision_at: decisionAt, ...params.snapshot });
+      } catch (error) {
+        snapshotR2Key = null;
+        console.warn("[TradeDecision] Failed to persist R2 snapshot", error);
+      }
+    }
+
+    try {
+      const db = createD1Client(this.env.DB);
+      await insertTradeDecision(db, {
+        id,
+        cycle_id: this.getDecisionCycleId(),
+        decision_at: decisionAt,
+        source: params.source,
+        symbol: params.symbol,
+        action: params.action.toUpperCase(),
+        status: params.status,
+        confidence: params.confidence,
+        reason: params.reason,
+        notional: params.notional,
+        price: params.price,
+        pnl_pct: params.pnlPct,
+        snapshot_r2_key: snapshotR2Key,
+        metadata: params.metadata ?? null,
+      });
+    } catch (error) {
+      console.warn("[TradeDecision] Failed to persist D1 row", error);
+    }
+  }
+
+  private async recordEntryDecision(
+    source: string,
+    entry: BuyCandidate,
+    status: string,
+    account: Account,
+    positions: Position[],
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    await this.recordTradeDecision({
+      source,
+      symbol: entry.symbol,
+      action: "BUY",
+      status,
+      confidence: entry.confidence,
+      reason: entry.reason,
+      notional: entry.notional,
+      metadata,
+      snapshot: this.buildTradeDecisionSnapshot(entry.symbol, { account, positions, candidate: entry, metadata }),
+    });
+  }
+
+  private async recordExitDecision(
+    source: string,
+    exit: SellCandidate,
+    status: string,
+    account: Account,
+    positions: Position[],
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    const position = positions.find((item) => item.symbol === exit.symbol);
+    const denominator = position ? position.market_value - position.unrealized_pl : 0;
+    const pnlPct = position && denominator > 0 ? (position.unrealized_pl / denominator) * 100 : null;
+
+    await this.recordTradeDecision({
+      source,
+      symbol: exit.symbol,
+      action: "SELL",
+      status,
+      reason: exit.reason,
+      price: position?.current_price ?? null,
+      pnlPct,
+      metadata,
+      snapshot: this.buildTradeDecisionSnapshot(exit.symbol, { account, positions, candidate: exit, metadata }),
+    });
+  }
+
   private log(agent: string, action: string, details: Record<string, unknown>): void {
     const nowMs = Date.now();
     const entry: LogEntry = { timestamp: new Date(nowMs).toISOString(), agent, action, ...details };
@@ -2369,7 +2849,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     const bucket = this.state.dailyReportBuckets[bucketKey] || createDailyReportBucket(bucketStart);
 
     let relevant = false;
-    let symbol: string | null =
+    const symbol: string | null =
       typeof details.symbol === "string" && details.symbol.trim().length > 0 ? details.symbol.trim() : null;
 
     if (agent === "System" && action === "gathering_data") {

@@ -191,7 +191,9 @@ export function summarizeDailyActivity(
     }
 
     if (Array.isArray(bucket.recent_trades)) {
-      recentTrades.push(...bucket.recent_trades.filter((trade) => trade.timestamp >= periodStartMs && trade.timestamp <= nowMs));
+      recentTrades.push(
+        ...bucket.recent_trades.filter((trade) => trade.timestamp >= periodStartMs && trade.timestamp <= nowMs)
+      );
     }
   }
 

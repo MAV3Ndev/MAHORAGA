@@ -10,7 +10,14 @@ import {
 
 function createDeps(overrides?: {
   clock?: Partial<{ timestamp: string; is_open: boolean; next_open: string; next_close: string }>;
-  position?: Partial<{ symbol: string; asset_class: string; side: "long" | "short"; qty: number; current_price: number; avg_entry_price: number }>;
+  position?: Partial<{
+    symbol: string;
+    asset_class: string;
+    side: "long" | "short";
+    qty: number;
+    current_price: number;
+    avg_entry_price: number;
+  }>;
   snapshot?: Partial<{ latest_trade: { price: number }; latest_quote: { bid_price: number; ask_price: number } }>;
   openOrders?: Array<{
     id: string;
@@ -102,15 +109,17 @@ describe("policy broker helpers", () => {
   });
 
   it("caps equity buys by the tighter of buying power and day trading buying power", () => {
-    expect(
-      computeCappedBuyNotional(5000, { buying_power: 4000, daytrading_buying_power: 2500 }, false)
-    ).toEqual({ adjustedNotional: 2500, cap: 2500 });
+    expect(computeCappedBuyNotional(5000, { buying_power: 4000, daytrading_buying_power: 2500 }, false)).toEqual({
+      adjustedNotional: 2500,
+      cap: 2500,
+    });
   });
 
   it("ignores day trading buying power for crypto buys", () => {
-    expect(
-      computeCappedBuyNotional(5000, { buying_power: 4000, daytrading_buying_power: 2500 }, true)
-    ).toEqual({ adjustedNotional: 4000, cap: 4000 });
+    expect(computeCappedBuyNotional(5000, { buying_power: 4000, daytrading_buying_power: 2500 }, true)).toEqual({
+      adjustedNotional: 4000,
+      cap: 4000,
+    });
   });
 
   it("detects extended-hours windows in New York time", () => {

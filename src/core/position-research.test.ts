@@ -32,9 +32,10 @@ describe("position research scheduling", () => {
   });
 
   it("includes crypto while market is closed", () => {
-    const candidates = getPositionResearchCandidates([
-      createPosition({ symbol: "BTC/USD", asset_class: "crypto", exchange: "CRYPTO" }),
-    ], false);
+    const candidates = getPositionResearchCandidates(
+      [createPosition({ symbol: "BTC/USD", asset_class: "crypto", exchange: "CRYPTO" })],
+      false
+    );
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.symbol).toBe("BTC/USD");
   });
@@ -45,9 +46,10 @@ describe("position research scheduling", () => {
   });
 
   it("excludes options from position research", () => {
-    const candidates = getPositionResearchCandidates([
-      createPosition({ symbol: "AAPL240621C00150000", asset_class: "us_option" }),
-    ], true);
+    const candidates = getPositionResearchCandidates(
+      [createPosition({ symbol: "AAPL240621C00150000", asset_class: "us_option" })],
+      true
+    );
     expect(candidates).toHaveLength(0);
   });
 

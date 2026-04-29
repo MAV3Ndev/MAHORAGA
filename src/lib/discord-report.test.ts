@@ -73,9 +73,7 @@ describe("discord report helpers", () => {
   it("sends once per local day after the configured time", () => {
     const now = Date.parse("2026-04-22T01:05:00.000Z");
     expect(shouldSendDailyReport(now, null, "10:00", "Asia/Tokyo")).toBe(true);
-    expect(shouldSendDailyReport(now, Date.parse("2026-04-22T00:30:00.000Z"), "10:00", "Asia/Tokyo")).toBe(
-      false
-    );
+    expect(shouldSendDailyReport(now, Date.parse("2026-04-22T00:30:00.000Z"), "10:00", "Asia/Tokyo")).toBe(false);
     expect(shouldSendDailyReport(now, null, "11:00", "Asia/Tokyo")).toBe(false);
   });
 

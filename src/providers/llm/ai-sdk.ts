@@ -117,7 +117,7 @@ export class AISDKProvider implements LLMProvider {
       // Parse provider/model format (supports both / and : separators)
       const separator = modelSpec.includes(":") ? ":" : "/";
       const parts = modelSpec.split(separator);
-      let providerName = (parts[0] ?? "openai").toLowerCase() as SupportedProvider;
+      const providerName = (parts[0] ?? "openai").toLowerCase() as SupportedProvider;
       const modelId = parts.slice(1).join(separator) || modelSpec;
 
       // Require an explicit provider prefix so requests cannot silently route to a different provider.

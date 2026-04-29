@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Account, ResearchResult } from "../../../core/types";
-import { DEFAULT_CONFIG } from "../config";
 import type { StrategyContext } from "../../types";
+import { DEFAULT_CONFIG } from "../config";
 import { selectEntries } from "./entries";
 
 function createTestContext(): StrategyContext {
@@ -89,16 +89,13 @@ function createResearchResult(overrides: Partial<ResearchResult> = {}): Research
 }
 
 describe("selectEntries", () => {
-  it("promotes high-quality WAIT verdicts near the confidence threshold", () => {
+  it("does not promote WAIT verdicts into entries", () => {
     const ctx = createTestContext();
     const account = createAccount();
 
     const result = selectEntries(ctx, [createResearchResult()], [], account);
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.symbol).toBe("NOW");
-    expect(result[0]?.reason).toContain("Promoted WAIT");
-    expect(result[0]?.notional).toBe(560);
+    expect(result).toHaveLength(0);
   });
 
   it("does not promote poor-quality WAIT verdicts", () => {
@@ -129,7 +126,7 @@ describe("selectEntries", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("promotes excellent WAIT verdicts", () => {
+  it("does not promote excellent WAIT verdicts without an explicit BUY", () => {
     const ctx = createTestContext();
     const account = createAccount();
 
@@ -140,8 +137,7 @@ describe("selectEntries", () => {
       account
     );
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.symbol).toBe("NOW");
+    expect(result).toHaveLength(0);
   });
 
   it("uses the configured position size without a hard 20 percent cap", () => {
@@ -149,9 +145,14 @@ describe("selectEntries", () => {
     const account = createAccount();
     ctx.config.position_size_pct_of_cash = 25;
 
-    const result = selectEntries(ctx, [createResearchResult()], [], account);
+    const result = selectEntries(
+      ctx,
+      [createResearchResult({ verdict: "BUY", confidence: 0.6, entry_quality: "good" })],
+      [],
+      account
+    );
 
     expect(result).toHaveLength(1);
-    expect(result[0]?.notional).toBeCloseTo(1400);
+    expect(result[0]?.notional).toBeCloseTo(1500);
   });
 });

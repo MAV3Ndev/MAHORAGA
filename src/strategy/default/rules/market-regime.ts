@@ -78,9 +78,7 @@ export function analyzeMarketRegime(
   addTrendComponents(qqqPrice, qqqSma20, qqqSma50, 1.05);
 
   const trendScore =
-    trendComponents.length > 0
-      ? trendComponents.reduce((sum, value) => sum + value, 0) / trendComponents.length
-      : 0.55;
+    trendComponents.length > 0 ? trendComponents.reduce((sum, value) => sum + value, 0) / trendComponents.length : 0.55;
 
   // Combine scores without letting missing VIX data force a permanent 1.0
   const regimeScore = vix !== undefined ? vixScore * 0.45 + trendScore * 0.55 : trendScore;

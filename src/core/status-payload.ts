@@ -1,5 +1,5 @@
-import type { Account, AgentConfig, AgentState, LogEntry, MarketClock, Position } from "./types";
 import { filterRecordBySymbols, limitTimestampedRecord } from "./record-utils";
+import type { Account, AgentConfig, AgentState, LogEntry, MarketClock, Position } from "./types";
 
 export interface AgentStatusPayload {
   enabled: boolean;

@@ -6,8 +6,8 @@
  * DEFAULT_STATE: Initial state for a fresh agent
  */
 
-import type { AgentConfig, AgentState } from "../../core/types";
 import { createInitialAgentState } from "../../core/initial-state";
+import type { AgentConfig, AgentState } from "../../core/types";
 
 // ── Source weights & tuning ──────────────────────────────────────────────────
 

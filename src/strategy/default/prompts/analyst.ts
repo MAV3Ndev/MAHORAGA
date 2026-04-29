@@ -3,8 +3,8 @@
  */
 
 import type { Account, Position, Signal } from "../../../core/types";
-import { getCryptoSymbolAliases, isCryptoSymbol } from "../helpers/crypto";
 import type { AnalyzeSignalsPromptBuilder, PromptTemplate, StrategyContext } from "../../types";
+import { getCryptoSymbolAliases, isCryptoSymbol } from "../helpers/crypto";
 
 /**
  * Analyst prompt — analyze signals and current positions to generate

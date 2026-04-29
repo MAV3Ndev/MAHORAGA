@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG } from "../strategy/default/config";
 import type { LLMProvider } from "../providers/types";
+import { DEFAULT_CONFIG } from "../strategy/default/config";
 import { isRateLimitError, isUnknownModelError, ResearchService } from "./research-service";
 
 describe("research service", () => {

@@ -1,7 +1,7 @@
 import { parseLlmJsonObject } from "../lib/llm-json";
 import type { CompletionParams, LLMProvider } from "../providers/types";
-import type { AgentConfig } from "./types";
 import type { PromptTemplate } from "../strategy/types";
+import type { AgentConfig } from "./types";
 
 export interface ResearchServiceDeps {
   getLlm: () => LLMProvider | null;
@@ -19,7 +19,7 @@ export interface CompletePromptParams {
 
 export function isUnknownModelError(error: unknown): boolean {
   const message = String(error).toLowerCase();
-  return message.includes("unknown model") || message.includes("\"1211\"") || message.includes("code\":\"1211");
+  return message.includes("unknown model") || message.includes('"1211"') || message.includes('code":"1211');
 }
 
 export function isRateLimitError(error: unknown): boolean {

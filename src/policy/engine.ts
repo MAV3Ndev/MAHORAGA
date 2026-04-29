@@ -21,6 +21,7 @@
  * within the configured TTL (default 5 minutes) to execute the order.
  */
 
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type {
   OptionsOrderPreview,
   OptionsPolicyResult,
@@ -31,7 +32,6 @@ import type {
 } from "../mcp/types";
 import type { Account, MarketClock, Position } from "../providers/types";
 import type { RiskState } from "../storage/d1/queries/risk-state";
-import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type { OptionsStrategy, PolicyConfig } from "./config";
 
 export interface PolicyContext {

@@ -8,8 +8,8 @@
 import type { Account, Position } from "../../../core/types";
 import type { SellCandidate, StrategyContext } from "../../types";
 import { getCryptoSymbolAliases, isCryptoSymbol } from "../helpers/crypto";
-import { analyzeStaleness } from "./staleness";
 import { checkAdvancedExits, getTrailingStopState, type TrailingStopState } from "./advanced-exits";
+import { analyzeStaleness } from "./staleness";
 
 /**
  * Evaluate all positions and return sell candidates.
@@ -27,7 +27,7 @@ export function selectExits(ctx: StrategyContext, positions: Position[], _accoun
     }
 
     const entry = getPositionEntry(pos.symbol, ctx);
-    const effectiveStopLossPct = entry?.recommended_stop_loss_pct ?? ctx.config.stop_loss_pct;
+    const effectiveStopLossPct = getEffectiveStopLossPct(entry?.recommended_stop_loss_pct, ctx.config.stop_loss_pct);
     const effectiveTakeProfitPct = entry?.recommended_take_profit_pct ?? ctx.config.take_profit_pct;
 
     // Get or initialize trailing stop state
@@ -207,6 +207,13 @@ function getPositionEntry(symbol: string, ctx: StrategyContext) {
   }
 
   return undefined;
+}
+
+function getEffectiveStopLossPct(recommendedStopLossPct: number | undefined, configuredStopLossPct: number): number {
+  if (recommendedStopLossPct === undefined || !Number.isFinite(recommendedStopLossPct) || recommendedStopLossPct <= 0) {
+    return configuredStopLossPct;
+  }
+  return Math.min(recommendedStopLossPct, configuredStopLossPct);
 }
 
 function getPositionResearch(

@@ -138,6 +138,7 @@ describe("position history helpers", () => {
 
   it("orders timeframe candidates and removes duplicates", () => {
     expect(getPositionHistoryTimeframeCandidates("1H", "1Min")).toEqual(["1Min", "5Min", "15Min"]);
+    expect(getPositionHistoryTimeframeCandidates("6H", "15Min")).toEqual(["5Min"]);
     expect(getPositionHistoryTimeframeCandidates("7D", "1Hour")).toEqual(["1Hour", "15Min", "1Day"]);
     expect(getPositionHistoryTimeframeCandidates("30D", "1Day")).toEqual(["1Day", "1Hour"]);
   });

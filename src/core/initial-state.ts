@@ -17,6 +17,7 @@ export function createInitialAgentState(config: AgentConfig): AgentState {
     lastPositionResearchRun: 0,
     signalResearch: {},
     positionResearch: {},
+    analystBuyCooldowns: {},
     stalenessAnalysis: {},
     twitterConfirmations: {},
     twitterDailyReads: 0,

@@ -9,6 +9,7 @@ interface LineChartSeries {
   label: string
   data: number[]
   variant?: ChartVariant
+  colorByTrend?: boolean
 }
 
 interface ChartMarker {
@@ -40,6 +41,7 @@ interface LineChartProps {
   variant?: ChartVariant
   height?: number | string
   viewBoxHeight?: number
+  yAxisWidth?: number
   showDots?: boolean
   showGrid?: boolean
   showArea?: boolean
@@ -163,6 +165,7 @@ export function LineChart({
   variant = 'cyan',
   height,
   viewBoxHeight,
+  yAxisWidth = 78,
   showDots = false,
   showGrid = true,
   showArea = true,
@@ -183,7 +186,7 @@ export function LineChart({
   const viewBoxWidth = CHART_VIEWBOX_WIDTH
   const resolvedViewBoxHeight = viewBoxHeight ?? (typeof resolvedHeight === 'number' ? resolvedHeight : 320)
   const viewBoxHeightValue = resolvedViewBoxHeight
-  const padding = { top: 18, right: 8, bottom: 34, left: 78 }
+  const padding = { top: 18, right: 8, bottom: 34, left: yAxisWidth }
   const chartWidth = viewBoxWidth - padding.left - padding.right
   const chartHeight = viewBoxHeightValue - padding.top - padding.bottom
 
@@ -354,6 +357,17 @@ export function LineChart({
           if (points.length === 0) return null
 
           const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+          const trendSegments = s.colorByTrend
+            ? points.slice(1).map((point, index) => {
+                const previousPoint = points[index]!
+                const previousValue = s.data[index] ?? 0
+                const currentValue = s.data[index + 1] ?? previousValue
+                return {
+                  d: `M ${previousPoint.x} ${previousPoint.y} L ${point.x} ${point.y}`,
+                  color: currentValue >= previousValue ? variantColors.green.stroke : variantColors.red.stroke,
+                }
+              })
+            : []
           const areaD = `${pathD} L ${points[points.length - 1]?.x ?? 0} ${padding.top + chartHeight} L ${points[0]?.x ?? 0} ${padding.top + chartHeight} Z`
           const gradientId = `area-gradient-${seriesIndex}`
           const shouldRenderTrace = updateEffect === 'trace' && animationVersion > 0
@@ -379,19 +393,38 @@ export function LineChart({
                 />
               )}
 
-              <motion.path
-                d={pathD}
-                fill="none"
-                stroke={colors.stroke}
-                strokeWidth={2.2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={0.94}
-                vectorEffect="non-scaling-stroke"
-                initial={animated ? { pathLength: 0 } : undefined}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 1.2, ease: [0.25, 0.46, 0.45, 0.94] }}
-              />
+              {s.colorByTrend ? (
+                trendSegments.map((segment, index) => (
+                  <motion.path
+                    key={`trend-${index}`}
+                    d={segment.d}
+                    fill="none"
+                    stroke={segment.color}
+                    strokeWidth={2.2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    opacity={0.94}
+                    vectorEffect="non-scaling-stroke"
+                    initial={animated ? { pathLength: 0 } : undefined}
+                    animate={{ pathLength: 1 }}
+                    transition={{ duration: 0.8, delay: animated ? index * 0.01 : 0, ease: [0.25, 0.46, 0.45, 0.94] }}
+                  />
+                ))
+              ) : (
+                <motion.path
+                  d={pathD}
+                  fill="none"
+                  stroke={colors.stroke}
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={0.94}
+                  vectorEffect="non-scaling-stroke"
+                  initial={animated ? { pathLength: 0 } : undefined}
+                  animate={{ pathLength: 1 }}
+                  transition={{ duration: 1.2, ease: [0.25, 0.46, 0.45, 0.94] }}
+                />
+              )}
 
               {shouldRenderTrace && (
                 <LineTraceEffect
@@ -409,7 +442,13 @@ export function LineChart({
                     cx={p.x}
                     cy={p.y}
                     r={3}
-                    fill={colors.fill}
+                    fill={
+                      s.colorByTrend && i > 0
+                        ? (s.data[i] ?? 0) >= (s.data[i - 1] ?? 0)
+                          ? variantColors.green.fill
+                          : variantColors.red.fill
+                        : colors.fill
+                    }
                     opacity={0.92}
                     vectorEffect="non-scaling-stroke"
                     initial={animated ? { scale: 0 } : undefined}
@@ -513,6 +552,8 @@ interface PositionTimelineChartProps {
   xDomainStart?: number
   xDomainEnd?: number
   updateToken?: number
+  selectedSeriesLabel?: string | null
+  onSeriesSelect?: (label: string) => void
 }
 
 const MARKET_TIME_ZONE = 'America/New_York'
@@ -554,6 +595,8 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
   xDomainStart,
   xDomainEnd,
   updateToken,
+  selectedSeriesLabel,
+  onSeriesSelect,
 }: PositionTimelineChartProps) {
   const [hoveredSeries, setHoveredSeries] = useState<number | null>(null)
   const [isPulsing, setIsPulsing] = useState(false)
@@ -691,23 +734,38 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
 
           const pathD = points.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
           const isHovered = hoveredSeries === seriesIndex
+          const isSelected = selectedSeriesLabel === item.label
+          const isDimmed = hoveredSeries !== null ? !isHovered : !!selectedSeriesLabel && !isSelected
 
           return (
             <g
               key={item.label}
               onMouseEnter={() => setHoveredSeries(seriesIndex)}
               onMouseLeave={() => setHoveredSeries(null)}
+              onClick={() => onSeriesSelect?.(item.label)}
+              className={onSeriesSelect ? 'cursor-pointer' : undefined}
             >
+              {onSeriesSelect && (
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={12}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
               <motion.path
                 d={pathD}
                 fill="none"
                 stroke={colors.stroke}
-                strokeWidth={isHovered ? 3 : 2.2}
+                strokeWidth={isHovered || isSelected ? 3 : 2.2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                opacity={isHovered || hoveredSeries === null ? 0.95 : 0.34}
+                opacity={isDimmed ? 0.26 : 0.95}
                 vectorEffect="non-scaling-stroke"
-                animate={{ opacity: isHovered || hoveredSeries === null ? 0.95 : 0.34 }}
+                animate={{ opacity: isDimmed ? 0.26 : 0.95 }}
                 transition={{ duration: 0.18 }}
               />
 

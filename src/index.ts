@@ -62,15 +62,15 @@ export default {
       return withCors(
         request,
         new Response(
-        JSON.stringify({
-          status: "ok",
-          timestamp: new Date().toISOString(),
-          environment: env.ENVIRONMENT,
-        }),
-        {
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
+          JSON.stringify({
+            status: "ok",
+            timestamp: new Date().toISOString(),
+            environment: env.ENVIRONMENT,
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+          }
+        )
       );
     }
 
@@ -78,20 +78,20 @@ export default {
       return withCors(
         request,
         new Response(
-        JSON.stringify({
-          name: "mahoraga",
-          version: "0.3.0",
-          description: "Autonomous LLM-powered trading agent on Cloudflare Workers",
-          endpoints: {
-            health: "/health",
-            mcp: "/mcp (auth required)",
-            agent: "/agent/* (auth required)",
-          },
-        }),
-        {
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
+          JSON.stringify({
+            name: "mahoraga",
+            version: "0.3.0",
+            description: "Autonomous LLM-powered trading agent on Cloudflare Workers",
+            endpoints: {
+              health: "/health",
+              mcp: "/mcp (auth required)",
+              agent: "/agent/* (auth required)",
+            },
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+          }
+        )
       );
     }
 
@@ -116,7 +116,7 @@ export default {
           new Response(JSON.stringify({ error: "Rate limit exceeded", resetAt: rateCheck.resetAt }), {
             status: 429,
             headers: { "Content-Type": "application/json" },
-          }),
+          })
         );
       }
       await incrementRequest(env, `agent-${tokenHash}`);
@@ -128,12 +128,12 @@ export default {
       return withCors(
         request,
         await stub.fetch(
-        new Request(agentUrl.toString(), {
-          method: request.method,
-          headers: request.headers,
-          body: request.body,
-        })
-        ),
+          new Request(agentUrl.toString(), {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+          })
+        )
       );
     }
 

@@ -184,6 +184,7 @@ export interface AgentState {
   lastPositionResearchRun: number;
   signalResearch: Record<string, ResearchResult>;
   positionResearch: Record<string, unknown>;
+  analystBuyCooldowns: Record<string, number>;
   stalenessAnalysis: Record<string, unknown>;
   twitterConfirmations: Record<string, TwitterConfirmation>;
   twitterDailyReads: number;

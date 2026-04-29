@@ -11,15 +11,15 @@
 
 import type { OptionsOrderPreview, OrderPreview } from "../mcp/types";
 import type { PolicyConfig } from "../policy/config";
-import { getDTE } from "../providers/alpaca/options";
 import { type OptionsPolicyContext, type PolicyContext, PolicyEngine } from "../policy/engine";
 import type { AlpacaProviders } from "../providers/alpaca";
+import { getDTE } from "../providers/alpaca/options";
 import type { Account, MarketClock, Order, Position, Snapshot } from "../providers/types";
 import type { D1Client } from "../storage/d1/client";
 import type { RiskState } from "../storage/d1/queries/risk-state";
 import { getRiskState } from "../storage/d1/queries/risk-state";
-import { isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
 import type { StrategyContext } from "../strategy/types";
+import { isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
 
 export interface PolicyBrokerDeps {
   alpaca: AlpacaProviders;
@@ -62,7 +62,10 @@ function approximatelyEqual(left: number, right: number, epsilon: number): boole
 }
 
 function buildManagedOrderId(prefix: string, symbol: string): string {
-  const normalizedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 24);
+  const normalizedSymbol = symbol
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 24);
   return `${prefix}-${normalizedSymbol}`.slice(0, 48);
 }
 
@@ -388,11 +391,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         undefined;
 
       avgVolume20d = computeAverageVolume20d(
-        dailyBars.length > 0
-          ? dailyBars.map((bar) => bar.v)
-          : snapshot?.daily_bar?.v
-            ? [snapshot.daily_bar.v]
-            : []
+        dailyBars.length > 0 ? dailyBars.map((bar) => bar.v) : snapshot?.daily_bar?.v ? [snapshot.daily_bar.v] : []
       );
 
       if (!estimatedPrice || !Number.isFinite(estimatedPrice) || estimatedPrice <= 0) {
@@ -697,10 +696,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     // or cooldown would trap users in losing positions.
     // We only check kill switch to log a warning (but still execute).
     try {
-      const [clock, position] = await Promise.all([
-        getClock(),
-        alpaca.trading.getPosition(symbol).catch(() => null),
-      ]);
+      const [clock, position] = await Promise.all([getClock(), alpaca.trading.getPosition(symbol).catch(() => null)]);
 
       if (db) {
         const riskState = await getRiskStateOrDefault();
@@ -815,7 +811,10 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     await Promise.all(orphanedStops.map((order) => alpaca.trading.cancelOrder(order.id).catch(() => undefined)));
 
     for (const position of longEquityPositions) {
-      const desiredStopPrice = computeProtectiveStopPrice(position.avg_entry_price || position.current_price, deps.defaultStopLossPct);
+      const desiredStopPrice = computeProtectiveStopPrice(
+        position.avg_entry_price || position.current_price,
+        deps.defaultStopLossPct
+      );
       if (!desiredStopPrice) {
         continue;
       }

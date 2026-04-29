@@ -5,7 +5,12 @@
  */
 
 import type { Position } from "../../../core/types";
-import type { PromptTemplate, ResearchPositionPromptBuilder, ResearchSignalPromptBuilder, StrategyContext } from "../../types";
+import type {
+  PromptTemplate,
+  ResearchPositionPromptBuilder,
+  ResearchSignalPromptBuilder,
+  StrategyContext,
+} from "../../types";
 
 /**
  * Signal research prompt — evaluate whether to BUY a symbol based on
@@ -87,8 +92,8 @@ POSITION: ${symbol}
 - Market Value: $${position.market_value.toFixed(2)}
 - P&L: $${position.unrealized_pl.toFixed(2)} (${plPct.toFixed(1)}%)
 - Current Price: $${position.current_price}
-${posAdvanced ? `- Trailing Stop Active: ${(posAdvanced as {trailingActive: boolean}).trailingActive ? "YES" : "NO"}` : ""}
-${posAdvanced ? `- Dynamic TP: ${(posAdvanced as {dynamicTpPct: number}).dynamicTpPct?.toFixed(1) ?? "N/A"}%` : ""}
+${posAdvanced ? `- Trailing Stop Active: ${(posAdvanced as { trailingActive: boolean }).trailingActive ? "YES" : "NO"}` : ""}
+${posAdvanced ? `- Dynamic TP: ${(posAdvanced as { dynamicTpPct: number }).dynamicTpPct?.toFixed(1) ?? "N/A"}%` : ""}
 
 Provide a risk assessment with these exact JSON fields:
 {
@@ -159,7 +164,8 @@ function getMomentumDataFromCache(symbol: string, ctx: StrategyContext): string 
 
   const lines: string[] = [];
   if (momentum.price_change_1h !== undefined) lines.push(`- 1h Price Change: ${momentum.price_change_1h.toFixed(2)}%`);
-  if (momentum.price_change_24h !== undefined) lines.push(`- 24h Price Change: ${momentum.price_change_24h.toFixed(2)}%`);
+  if (momentum.price_change_24h !== undefined)
+    lines.push(`- 24h Price Change: ${momentum.price_change_24h.toFixed(2)}%`);
   if (momentum.volume_change !== undefined) lines.push(`- Volume Change: ${momentum.volume_change.toFixed(1)}x`);
 
   if (lines.length === 0) {

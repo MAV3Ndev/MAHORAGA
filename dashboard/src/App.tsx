@@ -32,9 +32,34 @@ interface AgentEnvelope<T> {
   error?: string
 }
 
+interface TradeReviewPayload {
+  decisions: unknown[]
+  stats: Record<string, unknown>
+  snapshots?: Record<string, unknown>
+}
+
+interface TradeReviewDownloadParams {
+  days: string
+  limit: string
+  symbol: string
+  action: string
+  status: string
+  source: string
+  includeSnapshots: boolean
+}
+
 type PortfolioPeriod = '5min' | '1H' | '6H' | '1D' | '7D' | '30D'
 const PORTFOLIO_PERIOD_OPTIONS = ['5min', '1H', '6H', '1D', '7D', '30D'] as const
 const APY_PERIOD_FALLBACKS: PortfolioPeriod[] = ['30D', '7D', '1D']
+const DEFAULT_TRADE_REVIEW_PARAMS: TradeReviewDownloadParams = {
+  days: '90',
+  limit: '500',
+  symbol: '',
+  action: '',
+  status: '',
+  source: '',
+  includeSnapshots: true,
+}
 const MARKET_TIME_ZONE = 'America/New_York'
 const RESUME_REFRESH_THROTTLE_MS = 5000
 const ORDER_NOTIFICATION_KEY_CAP = 240
@@ -80,6 +105,26 @@ function formatPercent(value: number): string {
   return `${sign}${value.toFixed(2)}%`
 }
 
+function clampIntegerParam(raw: string, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function buildTradeReviewDownloadPath(params: TradeReviewDownloadParams): string {
+  const query = new URLSearchParams({
+    days: String(clampIntegerParam(params.days, 90, 1, 365)),
+    limit: String(clampIntegerParam(params.limit, 500, 1, 500)),
+    include_snapshots: params.includeSnapshots ? 'true' : 'false',
+  })
+  const symbol = params.symbol.trim().toUpperCase()
+  if (symbol) query.set('symbol', symbol)
+  if (params.action) query.set('action', params.action)
+  if (params.status) query.set('status', params.status)
+  if (params.source) query.set('source', params.source)
+  return `/trade-review?${query.toString()}`
+}
+
 function formatCompactCurrency(amount: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -87,6 +132,40 @@ function formatCompactCurrency(amount: number): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(amount)
+}
+
+function formatCurrencyDynamic(amount: number, fractionDigits: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(amount)
+}
+
+function createEquityAxisFormatter(values: number[]): (value: number) => string {
+  const finiteValues = values.filter((value) => Number.isFinite(value))
+  if (finiteValues.length === 0) {
+    return (value: number) => formatCurrencyDynamic(value, 0)
+  }
+
+  const minValue = Math.min(...finiteValues)
+  const maxValue = Math.max(...finiteValues)
+  const range = Math.max(0, maxValue - minValue)
+  const maxAbsValue = Math.max(...finiteValues.map((value) => Math.abs(value)))
+
+  if (range < 1_000) {
+    const fractionDigits = range < 10 ? 2 : range < 100 ? 1 : 0
+    return (value: number) => formatCurrencyDynamic(value, fractionDigits)
+  }
+
+  if (maxAbsValue >= 1_000_000) {
+    const fractionDigits = range < 100_000 ? 3 : range < 1_000_000 ? 2 : 1
+    return (value: number) => `$${(value / 1_000_000).toFixed(fractionDigits)}m`
+  }
+
+  const fractionDigits = range < 10_000 ? 2 : range < 100_000 ? 1 : 0
+  return (value: number) => `$${(value / 1_000).toFixed(fractionDigits)}k`
 }
 
 function formatHoldDuration(startTimestamp: number, endTimestamp: number): string {
@@ -208,7 +287,6 @@ function getPortfolioHistoryQueries(period: PortfolioPeriod): Array<{ period: st
       { period: '1D', timeframe: '5Min', intraday: 'extended_hours' },
       { period: '1D', timeframe: '5Min', intraday: 'market_hours' },
       { period: '1D', timeframe: '5Min', intraday: 'continuous' },
-      { period: '1D', timeframe: '15Min', intraday: 'continuous' },
     ]
   }
 
@@ -588,7 +666,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showSetup, setShowSetup] = useState(false)
+  const [showTradeReviewDownloadDialog, setShowTradeReviewDownloadDialog] = useState(false)
   const [busyAction, setBusyAction] = useState<'enable' | 'disable' | 'trigger' | null>(null)
+  const [tradeReviewDownloading, setTradeReviewDownloading] = useState(false)
+  const [tradeReviewDownloadParams, setTradeReviewDownloadParams] =
+    useState<TradeReviewDownloadParams>(DEFAULT_TRADE_REVIEW_PARAMS)
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [selectedResearchSymbol, setSelectedResearchSymbol] = useState<string | null>(null)
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null)
@@ -599,6 +681,7 @@ export default function App() {
   const [portfolioPeriod, setPortfolioPeriod] = useState<PortfolioPeriod>('1D')
   const [positionTimelinePeriod, setPositionTimelinePeriod] = useState<PortfolioPeriod>('7D')
   const [positionTimelineHistory, setPositionTimelineHistory] = useState<Record<string, PositionTimelineHistory>>({})
+  const [selectedTimelineSymbol, setSelectedTimelineSymbol] = useState<string | null>(null)
   const [showRemoteLinkDetails, setShowRemoteLinkDetails] = useState(false)
   const [showPortfolioDetails, setShowPortfolioDetails] = useState(false)
   const [isWindowVisible, setIsWindowVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
@@ -857,6 +940,47 @@ export default function App() {
     }
   }
 
+  const handleDownloadTradeReview = async (params: TradeReviewDownloadParams) => {
+    setTradeReviewDownloading(true)
+
+    try {
+      const endpoint = buildTradeReviewDownloadPath(params)
+      const response = await requestAgent<AgentEnvelope<TradeReviewPayload>>(endpoint, { connection })
+      if (!response.ok || !response.data?.ok || !response.data.data) {
+        throw new Error(getResponseError(response.data, 'Failed to download trade review logs'))
+      }
+
+      const generatedAt = new Date().toISOString()
+      const payload = {
+        generated_at: generatedAt,
+        endpoint,
+        params: {
+          ...params,
+          days: clampIntegerParam(params.days, 90, 1, 365),
+          limit: clampIntegerParam(params.limit, 500, 1, 500),
+          symbol: params.symbol.trim().toUpperCase() || null,
+        },
+        ...response.data.data,
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `mahoraga-trade-review-${generatedAt.slice(0, 10)}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      setError(null)
+      setShowTradeReviewDownloadDialog(false)
+      void showDesktopNotification('Trade review logs downloaded', `${payload.decisions.length} decisions exported.`)
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'Failed to download trade review logs')
+    } finally {
+      setTradeReviewDownloading(false)
+    }
+  }
+
   // Derived state (must stay above early returns per React hooks rules)
   const account = status?.account
   const positions = status?.positions || []
@@ -936,6 +1060,10 @@ export default function App() {
     return visiblePortfolioHistory.map(s => s.equity)
   }, [visiblePortfolioHistory])
 
+  const portfolioAxisFormatter = useMemo(() => {
+    return createEquityAxisFormatter(portfolioChartData)
+  }, [portfolioChartData])
+
   const visibleSignals = useMemo(() => signals.slice(0, 20), [signals])
   const visibleLogs = useMemo(() => logs.slice(-50).reverse(), [logs])
   const signalResearchEntries = useMemo(
@@ -953,11 +1081,12 @@ export default function App() {
   const positionTimelineSymbols = useMemo(() => {
     return Object.values(positionTimelineHistory)
       .sort((a, b) => {
+        const aLast = a.exit_time ?? a.points[a.points.length - 1]?.timestamp ?? 0
+        const bLast = b.exit_time ?? b.points[b.points.length - 1]?.timestamp ?? 0
+        if (aLast !== bLast) return bLast - aLast
         const aOpen = a.status !== 'SOLD'
         const bOpen = b.status !== 'SOLD'
         if (aOpen !== bOpen) return aOpen ? -1 : 1
-        const aLast = a.exit_time ?? a.points[a.points.length - 1]?.timestamp ?? 0
-        const bLast = b.exit_time ?? b.points[b.points.length - 1]?.timestamp ?? 0
         return bLast - aLast
       })
       .map((history) => history.symbol)
@@ -1096,7 +1225,7 @@ export default function App() {
   }, [positionTimelineHistory, positionTimelinePeriod, positionTimelineReferenceTimestamp, positionTimelineSymbols])
 
   const positionTimelineSeries = useMemo(() => {
-    return positionTimelineSymbols.slice(0, 5).map((symbol, idx) => {
+    return positionTimelineSymbols.map((symbol, idx) => {
       const history = positionTimelineHistory[symbol]
       if (!history || history.points.length < 2) {
         return null
@@ -1151,6 +1280,11 @@ export default function App() {
       holdDuration: formatHoldDuration(series.entryTime, series.status === 'SOLD' ? series.endTime : nowTimestamp),
     }))
   }, [nowTimestamp, positionTimelineSeries])
+
+  const selectedTimelineSeries = useMemo(() => {
+    if (!selectedTimelineSymbol) return null
+    return positionTimelineLegend.find((series) => series.label === selectedTimelineSymbol) ?? null
+  }, [positionTimelineLegend, selectedTimelineSymbol])
 
   const portfolioChartUpdateToken = useChangeToken(buildNumericSeriesSignature(portfolioChartData))
   const positionTimelineUpdateToken = useChangeToken(buildTimelineSeriesSignature(positionTimelineSeries))
@@ -1500,6 +1634,15 @@ export default function App() {
               </button>
               <button
                 className={remoteLinkActionClass}
+                onClick={() => {
+                  setShowTradeReviewDownloadDialog(true)
+                }}
+                disabled={tradeReviewDownloading}
+              >
+                {tradeReviewDownloading ? 'EXPORTING...' : 'Download Logs'}
+              </button>
+              <button
+                className={remoteLinkActionClass}
                 onClick={() => handleAgentAction(isAgentEnabled ? 'disable' : 'enable')}
                 disabled={busyAction === 'enable' || busyAction === 'disable'}
               >
@@ -1572,6 +1715,15 @@ export default function App() {
                   </button>
                   <button
                     className={remoteLinkActionClass}
+                    onClick={() => {
+                      setShowTradeReviewDownloadDialog(true)
+                    }}
+                    disabled={tradeReviewDownloading}
+                  >
+                    {tradeReviewDownloading ? 'EXPORTING...' : 'Download Logs'}
+                  </button>
+                  <button
+                    className={remoteLinkActionClass}
                     onClick={() => handleAgentAction(isAgentEnabled ? 'disable' : 'enable')}
                     disabled={busyAction === 'enable' || busyAction === 'disable'}
                   >
@@ -1619,6 +1771,15 @@ export default function App() {
                         </button>
                         <button className={remoteLinkActionClass} onClick={() => setShowSetup(true)}>
                           Edit Link
+                        </button>
+                        <button
+                          className={remoteLinkActionClass}
+                          onClick={() => {
+                            setShowTradeReviewDownloadDialog(true)
+                          }}
+                          disabled={tradeReviewDownloading}
+                        >
+                          {tradeReviewDownloading ? 'EXPORTING...' : 'Download Logs'}
                         </button>
                         <button
                           className={remoteLinkActionClass}
@@ -1870,14 +2031,15 @@ export default function App() {
                       <LineChart
                         height={desktopPanel ? '100%' : 320}
                         viewBoxHeight={desktopPanel ? 520 : 320}
-                        series={[{ label: 'Equity', data: portfolioChartData, variant: totalPl >= 0 ? 'green' : 'red' }]}
+                        yAxisWidth={92}
+                        series={[{ label: 'Equity', data: portfolioChartData, variant: totalPl >= 0 ? 'green' : 'red', colorByTrend: true }]}
                         labels={portfolioChartLabels}
                         updateToken={portfolioChartUpdateToken}
                         updateEffect="trace"
                         showArea={true}
                         showGrid={true}
                         showDots={false}
-                        formatValue={(v) => `$${(v / 1000).toFixed(1)}k`}
+                        formatValue={portfolioAxisFormatter}
                         markers={marketMarkers}
                         marketHours={marketHoursZone}
                       />
@@ -1954,25 +2116,31 @@ export default function App() {
                 </div>
               ) : (
                 <div className="h-full min-h-0 flex flex-col">
-                  <div className="hud-timeline-legend mb-2 shrink-0 border-b border-hud-line/30 pb-2">
-                    {positionTimelineLegend.map((series) => {
-                      const isPositive = series.currentReturn >= 0
-                      return (
-                        <div key={series.label} className="hud-timeline-legend__item flex items-center gap-1.5">
-                          <div 
-                            className="w-2 h-2 rounded-full" 
-                            style={{ backgroundColor: `var(--color-hud-${series.variant})` }}
+                  <div className="mb-2 shrink-0 border-b border-hud-line/30 pb-2">
+                    <div className="flex min-h-[26px] items-center justify-between gap-2">
+                      <div className="hud-label text-hud-text-dim">
+                        {positionTimelineLegend.length} POSITIONS
+                      </div>
+                      {selectedTimelineSeries && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTimelineSymbol(null)}
+                          className="hud-timeline-chip"
+                        >
+                          <span
+                            className="hud-timeline-chip__dot"
+                            style={{ backgroundColor: `var(--color-hud-${selectedTimelineSeries.variant})` }}
                           />
-                          <span className="text-[13px] font-semibold text-hud-text-bright">{series.label}</span>
-                          <span className={clsx('text-[11px] font-semibold uppercase tracking-[0.14em]', isPositive ? 'text-hud-success' : 'text-hud-error')}>
-                            {formatPercent(series.currentReturn)}
+                          <span className="hud-timeline-chip__symbol">{selectedTimelineSeries.label}</span>
+                          <span className={clsx('hud-timeline-chip__pnl', selectedTimelineSeries.currentReturn >= 0 ? 'text-hud-success' : 'text-hud-error')}>
+                            {formatPercent(selectedTimelineSeries.currentReturn)}
                           </span>
-                          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-hud-text-dim">
-                            {series.holdDuration}
+                          <span className="hud-timeline-chip__meta">
+                            {selectedTimelineSeries.status === 'SOLD' ? 'SOLD' : selectedTimelineSeries.holdDuration}
                           </span>
-                        </div>
-                      )
-                    })}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="flex-1 min-h-0 w-full">
                     <PositionTimelineChart
@@ -1982,6 +2150,8 @@ export default function App() {
                       xDomainStart={positionTimelineDomain.start}
                       xDomainEnd={positionTimelineDomain.end}
                       updateToken={positionTimelineUpdateToken}
+                      selectedSeriesLabel={selectedTimelineSeries?.label ?? null}
+                      onSeriesSelect={setSelectedTimelineSymbol}
                       formatValue={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`}
                     />
                   </div>
@@ -2325,6 +2495,152 @@ export default function App() {
                 </motion.div>
               </AnimatePresence>
             </div>
+          </motion.div>
+        )}
+
+        {showTradeReviewDownloadDialog && (
+          <motion.div
+            key="trade-review-download"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <DetailDialog title="DOWNLOAD LOGS" onClose={() => setShowTradeReviewDownloadDialog(false)}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="hud-label mb-1 block">Days</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    className="hud-input w-full"
+                    value={tradeReviewDownloadParams.days}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, days: event.target.value }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="hud-label mb-1 block">Limit</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    className="hud-input w-full"
+                    value={tradeReviewDownloadParams.limit}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, limit: event.target.value }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="hud-label mb-1 block">Symbol</label>
+                  <input
+                    type="text"
+                    className="hud-input w-full uppercase"
+                    value={tradeReviewDownloadParams.symbol}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, symbol: event.target.value }))
+                    }
+                    placeholder="ALL"
+                  />
+                </div>
+                <div>
+                  <label className="hud-label mb-1 block">Action</label>
+                  <select
+                    className="hud-input w-full"
+                    value={tradeReviewDownloadParams.action}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, action: event.target.value }))
+                    }
+                  >
+                    <option value="">ALL</option>
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                    <option value="SKIP">SKIP</option>
+                    <option value="WAIT">WAIT</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="hud-label mb-1 block">Status</label>
+                  <select
+                    className="hud-input w-full"
+                    value={tradeReviewDownloadParams.status}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, status: event.target.value }))
+                    }
+                  >
+                    <option value="">ALL</option>
+                    <option value="researched">RESEARCHED</option>
+                    <option value="submitted">SUBMITTED</option>
+                    <option value="blocked">BLOCKED</option>
+                    <option value="filtered">FILTERED</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="hud-label mb-1 block">Source</label>
+                  <select
+                    className="hud-input w-full"
+                    value={tradeReviewDownloadParams.source}
+                    onChange={(event) =>
+                      setTradeReviewDownloadParams((current) => ({ ...current, source: event.target.value }))
+                    }
+                  >
+                    <option value="">ALL</option>
+                    <option value="signal_research">SIGNAL RESEARCH</option>
+                    <option value="strategy_entry">STRATEGY ENTRY</option>
+                    <option value="strategy_entry_options">STRATEGY OPTIONS</option>
+                    <option value="strategy_exit">STRATEGY EXIT</option>
+                    <option value="analyst_recommendation">ANALYST</option>
+                    <option value="premarket_plan">PREMARKET</option>
+                  </select>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-3 border border-hud-line/60 bg-hud-bg/35 p-3">
+                <input
+                  type="checkbox"
+                  className="hud-input h-4 w-4"
+                  checked={tradeReviewDownloadParams.includeSnapshots}
+                  onChange={(event) =>
+                    setTradeReviewDownloadParams((current) => ({
+                      ...current,
+                      includeSnapshots: event.target.checked,
+                    }))
+                  }
+                />
+                <span className="hud-label">Include Snapshots</span>
+              </label>
+
+              <div className="border border-hud-line/60 bg-hud-bg/35 p-3">
+                <div className="hud-label mb-2">Endpoint</div>
+                <div className="hud-value-sm break-all font-mono">
+                  /agent{buildTradeReviewDownloadPath(tradeReviewDownloadParams)}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap justify-end gap-3 border-t border-hud-line pt-4">
+                <button
+                  className="hud-button hud-button-muted"
+                  onClick={() => setTradeReviewDownloadParams(DEFAULT_TRADE_REVIEW_PARAMS)}
+                  disabled={tradeReviewDownloading}
+                >
+                  Reset
+                </button>
+                <button className="hud-button" onClick={() => setShowTradeReviewDownloadDialog(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="hud-button"
+                  onClick={() => {
+                    void handleDownloadTradeReview(tradeReviewDownloadParams)
+                  }}
+                  disabled={tradeReviewDownloading}
+                >
+                  {tradeReviewDownloading ? 'Exporting...' : 'Download JSON'}
+                </button>
+              </div>
+            </DetailDialog>
           </motion.div>
         )}
 

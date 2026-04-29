@@ -38,7 +38,9 @@ export function analyzeStaleness(
   let timeScore = 0;
   let priceScore = 0;
   let socialScore = 0;
-  const staleMidHoldDays = Number.isFinite(config.stale_mid_hold_days) ? config.stale_mid_hold_days : config.stale_max_hold_days;
+  const staleMidHoldDays = Number.isFinite(config.stale_mid_hold_days)
+    ? config.stale_mid_hold_days
+    : config.stale_max_hold_days;
   const staleMaxHoldDays = Number.isFinite(config.stale_max_hold_days) ? config.stale_max_hold_days : staleMidHoldDays;
   const staleTimeWindowDays = staleMaxHoldDays - staleMidHoldDays;
 
@@ -46,9 +48,7 @@ export function analyzeStaleness(
   if (holdDays >= staleMaxHoldDays) {
     timeScore = 40;
   } else if (holdDays >= staleMidHoldDays) {
-    timeScore = staleTimeWindowDays > 0
-      ? (20 * (holdDays - staleMidHoldDays)) / staleTimeWindowDays
-      : 20;
+    timeScore = staleTimeWindowDays > 0 ? (20 * (holdDays - staleMidHoldDays)) / staleTimeWindowDays : 20;
   }
   stalenessScore += timeScore;
 

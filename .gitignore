@@ -29,6 +29,8 @@ dashboard/node_modules/
 # -----------------------------------------------------------------------------
 dist/
 build/
+dashboard/release/
+dashboard/dist/
 *.js.map
 .wrangler/
 
@@ -36,6 +38,7 @@ build/
 # Logs
 # -----------------------------------------------------------------------------
 *.log
+logs-*.json
 logs/
 agent.log
 mcp.log
@@ -77,10 +80,12 @@ ehthumbs.db
 # -----------------------------------------------------------------------------
 .agents/
 .claude/
+.codex
 .codex/
 .cursor/
 .opencode/
 .windsurf/
+AGENTS.md
 .github/skills/
 
 # -----------------------------------------------------------------------------

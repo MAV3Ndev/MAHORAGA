@@ -116,6 +116,26 @@ export interface TradeJournalRow {
   updated_at: string;
 }
 
+export interface TradeDecisionRow {
+  id: string;
+  cycle_id: string;
+  decision_at: string;
+  source: string;
+  symbol: string;
+  action: string;
+  status: string;
+  confidence: number | null;
+  reason: string | null;
+  notional: number | null;
+  price: number | null;
+  pnl_pct: number | null;
+  trade_id: string | null;
+  journal_id: string | null;
+  snapshot_r2_key: string | null;
+  metadata_json: string | null;
+  created_at: string;
+}
+
 export interface StructuredEventRow {
   id: string;
   raw_event_id: string | null;

@@ -8,6 +8,20 @@ An autonomous, LLM-powered trading agent that runs 24/7 on Cloudflare Workers.
 
 MAHORAGA monitors social sentiment from StockTwits and Reddit, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, and 24/7 crypto trading support.
 
+## Fork Notice
+
+This repository is a public fork of the original [ygwyg/MAHORAGA](https://github.com/ygwyg/MAHORAGA). It keeps the original Cloudflare Workers trading-agent architecture and adds a more operationally focused agent, dashboard, and audit trail.
+
+### Main changes from upstream
+
+- **Remote dashboard app** — Adds the MAHORAGA SENTINEL dashboard with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, and trade-review export.
+- **Desktop and mobile packaging** — Adds Electron support for a Windows desktop app and Capacitor/Android project files for mobile builds.
+- **Decision audit logs** — Adds D1-backed trade decision rows plus optional R2 snapshots, exposed through `/agent/trade-review` for reviewing why the agent bought, sold, skipped, or blocked a trade.
+- **Risk and execution guardrails** — Adds stronger policy-broker routing, approval records, risk sizing, sell/exit safeguards, staleness handling, market-session planning, and portfolio concentration checks.
+- **Research pipeline refactor** — Extracts signal research, position research, social snapshots, status payloads, record shaping, ticker validation, and strategy hooks into smaller modules with focused tests.
+- **LLM provider flexibility** — Supports direct OpenAI, Vercel AI SDK providers, and Cloudflare AI Gateway with configurable model names and base URLs.
+- **Documentation refresh** — Adds strategy architecture docs and updates the generated documentation site for the pluggable strategy model.
+
 <img width="1278" height="957" alt="dashboard" src="https://github.com/user-attachments/assets/56473ab6-e2c6-45fc-9e32-cf85e69f1a2d" />
 
 ## Features
@@ -21,6 +35,8 @@ MAHORAGA monitors social sentiment from StockTwits and Reddit, uses AI (OpenAI, 
 - **Pre-Market Analysis** — Prepare trading plans before market open
 - **Discord Notifications** — Get alerts on BUY signals
 - **Pluggable Strategy System** — Create custom strategies without touching core files
+- **Trade Review Export** — Download indexed decision logs and R2 snapshots for post-trade analysis
+- **Desktop/Mobile Dashboard** — Run the dashboard in the browser, Electron, or Android shell
 
 ## Requirements
 
@@ -34,7 +50,7 @@ MAHORAGA monitors social sentiment from StockTwits and Reddit, uses AI (OpenAI, 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/ygwyg/MAHORAGA.git
+git clone https://github.com/MAV3Ndev/MAHORAGA.git
 cd mahoraga
 npm install
 ```
@@ -105,7 +121,7 @@ export MAHORAGA_TOKEN="your-api-token"
 
 # Enable the agent
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.bernardoalmeida2004.workers.dev/agent/enable
+  https://mahoraga.your-subdomain.workers.dev/agent/enable
 ```
 
 ### 6. Monitor
@@ -113,15 +129,20 @@ curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
 ```bash
 # Check status
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.bernardoalmeida2004.workers.dev/agent/status
+  https://mahoraga.your-subdomain.workers.dev/agent/status
 
-# View logs
+# View recent runtime logs
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.bernardoalmeida2004.workers.dev/agent/logs
+  https://mahoraga.your-subdomain.workers.dev/agent/logs
+
+# Download trade-review logs with snapshots for analysis
+curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
+  "https://mahoraga.your-subdomain.workers.dev/agent/trade-review?days=90&limit=500&include_snapshots=true" \
+  -o mahoraga-trade-review.json
 
 # Emergency kill switch (uses separate KILL_SWITCH_SECRET)
 curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" \
-  https://mahoraga.bernardoalmeida2004.workers.dev/agent/kill
+  https://mahoraga.your-subdomain.workers.dev/agent/kill
 
 # Run dashboard locally
 cd dashboard && npm install && npm run dev
@@ -269,6 +290,7 @@ npx wrangler secret put ANTHROPIC_API_KEY # Your Anthropic API key
 | `/agent/disable` | Disable the agent |
 | `/agent/config` | Get or update configuration |
 | `/agent/logs` | Get recent logs |
+| `/agent/trade-review` | Export indexed trade decisions, optionally with R2 snapshots |
 | `/agent/trigger` | Manually trigger (for testing) |
 | `/agent/kill` | Emergency kill switch (uses `KILL_SWITCH_SECRET`) |
 | `/mcp` | MCP server for tool access |
@@ -280,7 +302,7 @@ npx wrangler secret put ANTHROPIC_API_KEY # Your Anthropic API key
 All `/agent/*` endpoints require Bearer token authentication using `MAHORAGA_API_TOKEN`:
 
 ```bash
-curl -H "Authorization: Bearer $MAHORAGA_TOKEN" https://mahoraga.bernardoalmeida2004.workers.dev/agent/status
+curl -H "Authorization: Bearer $MAHORAGA_TOKEN" https://mahoraga.your-subdomain.workers.dev/agent/status
 ```
 
 Generate a secure token: `openssl rand -base64 48`
@@ -290,7 +312,7 @@ Generate a secure token: `openssl rand -base64 48`
 The `/agent/kill` endpoint uses a separate `KILL_SWITCH_SECRET` for emergency shutdown:
 
 ```bash
-curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" https://mahoraga.bernardoalmeida2004.workers.dev/agent/kill
+curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" https://mahoraga.your-subdomain.workers.dev/agent/kill
 ```
 
 This immediately disables the agent, cancels all alarms, and clears the signal cache.

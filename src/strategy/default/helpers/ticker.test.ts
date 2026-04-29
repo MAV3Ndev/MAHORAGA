@@ -23,8 +23,6 @@ describe("ticker helpers", () => {
     expect(isBuiltInTickerBlacklisted("NOW")).toBe(true);
     expect(shouldRescueBuiltInBlacklistedTicker("NOW", { knownSecTicker: true })).toBe(true);
     expect(shouldRescueBuiltInBlacklistedTicker("NOW", { alpacaValid: true })).toBe(true);
-    expect(shouldRescueBuiltInBlacklistedTicker("NOW", { customBlacklist: ["NOW"], knownSecTicker: true })).toBe(
-      false
-    );
+    expect(shouldRescueBuiltInBlacklistedTicker("NOW", { customBlacklist: ["NOW"], knownSecTicker: true })).toBe(false);
   });
 });

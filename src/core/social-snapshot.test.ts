@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { Signal, SocialHistoryEntry } from "./types";
 import {
   buildSocialSnapshot,
   getSocialSnapshotCache,
   serializeSocialSnapshot,
   updateSocialHistoryFromSnapshot,
 } from "./social-snapshot";
+import type { Signal, SocialHistoryEntry } from "./types";
 
 function signal(overrides: Partial<Signal>): Signal {
   return {

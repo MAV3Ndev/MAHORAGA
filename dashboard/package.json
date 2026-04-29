@@ -8,7 +8,10 @@
     "dev": "vite",
     "dev:electron": "node scripts/dev-electron.mjs",
     "build": "tsc -b && npx vite build",
-    "build:electron": "npx vite build",
+    "build:electron": "npm run build",
+    "pack:win": "npm run build && electron-builder --win --dir",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win:portable": "npm run build && electron-builder --win portable",
     "android:init": "npx cap add android",
     "build:android": "npm run build && npx cap sync android",
     "cap:sync": "npx cap sync",
@@ -31,8 +34,41 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "electron": "^37.2.0",
+    "electron-builder": "^26.8.1",
     "tailwindcss": "^4.0.0",
     "typescript": "~5.6.0",
     "vite": "^6.0.0"
+  },
+  "build": {
+    "appId": "dev.mahoraga.sentinel",
+    "productName": "MAHORAGA SENTINEL",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/icons/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MAHORAGA SENTINEL"
+    }
   }
 }

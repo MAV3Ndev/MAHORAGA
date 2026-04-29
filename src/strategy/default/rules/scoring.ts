@@ -71,9 +71,7 @@ function calculateCatalystScore(catalysts: string[] | undefined): number {
   const strongCatalysts = catalysts.filter((c) =>
     /earnings|FDA| lawsuit|acquisition|merger|partnership|approval|recall/i.test(c)
   );
-  const moderateCatalysts = catalysts.filter((c) =>
-    /upgrade|downgrade|initiation|coverage|target|forecast/i.test(c)
-  );
+  const moderateCatalysts = catalysts.filter((c) => /upgrade|downgrade|initiation|coverage|target|forecast/i.test(c));
 
   let score = 0.4; // base with catalysts
   score += Math.min(0.3, strongCatalysts.length * 0.15);

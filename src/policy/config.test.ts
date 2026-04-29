@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getDefaultPolicyConfig, getDefaultOptionsPolicyConfig } from "./config";
+import { getDefaultOptionsPolicyConfig, getDefaultPolicyConfig } from "./config";
 
 describe("getDefaultPolicyConfig", () => {
   it("allows runtime overrides for max_open_positions", () => {

@@ -32,7 +32,7 @@ function extractFirstJSONObject(content: string): string {
       continue;
     }
 
-    if (char === "\"") {
+    if (char === '"') {
       inString = !inString;
       continue;
     }
@@ -90,7 +90,7 @@ function repairJsonLikeContent(content: string): string {
         continue;
       }
 
-      if (char === "\"") {
+      if (char === '"') {
         repaired += char;
         inString = false;
         continue;
@@ -115,7 +115,7 @@ function repairJsonLikeContent(content: string): string {
       continue;
     }
 
-    if (char === "\"") {
+    if (char === '"') {
       repaired += char;
       inString = true;
       continue;
@@ -149,7 +149,7 @@ function repairJsonLikeContent(content: string): string {
   }
 
   if (inString) {
-    repaired += "\"";
+    repaired += '"';
   }
 
   while (closingStack.length > 0) {
@@ -164,12 +164,9 @@ export function parseLlmJsonObject<T>(content: string): T {
   const extracted = extractFirstJSONObject(content);
   const repairedCleaned = repairJsonLikeContent(cleaned);
   const repairedExtracted = extracted === cleaned ? repairedCleaned : repairJsonLikeContent(extracted);
-  const candidates = [
-    cleaned,
-    extracted,
-    repairedCleaned,
-    repairedExtracted,
-  ].filter((candidate, index, all) => candidate.length > 0 && all.indexOf(candidate) === index);
+  const candidates = [cleaned, extracted, repairedCleaned, repairedExtracted].filter(
+    (candidate, index, all) => candidate.length > 0 && all.indexOf(candidate) === index
+  );
 
   let lastError: unknown = null;
 

@@ -11,7 +11,7 @@ export interface BuildAgentConfigUpdateCandidateParams {
 }
 
 function hasOwnKey<T extends object>(value: T, key: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  return Object.hasOwn(value, key);
 }
 
 export function normalizeAgentConfigUpdate(update: AgentConfigUpdate): Partial<AgentConfig> {

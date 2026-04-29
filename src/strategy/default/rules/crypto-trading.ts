@@ -8,9 +8,9 @@
 
 import type { Position, PositionEntry, ResearchResult, Signal, SocialSnapshotCacheEntry } from "../../../core/types";
 import { createAlpacaProviders } from "../../../providers/alpaca";
-import { buildCryptoFallbackResearch } from "../helpers/research-fallback";
-import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
 import type { StrategyContext } from "../../types";
+import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
+import { buildCryptoFallbackResearch } from "../helpers/research-fallback";
 import { computeRiskSizedNotional } from "./risk-sizing";
 
 function stripJsonCodeFences(content: string): string {
