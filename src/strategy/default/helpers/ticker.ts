@@ -292,6 +292,24 @@ export const TICKER_BLACKLIST = new Set([
   "SHALL",
 ]);
 
+/** Broad-market or leveraged proxy symbols that are usually noise for single-name sentiment trading. */
+export const BROAD_MARKET_PROXY_TICKERS = new Set([
+  "SPY",
+  "QQQ",
+  "DIA",
+  "IWM",
+  "VTI",
+  "VOO",
+  "TQQQ",
+  "SQQQ",
+  "SOXL",
+  "SOXS",
+  "UPRO",
+  "SPXU",
+  "UVXY",
+  "VXX",
+]);
+
 // ── Ticker extraction ────────────────────────────────────────────────────────
 
 /**
@@ -313,6 +331,37 @@ export function extractTickers(text: string, customBlacklist: string[] = []): st
     }
   }
   return Array.from(matches);
+}
+
+export function isBroadMarketProxyTicker(symbol: string): boolean {
+  return BROAD_MARKET_PROXY_TICKERS.has(symbol.toUpperCase());
+}
+
+export function isBuiltInTickerBlacklisted(symbol: string): boolean {
+  return TICKER_BLACKLIST.has(symbol.toUpperCase());
+}
+
+export function isCustomTickerBlacklisted(symbol: string, customBlacklist: string[] = []): boolean {
+  const upper = symbol.toUpperCase();
+  return customBlacklist.some((item) => item.toUpperCase() === upper);
+}
+
+export function isTickerBlacklisted(symbol: string, customBlacklist: string[] = []): boolean {
+  const upper = symbol.toUpperCase();
+  return isBuiltInTickerBlacklisted(upper) || isCustomTickerBlacklisted(upper, customBlacklist);
+}
+
+export function shouldRescueBuiltInBlacklistedTicker(
+  symbol: string,
+  options: {
+    customBlacklist?: string[];
+    knownSecTicker?: boolean;
+    alpacaValid?: boolean;
+  } = {}
+): boolean {
+  if (!isBuiltInTickerBlacklisted(symbol)) return false;
+  if (isCustomTickerBlacklisted(symbol, options.customBlacklist ?? [])) return false;
+  return Boolean(options.knownSecTicker || options.alpacaValid);
 }
 
 // ── Ticker validation cache ──────────────────────────────────────────────────

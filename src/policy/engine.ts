@@ -21,6 +21,7 @@
  * within the configured TTL (default 5 minutes) to execute the order.
  */
 
+import { areEquivalentAssetSymbols } from "../core/asset-symbols";
 import type {
   OptionsOrderPreview,
   OptionsPolicyResult,
@@ -51,6 +52,10 @@ export interface OptionsPolicyContext {
 
 export class PolicyEngine {
   constructor(public config: PolicyConfig) {}
+
+  private findExistingPosition(positions: Position[], symbol: string): Position | undefined {
+    return positions.find((position) => areEquivalentAssetSymbols(position.symbol, symbol));
+  }
 
   evaluate(ctx: PolicyContext): PolicyResult {
     const violations: PolicyViolation[] = [];
@@ -201,6 +206,38 @@ export class PolicyEngine {
         message: `Order notional $${estimatedNotional.toFixed(2)} exceeds limit of $${this.config.max_notional_per_trade}`,
         current_value: estimatedNotional,
         limit_value: this.config.max_notional_per_trade,
+      });
+    }
+  }
+
+  private checkMinPrice(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy" || ctx.order.asset_class !== "us_equity") return;
+
+    const price = ctx.order.estimated_price ?? ctx.order.limit_price ?? ctx.order.stop_price;
+    if (!Number.isFinite(price) || !price || price <= 0) return;
+
+    if (price < this.config.min_price) {
+      violations.push({
+        rule: "min_price",
+        message: `Estimated price $${price.toFixed(2)} is below minimum allowed price of $${this.config.min_price.toFixed(2)}`,
+        current_value: price,
+        limit_value: this.config.min_price,
+      });
+    }
+  }
+
+  private checkAverageVolume(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy" || ctx.order.asset_class !== "us_equity") return;
+
+    const avgVolume = ctx.order.avg_volume_20d;
+    if (!Number.isFinite(avgVolume) || !avgVolume || avgVolume <= 0) return;
+
+    if (avgVolume < this.config.min_avg_volume) {
+      violations.push({
+        rule: "min_avg_volume",
+        message: `Average daily volume ${Math.round(avgVolume).toLocaleString()} is below minimum ${Math.round(this.config.min_avg_volume).toLocaleString()}`,
+        current_value: avgVolume,
+        limit_value: this.config.min_avg_volume,
       });
     }
   }

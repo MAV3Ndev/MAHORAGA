@@ -35,21 +35,30 @@ export function analyzeStaleness(
   }
 
   let stalenessScore = 0;
+  let timeScore = 0;
+  let priceScore = 0;
+  let socialScore = 0;
+  const staleMidHoldDays = Number.isFinite(config.stale_mid_hold_days)
+    ? config.stale_mid_hold_days
+    : config.stale_max_hold_days;
+  const staleMaxHoldDays = Number.isFinite(config.stale_max_hold_days) ? config.stale_max_hold_days : staleMidHoldDays;
+  const staleTimeWindowDays = staleMaxHoldDays - staleMidHoldDays;
 
   // Time-based (max 40 points)
-  if (holdDays >= config.stale_max_hold_days) {
-    stalenessScore += 40;
-  } else if (holdDays >= config.stale_mid_hold_days) {
-    stalenessScore +=
-      (20 * (holdDays - config.stale_mid_hold_days)) / (config.stale_max_hold_days - config.stale_mid_hold_days);
+  if (holdDays >= staleMaxHoldDays) {
+    timeScore = 40;
+  } else if (holdDays >= staleMidHoldDays) {
+    timeScore = staleTimeWindowDays > 0 ? (20 * (holdDays - staleMidHoldDays)) / staleTimeWindowDays : 20;
   }
+  stalenessScore += timeScore;
 
   // Price action (max 30 points)
   if (pnlPct < 0) {
-    stalenessScore += Math.min(30, Math.abs(pnlPct) * 3);
-  } else if (pnlPct < config.stale_mid_min_gain_pct && holdDays >= config.stale_mid_hold_days) {
-    stalenessScore += 15;
+    priceScore = Math.min(30, Math.abs(pnlPct) * 3);
+  } else if (pnlPct < config.stale_mid_min_gain_pct && holdDays >= staleMidHoldDays) {
+    priceScore = 15;
   }
+  stalenessScore += priceScore;
 
   // Social volume decay (max 30 points)
   const hasCurrentSocialVolume = currentSocialVolume !== null && currentSocialVolume !== undefined;
@@ -60,8 +69,9 @@ export function analyzeStaleness(
   } else if (hasCurrentSocialVolume && volumeRatio <= 0.5) {
     stalenessScore += 15;
   }
+  stalenessScore += socialScore;
 
-  stalenessScore = Math.min(100, stalenessScore);
+  stalenessScore = Number.isFinite(stalenessScore) ? Math.min(100, stalenessScore) : 0;
 
   const midHoldMomentumFailed =
     holdDays >= config.stale_mid_hold_days &&

@@ -84,6 +84,8 @@ function createValidConfig() {
     sentiment_reversal_threshold: -0.25,
     sentiment_reversal_min_sources: 1,
     position_size_pct_of_cash: 10,
+    equity_entry_cutoff_minutes_before_close: 15,
+    after_hours_exit_limit_buffer_pct: 0.25,
     stale_position_enabled: true,
     stale_min_hold_hours: 4,
     stale_loss_exit_pct: 2,
@@ -247,6 +249,16 @@ describe("AgentConfigSchema", () => {
       const config = { ...createValidConfig(), max_positions: 0 };
       const result = AgentConfigSchema.safeParse(config);
       expect(result.success).toBe(false);
+    });
+
+    it("rejects signal_research_limit outside 1-20", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), signal_research_limit: 0 }).success).toBe(false);
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), signal_research_limit: 21 }).success).toBe(false);
+    });
+
+    it("rejects entry_candidate_limit outside 1-10", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), entry_candidate_limit: 0 }).success).toBe(false);
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), entry_candidate_limit: 11 }).success).toBe(false);
     });
 
     it("rejects sentiment scores outside 0-1 range", () => {

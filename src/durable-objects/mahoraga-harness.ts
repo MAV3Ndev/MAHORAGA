@@ -18,15 +18,26 @@ import type {
   PositionEntry,
   ResearchResult,
   Signal,
-  SocialHistoryEntry,
   SocialSnapshotCacheEntry,
 } from "../core/types";
 import type { Env } from "../env.d";
+import { bearerTokenMatches, jsonAuthResponse } from "../lib/auth";
+import {
+  createDailyReportBucket,
+  DAILY_REPORT_RETENTION_MS,
+  formatDailyReportEmbed,
+  getDailyReportBucketStart,
+  pruneDailyReportBuckets,
+  shouldSendDailyReport,
+  summarizeDailyActivity,
+} from "../lib/discord-report";
+import { generateId } from "../lib/utils";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { PolicyEngine } from "../policy/engine";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createLLMProvider } from "../providers/llm/factory";
-import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
+import { computeTechnicals } from "../providers/technicals";
+import type { Account, LLMProvider, MarketClock, Order, Position } from "../providers/types";
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
@@ -3558,11 +3569,23 @@ export function buildTradeReviewTuningSuggestions(
 // ============================================================================
 
 export class MahoragaHarness extends DurableObject<Env> {
-  private state: AgentState = { ...DEFAULT_STATE };
+  private state: AgentState = createInitialAgentState(activeStrategy.defaultConfig);
   private _llm: LLMProvider | null = null;
+  private currentDecisionCycleId: string | null = null;
+  private lastLLMReinitAttemptAt = 0;
   private _etDayFormatter: Intl.DateTimeFormat | null = null;
-  private discordCooldowns: Map<string, number> = new Map();
-  private readonly DISCORD_COOLDOWN_MS = 30 * 60 * 1000;
+  private readonly MARKET_CONTEXT_TTL_MS = 10 * 60 * 1000;
+  private readonly MAX_MARKET_CONTEXT_SYMBOLS = 24;
+  private readonly TRANSIENT_RESEARCH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  private readonly SIGNAL_RESEARCH_CACHE_TTL_MS = 180_000;
+  private readonly SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+  private readonly VOLATILE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+  private readonly TWITTER_CONFIRMATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  private readonly MAX_SIGNAL_RESEARCH_COOLDOWNS = 256;
+  private readonly MAX_LOG_ENTRIES = 500;
+  private readonly MAX_STATUS_SIGNAL_RESEARCH_ENTRIES = 40;
+  private readonly MAX_STATUS_TWITTER_CONFIRMATIONS = 24;
+  private readonly LLM_REINIT_COOLDOWN_MS = 60_000;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -3576,6 +3599,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<AgentState>("state");
+      let stateChanged = false;
+      const defaultState = createInitialAgentState(activeStrategy.defaultConfig);
+      const baseConfig = activeStrategy.defaultConfig;
       if (stored) {
         this.state = { ...DEFAULT_STATE, ...stored };
         this.state.config = mergeAgentConfigWithDefaults(this.state.config);
@@ -3583,7 +3609,16 @@ export class MahoragaHarness extends DurableObject<Env> {
         this.state.missedEntryOpportunities = this.state.missedEntryOpportunities ?? {};
         this.state.lastDiscordDailyReportDay = this.state.lastDiscordDailyReportDay ?? null;
       }
+      stateChanged = this.applyStateHygiene() || stateChanged;
       this.initializeLLM();
+
+      const dynamicState = this.state as unknown as Record<string, unknown>;
+      const strategyInitKey = `strategy.${activeStrategy.name}.initialized`;
+      if (!dynamicState[strategyInitKey]) {
+        await activeStrategy.hooks?.onInit?.(this.buildStrategyContext());
+        dynamicState[strategyInitKey] = true;
+        stateChanged = true;
+      }
 
       if (this.state.enabled) {
         const existingAlarm = await this.ctx.storage.getAlarm();
@@ -3592,12 +3627,18 @@ export class MahoragaHarness extends DurableObject<Env> {
           await this.ctx.storage.setAlarm(now + 5_000);
         }
       }
+
+      if (stateChanged) {
+        await this.ctx.storage.put("state", this.state);
+      }
     });
   }
 
   private initializeLLM() {
-    const provider = this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw";
+    const rawProvider = (this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw") as string;
+    const provider = rawProvider === "openai-compatible" ? "openai-raw" : rawProvider;
     const model = this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini";
+    const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL;
 
     const effectiveEnv: Env = {
       ...this.env,
@@ -3612,6 +3653,47 @@ export class MahoragaHarness extends DurableObject<Env> {
     } else {
       console.log("[MahoragaHarness] WARNING: No valid LLM provider configured");
     }
+  }
+
+  private refreshLLMProviderIfNeeded(now = Date.now()): void {
+    if (this._llm || now - this.lastLLMReinitAttemptAt < this.LLM_REINIT_COOLDOWN_MS) {
+      return;
+    }
+
+    this.lastLLMReinitAttemptAt = now;
+    this.initializeLLM();
+  }
+
+  private validateAgentConfigCandidate(
+    config: unknown
+  ): { success: true; data: AgentConfig } | { success: false; error: { issues: unknown[] } } {
+    const baseValidation = safeValidateAgentConfig(config);
+    if (!baseValidation.success) {
+      return baseValidation;
+    }
+
+    if (!activeStrategy.configSchema) {
+      return baseValidation;
+    }
+
+    const strategyValidation = activeStrategy.configSchema.safeParse(baseValidation.data);
+    if (!strategyValidation.success) {
+      return { success: false, error: { issues: strategyValidation.error.issues } };
+    }
+
+    return { success: true, data: strategyValidation.data as AgentConfig };
+  }
+
+  private getDashboardConfig(): AgentConfig {
+    const provider = (((this.state.config.llm_provider as string | undefined) === "openai-compatible"
+      ? "openai-raw"
+      : this.state.config.llm_provider) || "openai-raw") as AgentConfig["llm_provider"];
+
+    return {
+      ...this.state.config,
+      llm_provider: provider,
+      openai_base_url: this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL || "",
+    };
   }
 
   private getEtDayString(epochMs: number): string {
@@ -4355,7 +4437,10 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   private buildStrategyContext(): StrategyContext {
+    this.refreshLLMProviderIfNeeded();
+
     const self = this;
+    let strategyContext: StrategyContext;
     const db = createD1Client(this.env.DB);
     const r2 = createR2Client(this.env.ARTIFACTS);
     const alpaca = createAlpacaProviders(this.env);
@@ -4410,7 +4495,16 @@ export class MahoragaHarness extends DurableObject<Env> {
       },
     });
 
-    return {
+    const createNamespacedState = (prefix: string) => ({
+      get<T>(key: string): T | undefined {
+        return (self.state as unknown as Record<string, unknown>)[`${prefix}.${key}`] as T | undefined;
+      },
+      set<T>(key: string, value: T): void {
+        (self.state as unknown as Record<string, unknown>)[`${prefix}.${key}`] = value;
+      },
+    });
+
+    strategyContext = {
       env: this.env,
       config: this.state.config,
       llm: this._llm,
@@ -4425,10 +4519,15 @@ export class MahoragaHarness extends DurableObject<Env> {
         set<T>(key: string, value: T): void {
           (self.state as unknown as Record<string, unknown>)[key] = value;
         },
+        namespace(prefix: string) {
+          return createNamespacedState(prefix);
+        },
       },
       signals: this.state.signalCache,
       positionEntries: this.state.positionEntries,
     };
+
+    return strategyContext;
   }
 
   // ============================================================================
@@ -4436,10 +4535,14 @@ export class MahoragaHarness extends DurableObject<Env> {
   // ============================================================================
 
   async alarm(): Promise<void> {
+    console.log("[Alarm] Alarm triggered");
     if (!this.state.enabled) {
       this.log("System", "alarm_skipped", { reason: "Agent not enabled" });
       return;
     }
+
+    this.currentDecisionCycleId = generateId();
+    this.applyStateHygiene();
 
     const now = Date.now();
     const MIN_ALARM_INTERVAL_MS = 20_000;
@@ -4464,23 +4567,28 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     try {
       const clock = await ctx.broker.getClock();
-      const clockNowMs = Number.isFinite(new Date(clock.timestamp).getTime())
-        ? new Date(clock.timestamp).getTime()
-        : now;
+      const session = buildMarketSessionState({
+        clock,
+        nowMs: now,
+        lastKnownNextOpenMs: this.state.lastKnownNextOpenMs,
+        lastClockIsOpen: this.state.lastClockIsOpen,
+        marketOpenExecuteWindowMinutes,
+      });
+      const clockNowMs = session.clockNowMs;
       const etDay = this.getEtDayString(clockNowMs);
-      const nextOpenMs = new Date(clock.next_open).getTime();
-      const nextOpenValid = Number.isFinite(nextOpenMs);
 
-      if (!clock.is_open && nextOpenValid) {
-        this.state.lastKnownNextOpenMs = nextOpenMs;
+      if (!clock.is_open && session.nextOpenValid) {
+        this.state.lastKnownNextOpenMs = session.nextOpenMs;
       }
 
       await this.reconcileDeferredBuyJournals();
       await this.reconcileDeferredSellJournals();
 
       // Data gathering
-      if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
+      if (shouldRunInterval(now, this.state.lastDataGatherRun, this.state.config.data_poll_interval_ms)) {
+        console.log("[Alarm] Starting data gatherers");
         await this.runDataGatherers(ctx);
+        console.log("[Alarm] Data gatherers complete");
       }
 
       // Signal research
@@ -4491,9 +4599,11 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Clear stale premarket plan from a previous day
       if (
-        this.state.premarketPlan &&
-        this.state.lastPremarketPlanDayEt &&
-        this.state.lastPremarketPlanDayEt !== etDay
+        shouldClearPremarketPlan({
+          hasPremarketPlan: !!this.state.premarketPlan,
+          lastPremarketPlanDayEt: this.state.lastPremarketPlanDayEt,
+          currentEtDay: etDay,
+        })
       ) {
         this.log("System", "clearing_stale_premarket_plan", {
           stale_day: this.state.lastPremarketPlanDayEt,
@@ -4504,21 +4614,37 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       // Pre-market planning window
-      if (!clock.is_open && !this.state.premarketPlan) {
-        const minutesToOpen = nextOpenValid ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
-        const shouldPlan =
-          minutesToOpen > 0 &&
-          minutesToOpen <= premarketPlanWindowMinutes &&
-          this.state.lastPremarketPlanDayEt !== etDay;
+      console.log("[Alarm] Checking premarket plan", { isOpen: clock.is_open, hasPlan: !!this.state.premarketPlan });
+      if (
+        shouldCreatePremarketPlan({
+          clock,
+          session,
+          hasPremarketPlan: !!this.state.premarketPlan,
+          premarketPlanWindowMinutes,
+          lastPremarketPlanDayEt: this.state.lastPremarketPlanDayEt,
+          currentEtDay: etDay,
+        })
+      ) {
+        const minutesToOpen = (session.nextOpenMs - clockNowMs) / 60_000;
+        console.log("[Alarm] Premarket check", { minutesToOpen, shouldPlan: true });
 
-        if (shouldPlan) {
-          await this.runPreMarketAnalysis(ctx);
-          if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
-        }
+        console.log("[Alarm] Running premarket analysis");
+        await this.runPreMarketAnalysis(ctx);
+        if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
       }
 
       // Positions snapshot
+      console.log("[Alarm] Fetching positions");
       const positions = await ctx.broker.getPositions();
+      console.log("[Alarm] Got positions", { count: positions.length });
+      await this.syncTrackedPositionEntries(positions);
+      if (clock.is_open) {
+        await ctx.broker.syncProtectiveStops(positions);
+      }
+
+      if (!clock.is_open && isWithinExtendedHoursSession(clock.timestamp)) {
+        await this.runExtendedHoursExitSweep(ctx, positions);
+      }
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
@@ -4530,18 +4656,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Market-hours logic
       if (clock.is_open) {
-        const lastKnownOpenMs = this.state.lastKnownNextOpenMs;
-        const hasOpenMs = typeof lastKnownOpenMs === "number" && Number.isFinite(lastKnownOpenMs);
-        const openWindowMs = marketOpenExecuteWindowMinutes * 60_000;
-        const withinOpenWindow =
-          hasOpenMs && clockNowMs >= lastKnownOpenMs && clockNowMs - lastKnownOpenMs <= openWindowMs;
-        const clockStateUnknown = this.state.lastClockIsOpen == null;
-        const marketJustOpened = this.state.lastClockIsOpen === false && clock.is_open;
-
-        const shouldExecutePremarketPlan =
-          !!this.state.premarketPlan &&
-          ((hasOpenMs && withinOpenWindow) || marketJustOpened || (!hasOpenMs && clockStateUnknown));
-        if (shouldExecutePremarketPlan) {
+        if (shouldExecutePremarketPlan({ hasPremarketPlan: !!this.state.premarketPlan, session })) {
           await this.executePremarketPlan(ctx);
         }
 
@@ -4549,16 +4664,6 @@ export class MahoragaHarness extends DurableObject<Env> {
         if (now - this.state.lastAnalystRun >= this.state.config.analyst_interval_ms) {
           await this.runAnalyst(ctx);
           this.state.lastAnalystRun = now;
-        }
-
-        // Position research
-        if (positions.length > 0 && now - this.state.lastPositionResearchRun >= POSITION_RESEARCH_INTERVAL_MS) {
-          for (const pos of positions) {
-            if (pos.asset_class !== "us_option") {
-              await this.callPositionResearch(ctx, pos);
-            }
-          }
-          this.state.lastPositionResearchRun = now;
         }
 
         // Options exits (checked every tick, not just analyst cycle)
@@ -4660,9 +4765,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
 
         // Twitter breaking news
-        if (isTwitterEnabled(ctx)) {
+        if (activeStrategy.capabilities?.checkBreakingNews) {
           const heldSymbols = positions.map((p) => p.symbol);
-          const breakingNews = await checkTwitterBreakingNews(ctx, heldSymbols);
+          const breakingNews = await activeStrategy.capabilities.checkBreakingNews(ctx, heldSymbols);
           for (const news of breakingNews) {
             if (news.is_breaking) {
               this.log("System", "twitter_breaking_news", {
@@ -4674,13 +4779,21 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
       }
 
+      const account = await ctx.broker.getAccount().catch(() => null);
+      await this.maybeSendDailyDiscordReport(account, positions, now);
+
       this.state.lastClockIsOpen = clock.is_open;
+      await activeStrategy.hooks?.onCycleEnd?.(ctx);
+      console.log("[Alarm] Persisting state");
       await this.persist();
+      console.log("[Alarm] State persisted");
     } catch (error) {
       this.log("System", "alarm_error", { error: String(error) });
     }
 
+    console.log("[Alarm] Scheduling next alarm");
     await this.scheduleNextAlarm();
+    console.log("[Alarm] Next alarm scheduled");
   }
 
   private async scheduleNextAlarm(): Promise<void> {
@@ -4695,7 +4808,8 @@ export class MahoragaHarness extends DurableObject<Env> {
   private async runDataGatherers(ctx: StrategyContext): Promise<void> {
     this.log("System", "gathering_data", {});
 
-    await tickerCache.refreshSecTickersIfNeeded();
+    await activeStrategy.capabilities?.prepareDataGathering?.(ctx);
+    const positions = await ctx.broker.getPositions().catch(() => []);
 
     const results = await Promise.allSettled(activeStrategy.gatherers.map((g) => g.gather(ctx)));
 
@@ -4734,14 +4848,13 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     this.state.signalCache = freshSignals;
     this.state.lastDataGatherRun = now;
+    await this.refreshMarketContext(ctx, freshSignals, positions);
 
     this.log("System", "data_gathered", { ...counts, total: this.state.signalCache.length });
   }
 
-  private buildSocialSnapshot(
-    signals: Signal[]
-  ): Map<string, { volume: number; sentiment: number; sources: Set<string> }> {
-    const aggregated = new Map<string, { volume: number; sentimentNumerator: number; sources: Set<string> }>();
+  private applyStateHygiene(): boolean {
+    let changed = false;
 
     for (const sig of signals) {
       if (!sig.symbol) continue;
@@ -4757,80 +4870,715 @@ export class MahoragaHarness extends DurableObject<Env> {
       entry.sources.add(sig.source_detail || sig.source);
     }
 
-    const out = new Map<string, { volume: number; sentiment: number; sources: Set<string> }>();
-    for (const [symbol, entry] of aggregated) {
-      out.set(symbol, {
-        volume: entry.volume,
-        sentiment: entry.volume > 0 ? entry.sentimentNumerator / entry.volume : 0,
-        sources: entry.sources,
-      });
-    }
-    return out;
-  }
-
-  private pruneSocialHistoryInPlace(history: SocialHistoryEntry[], cutoffMs: number): void {
-    if (history.length === 0) return;
-    const pruned = history.filter((entry) => entry.timestamp >= cutoffMs);
-    pruned.sort((a, b) => a.timestamp - b.timestamp);
-    history.splice(0, history.length, ...pruned);
-  }
-
-  private updateSocialHistoryFromSnapshot(
-    snapshot: Map<string, { volume: number; sentiment: number; sources: Set<string> }>,
-    nowMs: number
-  ): void {
-    const SOCIAL_HISTORY_BUCKET_MS = 5 * 60 * 1000;
-    const SOCIAL_HISTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-    const cutoff = nowMs - SOCIAL_HISTORY_MAX_AGE_MS;
-
-    const touchedSymbols = new Set<string>();
-    for (const [symbol, s] of snapshot) {
-      touchedSymbols.add(symbol);
-      const history = this.state.socialHistory[symbol] ?? [];
-      if (history.length > 1) history.sort((a, b) => a.timestamp - b.timestamp);
-      const last = history[history.length - 1];
-
-      if (last && nowMs - last.timestamp < SOCIAL_HISTORY_BUCKET_MS) {
-        last.timestamp = nowMs;
-        last.volume = s.volume;
-        last.sentiment = s.sentiment;
-      } else {
-        history.push({ timestamp: nowMs, volume: s.volume, sentiment: s.sentiment });
-      }
-
-      this.pruneSocialHistoryInPlace(history, cutoff);
-      if (history.length === 0) {
-        delete this.state.socialHistory[symbol];
-      } else {
-        this.state.socialHistory[symbol] = history;
-      }
+    if (this.pruneTransientResearchState()) {
+      changed = true;
     }
 
-    for (const symbol of Object.keys(this.state.socialHistory)) {
-      if (touchedSymbols.has(symbol)) continue;
-      const history = this.state.socialHistory[symbol];
-      if (!history || history.length === 0) {
-        delete this.state.socialHistory[symbol];
+    if (this.pruneVolatileCaches()) {
+      changed = true;
+    }
+
+    if (pruneDailyReportBuckets(this.state.dailyReportBuckets, Date.now(), DAILY_REPORT_RETENTION_MS)) {
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  private normalizeLegacyLLMConfig(): boolean {
+    let changed = false;
+    if ((this.state.config.llm_provider as string | undefined) === "openai-compatible") {
+      this.state.config.llm_provider = "openai-raw";
+      changed = true;
+    }
+
+    const currentModel = (this.state.config.llm_model || this.env.LLM_MODEL || "").trim();
+    const analystModel = this.state.config.llm_analyst_model?.trim();
+    const hasCompatBaseUrl = !!(this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL);
+    const legacyAnalystModels = new Set(["gpt-4o", "gpt-4o-mini"]);
+
+    if (!currentModel || !analystModel || currentModel === analystModel) {
+      return changed;
+    }
+
+    if (!hasCompatBaseUrl || !legacyAnalystModels.has(analystModel)) {
+      return changed;
+    }
+
+    this.state.config.llm_analyst_model = currentModel;
+    console.warn(
+      `[MahoragaHarness] Synced llm_analyst_model to llm_model for OpenAI base URL override (${currentModel})`
+    );
+    return true;
+  }
+
+  private pruneTransientResearchState(now = Date.now()): boolean {
+    let changed = false;
+
+    for (const [symbol, result] of Object.entries(this.state.signalResearch)) {
+      const isExpired = !result?.timestamp || now - result.timestamp > this.TRANSIENT_RESEARCH_MAX_AGE_MS;
+      const isInvalid =
+        !result ||
+        !["BUY", "SKIP", "WAIT"].includes(result.verdict) ||
+        typeof result.confidence !== "number" ||
+        typeof result.reasoning !== "string" ||
+        !Array.isArray(result.red_flags) ||
+        !Array.isArray(result.catalysts);
+
+      if (isExpired || isInvalid) {
+        delete this.state.signalResearch[symbol];
+        changed = true;
+      }
+    }
+
+    for (const [symbol, result] of Object.entries(this.state.positionResearch)) {
+      const timestamp = (result as { timestamp?: number } | undefined)?.timestamp;
+      if (!timestamp || now - timestamp > this.TRANSIENT_RESEARCH_MAX_AGE_MS) {
+        delete this.state.positionResearch[symbol];
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  private getRetainedSymbols(): Set<string> {
+    const retained = new Set<string>();
+    const rememberSymbol = (symbol?: string | null) => {
+      if (!symbol) return;
+      for (const alias of this.getTrackedSymbolAliases(symbol)) {
+        retained.add(alias);
+      }
+    };
+
+    this.state.signalCache.forEach((signal) => {
+      rememberSymbol(signal.symbol);
+    });
+    Object.keys(this.state.positionEntries).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.signalResearch).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.positionResearch).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.socialSnapshotCache).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+    Object.keys(this.state.socialHistory).forEach((symbol) => {
+      rememberSymbol(symbol);
+    });
+
+    return retained;
+  }
+
+  private pruneVolatileCaches(now = Date.now()): boolean {
+    let changed = false;
+    const retainedSymbols = this.getRetainedSymbols();
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalCache = dynamicState.technicalDataCache as Record<string, TechnicalDataCacheEntry> | undefined;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
+    const atrCache = dynamicState.atrCache as Record<string, number> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+    const cooldowns = this.getSignalResearchCooldowns();
+    const staleCutoff = now - this.VOLATILE_CACHE_MAX_AGE_MS;
+
+    if (technicalCache) {
+      for (const [symbol, entry] of Object.entries(technicalCache)) {
+        const updatedAt = typeof entry?.updated_at === "number" ? entry.updated_at : 0;
+        if (updatedAt < staleCutoff || !retainedSymbols.has(symbol)) {
+          delete technicalCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (momentumCache) {
+      for (const [symbol, entry] of Object.entries(momentumCache)) {
+        const updatedAt = typeof entry?.updated_at === "number" ? entry.updated_at : 0;
+        if (updatedAt < staleCutoff || !retainedSymbols.has(symbol)) {
+          delete momentumCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (atrCache) {
+      for (const symbol of Object.keys(atrCache)) {
+        if (!retainedSymbols.has(symbol)) {
+          delete atrCache[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    if (sectorMap) {
+      for (const symbol of Object.keys(sectorMap)) {
+        if (!retainedSymbols.has(symbol)) {
+          delete sectorMap[symbol];
+          changed = true;
+        }
+      }
+    }
+
+    for (const [symbol, cooldown] of Object.entries(cooldowns)) {
+      const until = typeof cooldown?.until === "number" ? cooldown.until : 0;
+      if (until <= now || !retainedSymbols.has(symbol)) {
+        delete cooldowns[symbol];
+        changed = true;
+      }
+    }
+
+    const cooldownEntries = Object.entries(cooldowns);
+    if (cooldownEntries.length > this.MAX_SIGNAL_RESEARCH_COOLDOWNS) {
+      cooldownEntries
+        .sort(([, a], [, b]) => (b.until || 0) - (a.until || 0))
+        .slice(this.MAX_SIGNAL_RESEARCH_COOLDOWNS)
+        .forEach(([symbol]) => {
+          delete cooldowns[symbol];
+          changed = true;
+        });
+    }
+
+    for (const [symbol, confirmation] of Object.entries(this.state.twitterConfirmations)) {
+      const timestamp = typeof confirmation?.timestamp === "number" ? confirmation.timestamp : 0;
+      if (timestamp < now - this.TWITTER_CONFIRMATION_MAX_AGE_MS || !retainedSymbols.has(symbol)) {
+        delete this.state.twitterConfirmations[symbol];
+        changed = true;
+      }
+    }
+
+    const activePositionSymbols = new Set(Object.keys(this.state.positionEntries));
+    for (const symbol of Object.keys(this.state.stalenessAnalysis)) {
+      if (!activePositionSymbols.has(symbol)) {
+        delete this.state.stalenessAnalysis[symbol];
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  private getTrackedSymbolAliases(symbol: string): string[] {
+    return isCryptoSymbol(symbol, this.state.config.crypto_symbols || []) ? getCryptoSymbolAliases(symbol) : [symbol];
+  }
+
+  private getTimelineSymbolKey(symbol: string): string {
+    return isCryptoSymbol(symbol, this.state.config.crypto_symbols || [])
+      ? normalizeCryptoSymbol(symbol)
+      : symbol.toUpperCase();
+  }
+
+  private findTrackedPositionEntry(symbol: string): PositionEntry | undefined {
+    const candidates = this.getTrackedSymbolAliases(symbol)
+      .map((alias) => this.state.positionEntries[alias])
+      .filter((entry): entry is PositionEntry => !!entry);
+
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    candidates.sort((a, b) => {
+      const aRecovered = a.entry_reason === "Recovered from broker position" ? 1 : 0;
+      const bRecovered = b.entry_reason === "Recovered from broker position" ? 1 : 0;
+      if (aRecovered !== bRecovered) {
+        return aRecovered - bRecovered;
+      }
+      return (b.entry_time || 0) - (a.entry_time || 0);
+    });
+
+    return candidates[0];
+  }
+
+  private getSocialSnapshotEntry(
+    snapshot: Record<string, SocialSnapshotCacheEntry>,
+    symbol: string
+  ): SocialSnapshotCacheEntry | undefined {
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      const entry = snapshot[alias];
+      if (entry) return entry;
+    }
+    return undefined;
+  }
+
+  private clearTrackedSymbolState(symbol: string): void {
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      delete this.state.positionEntries[alias];
+      delete this.state.socialHistory[alias];
+      delete this.state.stalenessAnalysis[alias];
+      delete this.state.analystBuyCooldowns?.[alias];
+    }
+  }
+
+  private setAnalystBuyCooldown(symbol: string, now = Date.now()): void {
+    this.state.analystBuyCooldowns ??= {};
+    const cooldownUntil = now + ANALYST_BUY_COOLDOWN_AFTER_SELL_MS;
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      this.state.analystBuyCooldowns[alias] = cooldownUntil;
+    }
+  }
+
+  private getAnalystBuyCooldown(symbol: string, now = Date.now()): number | null {
+    this.state.analystBuyCooldowns ??= {};
+    for (const alias of this.getTrackedSymbolAliases(symbol)) {
+      const cooldownUntil = this.state.analystBuyCooldowns[alias];
+      if (!cooldownUntil) continue;
+      if (cooldownUntil <= now) {
+        delete this.state.analystBuyCooldowns[alias];
         continue;
       }
-      this.pruneSocialHistoryInPlace(history, cutoff);
-      if (history.length === 0) {
-        delete this.state.socialHistory[symbol];
+      return cooldownUntil;
+    }
+    return null;
+  }
+
+  private getSignalResearchCooldowns(): Record<string, { until: number; reason: string }> {
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const existing = dynamicState.signalResearchCooldowns as
+      | Record<string, { until: number; reason: string }>
+      | undefined;
+    if (existing) return existing;
+
+    const created: Record<string, { until: number; reason: string }> = {};
+    dynamicState.signalResearchCooldowns = created;
+    return created;
+  }
+
+  private setSignalResearchCooldown(
+    symbol: string,
+    reason: string,
+    ttlMs = this.SIGNAL_RESEARCH_FAILURE_COOLDOWN_MS
+  ): void {
+    const cooldowns = this.getSignalResearchCooldowns();
+    cooldowns[symbol] = {
+      until: Date.now() + ttlMs,
+      reason,
+    };
+  }
+
+  private parseFilledOrderQuantity(order: Order): number {
+    const rawQty = order.filled_qty || order.qty || "0";
+    const qty = Number.parseFloat(rawQty);
+    return Number.isFinite(qty) ? Math.abs(qty) : 0;
+  }
+
+  private shouldRefreshTrackedEntryTime(
+    entry: PositionEntry,
+    inferredEntry: Pick<PositionEntry, "entry_time"> | null | undefined
+  ): boolean {
+    if (!inferredEntry?.entry_time || !Number.isFinite(inferredEntry.entry_time)) {
+      return false;
+    }
+
+    if (!Number.isFinite(entry.entry_time) || entry.entry_time <= 0) {
+      return true;
+    }
+
+    if (entry.entry_reason === "Recovered from broker position") {
+      return true;
+    }
+
+    // For explicitly tracked entries created at buy time, trust the in-memory timestamp.
+    // Broker order history can lag or refer to an older round-trip, especially for crypto
+    // aliases like SOL/USD vs SOLUSD, and overwriting here can trigger false stale exits.
+    return false;
+  }
+
+  private inferPositionEntryFromOrders(
+    symbol: string,
+    orders: Order[]
+  ): Pick<PositionEntry, "entry_time" | "entry_price"> | null {
+    const aliases = new Set(this.getTrackedSymbolAliases(symbol).map((alias) => alias.toUpperCase()));
+    const relevantOrders = orders
+      .filter((order) => aliases.has(order.symbol.toUpperCase()) && !!order.filled_at)
+      .sort(
+        (a, b) =>
+          new Date(a.filled_at || a.submitted_at || a.created_at).getTime() -
+          new Date(b.filled_at || b.submitted_at || b.created_at).getTime()
+      );
+
+    if (relevantOrders.length === 0) return null;
+
+    let netQty = 0;
+    let currentEntryOrder: Order | null = null;
+
+    for (const order of relevantOrders) {
+      const qty = this.parseFilledOrderQuantity(order);
+      if (qty <= 0) continue;
+
+      if (order.side === "buy") {
+        if (netQty <= 0) {
+          currentEntryOrder = order;
+        }
+        netQty += qty;
+      } else {
+        netQty -= qty;
+        if (netQty <= 0) {
+          currentEntryOrder = null;
+        }
+      }
+    }
+
+    // Only infer an entry from closed orders when the historical fill sequence still
+    // implies an open lot. If the symbol was fully closed and then reopened recently,
+    // the new buy may not be in `closed` orders yet; falling back to the last historical
+    // buy would incorrectly age the fresh position and can trigger immediate stale exits.
+    if (netQty <= 0 || !currentEntryOrder) {
+      return null;
+    }
+
+    const entryTimeSource =
+      currentEntryOrder.filled_at || currentEntryOrder.submitted_at || currentEntryOrder.created_at;
+    const entryTime = new Date(entryTimeSource).getTime();
+    const entryPrice = Number.parseFloat(currentEntryOrder.filled_avg_price || "0");
+
+    return {
+      entry_time: Number.isFinite(entryTime) ? entryTime : Date.now(),
+      entry_price: Number.isFinite(entryPrice) ? entryPrice : 0,
+    };
+  }
+
+  private createRecoveredPositionEntry(
+    position: Position,
+    socialSnapshot: Record<string, SocialSnapshotCacheEntry>,
+    inferred?: Pick<PositionEntry, "entry_time" | "entry_price"> | null
+  ): PositionEntry {
+    const originalSignal = this.state.signalCache.find((signal) => signal.symbol === position.symbol);
+    const aggregatedSocial = this.getSocialSnapshotEntry(socialSnapshot, position.symbol);
+    const sentiment = aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0;
+
+    return {
+      symbol: position.symbol,
+      entry_time: inferred?.entry_time ?? Date.now(),
+      entry_price:
+        inferred?.entry_price && inferred.entry_price > 0 ? inferred.entry_price : position.avg_entry_price || 0,
+      entry_sentiment: sentiment,
+      entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+      entry_sources: aggregatedSocial
+        ? aggregatedSocial.sources
+        : originalSignal?.subreddits || [originalSignal?.source || "broker-sync"],
+      entry_reason: "Recovered from broker position",
+      peak_price: position.current_price,
+      peak_sentiment: sentiment,
+    };
+  }
+
+  private async syncTrackedPositionEntries(positions: Position[], orders?: Order[]): Promise<void> {
+    const socialSnapshot = getSocialSnapshotCache(this.state);
+    const alpaca = createAlpacaProviders(this.env);
+    const filledOrders =
+      orders ||
+      (await alpaca.trading
+        .listOrders({ status: "closed", limit: 200, direction: "desc" })
+        .then((items) => items.filter((order) => !!order.filled_at))
+        .catch(() => []));
+
+    for (const pos of positions) {
+      const inferredEntry = this.inferPositionEntryFromOrders(pos.symbol, filledOrders);
+      let entry = this.findTrackedPositionEntry(pos.symbol);
+
+      if (!entry) {
+        entry = this.createRecoveredPositionEntry(pos, socialSnapshot, inferredEntry);
+        this.state.positionEntries[pos.symbol] = entry;
+      }
+
+      if (
+        this.shouldRefreshTrackedEntryTime(entry, inferredEntry) &&
+        Math.abs(entry.entry_time - (inferredEntry?.entry_time || 0)) > 60_000
+      ) {
+        entry.entry_time = inferredEntry?.entry_time || entry.entry_time;
+      }
+
+      if (
+        (entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) &&
+        inferredEntry?.entry_price &&
+        inferredEntry.entry_price > 0
+      ) {
+        entry.entry_price = inferredEntry.entry_price;
+      }
+
+      if ((entry.entry_price <= 0 || !Number.isFinite(entry.entry_price)) && pos.avg_entry_price > 0) {
+        entry.entry_price = pos.avg_entry_price;
+      }
+
+      if (pos.current_price > entry.peak_price) {
+        entry.peak_price = pos.current_price;
+      }
+
+      const currentSentiment = this.getSocialSnapshotEntry(socialSnapshot, pos.symbol)?.sentiment;
+      if (typeof currentSentiment === "number") {
+        entry.peak_sentiment = Math.max(entry.peak_sentiment, currentSentiment);
+      }
+
+      // Keep crypto/equity aliases in sync so downstream consumers do not pick up
+      // an older recovered entry from one alias and a newer explicit entry from another.
+      for (const alias of this.getTrackedSymbolAliases(pos.symbol)) {
+        this.state.positionEntries[alias] = entry;
       }
     }
   }
 
-  private getSocialSnapshotCache(): Record<string, SocialSnapshotCacheEntry> {
-    if (this.state.socialSnapshotCacheUpdatedAt > 0) {
-      return this.state.socialSnapshotCache;
+  private selectMarketContextSymbols(signals: Signal[], positions: Position[]): string[] {
+    const rankedSignals = signals
+      .slice()
+      .sort((a, b) => {
+        const scoreA = Math.abs(a.sentiment) * (a.volume || 1) * (a.source_weight || 1);
+        const scoreB = Math.abs(b.sentiment) * (b.volume || 1) * (b.source_weight || 1);
+        return scoreB - scoreA;
+      })
+      .map((signal) => signal.symbol);
+
+    const symbols: string[] = [];
+    const seen = new Set<string>();
+
+    const pushSymbol = (symbol: string) => {
+      if (!symbol || seen.has(symbol)) return;
+      seen.add(symbol);
+      symbols.push(symbol);
+    };
+
+    for (const pos of positions) {
+      if (pos.asset_class === "us_option") continue;
+      pushSymbol(pos.symbol);
+    }
+    for (const symbol of rankedSignals) {
+      if (symbols.length >= this.MAX_MARKET_CONTEXT_SYMBOLS) break;
+      pushSymbol(symbol);
+    }
+    pushSymbol("SPY");
+    pushSymbol("QQQ");
+
+    return symbols;
+  }
+
+  private inferSectorFromAssetName(symbol: string, assetName?: string | null): string {
+    const normalized = `${symbol} ${assetName ?? ""}`.toLowerCase();
+
+    const sectorPatterns: Array<{ sector: string; keywords: string[] }> = [
+      {
+        sector: "index_etf",
+        keywords: [" etf", " trust", " fund", " index", "spdr", "invesco", "ishares", "vanguard"],
+      },
+      {
+        sector: "technology",
+        keywords: ["software", "semiconductor", "cloud", "internet", "systems", "technology", "digital"],
+      },
+      { sector: "healthcare", keywords: ["health", "medical", "biotech", "therapeutic", "pharma", "diagnostic"] },
+      { sector: "financials", keywords: ["bank", "capital", "financial", "insurance", "payment", "asset management"] },
+      { sector: "energy", keywords: ["energy", "oil", "gas", "petroleum", "drilling"] },
+      {
+        sector: "industrials",
+        keywords: ["industrial", "aerospace", "defense", "machinery", "airlines", "railroad", "transport"],
+      },
+      {
+        sector: "consumer_cyclical",
+        keywords: ["retail", "automotive", "restaurant", "apparel", "hotel", "travel", "leisure"],
+      },
+      { sector: "consumer_defensive", keywords: ["food", "beverage", "household", "consumer staples", "tobacco"] },
+      {
+        sector: "communication_services",
+        keywords: ["telecom", "media", "entertainment", "streaming", "communications"],
+      },
+      { sector: "utilities", keywords: ["utility", "electric", "water"] },
+      { sector: "real_estate", keywords: ["reit", "realty", "properties", "real estate"] },
+      { sector: "materials", keywords: ["materials", "chemical", "mining", "steel", "copper", "gold", "silver"] },
+    ];
+
+    for (const pattern of sectorPatterns) {
+      if (pattern.keywords.some((keyword) => normalized.includes(keyword))) {
+        return pattern.sector;
+      }
     }
 
-    const fallback = this.buildSocialSnapshot(this.state.signalCache);
-    const out: Record<string, SocialSnapshotCacheEntry> = {};
-    for (const [symbol, s] of fallback) {
-      out[symbol] = { volume: s.volume, sentiment: s.sentiment, sources: Array.from(s.sources) };
+    return "unknown";
+  }
+
+  private async refreshMarketContext(ctx: StrategyContext, signals: Signal[], positions: Position[]): Promise<void> {
+    const symbols = this.selectMarketContextSymbols(signals, positions);
+    if (symbols.length === 0) return;
+
+    const now = Date.now();
+    const alpaca = createAlpacaProviders(this.env);
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalCache = dynamicState.technicalDataCache as Record<string, TechnicalDataCacheEntry> | undefined;
+    const momentumCache = dynamicState.momentumDataCache as Record<string, MomentumDataCacheEntry> | undefined;
+    const atrCache = dynamicState.atrCache as Record<string, number> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+
+    const nextTechnicalCache = { ...(technicalCache ?? {}) };
+    const nextMomentumCache = { ...(momentumCache ?? {}) };
+    const nextAtrCache = { ...(atrCache ?? {}) };
+    const nextSectorMap = { ...(sectorMap ?? {}) };
+
+    await Promise.allSettled(
+      symbols.map(async (symbol) => {
+        try {
+          const techEntry = nextTechnicalCache[symbol];
+          const momentumEntry = nextMomentumCache[symbol];
+          const hasRequiredCache = !!techEntry && !!momentumEntry;
+          const lastUpdated = Math.min(
+            techEntry?.updated_at ?? Number.MAX_SAFE_INTEGER,
+            momentumEntry?.updated_at ?? Number.MAX_SAFE_INTEGER
+          );
+          const isFresh =
+            hasRequiredCache &&
+            lastUpdated !== Number.MAX_SAFE_INTEGER &&
+            now - lastUpdated < this.MARKET_CONTEXT_TTL_MS;
+
+          if (isFresh) return;
+
+          if (isCryptoSymbol(symbol, this.state.config.crypto_symbols || [])) {
+            const snapshot = await alpaca.marketData.getCryptoSnapshot(normalizeCryptoSymbol(symbol));
+            const currentPrice = snapshot.latest_trade.price || snapshot.latest_quote.ask_price;
+            const previousClose = snapshot.prev_daily_bar.c;
+            const dailyClose = snapshot.daily_bar.c;
+
+            nextTechnicalCache[symbol] = {
+              ...(techEntry ?? {}),
+              updated_at: now,
+              current_price: currentPrice,
+            };
+            nextMomentumCache[symbol] = {
+              updated_at: now,
+              price_change_1h: momentumEntry?.price_change_1h,
+              price_change_24h:
+                previousClose > 0
+                  ? ((dailyClose - previousClose) / previousClose) * 100
+                  : momentumEntry?.price_change_24h,
+              volume_change: momentumEntry?.volume_change,
+            };
+            return;
+          }
+
+          const [dailyBars, hourlyBars, snapshot] = await Promise.all([
+            alpaca.marketData.getBars(symbol, "1Day", { limit: 250 }).catch(() => []),
+            alpaca.marketData.getBars(symbol, "1Hour", { limit: 30 }).catch(() => []),
+            alpaca.marketData.getSnapshot(symbol).catch(() => null),
+          ]);
+
+          if (dailyBars.length === 0 && !snapshot) return;
+
+          if (!nextSectorMap[symbol] || nextSectorMap[symbol] === "unknown") {
+            const asset = await alpaca.trading.getAsset(symbol).catch(() => null);
+            nextSectorMap[symbol] = this.inferSectorFromAssetName(symbol, asset?.name);
+          }
+
+          const technicals = dailyBars.length > 0 ? computeTechnicals(symbol, dailyBars) : null;
+          const currentPrice =
+            snapshot?.latest_trade?.price ||
+            snapshot?.latest_quote?.ask_price ||
+            technicals?.price ||
+            techEntry?.current_price ||
+            0;
+          const priceChange24h =
+            snapshot?.prev_daily_bar?.c && snapshot.prev_daily_bar.c > 0
+              ? ((snapshot.daily_bar.c - snapshot.prev_daily_bar.c) / snapshot.prev_daily_bar.c) * 100
+              : dailyBars.length >= 2
+                ? ((dailyBars[dailyBars.length - 1]!.c - dailyBars[dailyBars.length - 2]!.c) /
+                    dailyBars[dailyBars.length - 2]!.c) *
+                  100
+                : momentumEntry?.price_change_24h;
+          const priceChange1h =
+            hourlyBars.length >= 2 && hourlyBars[hourlyBars.length - 2]!.c > 0
+              ? ((hourlyBars[hourlyBars.length - 1]!.c - hourlyBars[hourlyBars.length - 2]!.c) /
+                  hourlyBars[hourlyBars.length - 2]!.c) *
+                100
+              : momentumEntry?.price_change_1h;
+
+          if (technicals) {
+            nextTechnicalCache[symbol] = {
+              updated_at: now,
+              current_price: currentPrice,
+              rsi: technicals.rsi_14 ?? undefined,
+              bb_lower: technicals.bollinger?.lower,
+              bb_middle: technicals.bollinger?.middle,
+              sma_20: technicals.sma_20 ?? undefined,
+              sma_50: technicals.sma_50 ?? undefined,
+              atr: technicals.atr_14 ?? undefined,
+              relative_volume: technicals.relative_volume ?? undefined,
+            };
+            if (technicals.atr_14 !== null) {
+              nextAtrCache[symbol] = technicals.atr_14;
+            }
+          } else {
+            nextTechnicalCache[symbol] = {
+              ...(techEntry ?? {}),
+              updated_at: now,
+              current_price: currentPrice,
+            };
+          }
+
+          nextMomentumCache[symbol] = {
+            updated_at: now,
+            price_change_1h: priceChange1h,
+            price_change_24h: priceChange24h,
+            volume_change: technicals?.relative_volume ?? momentumEntry?.volume_change,
+          };
+        } catch (error) {
+          ctx.log("System", "market_context_refresh_failed", {
+            symbol,
+            error: String(error),
+          });
+        }
+      })
+    );
+
+    dynamicState.technicalDataCache = nextTechnicalCache;
+    dynamicState.momentumDataCache = nextMomentumCache;
+    dynamicState.atrCache = nextAtrCache;
+    dynamicState.sectorMap = nextSectorMap;
+
+    const spyTech = nextTechnicalCache.SPY;
+    const qqqTech = nextTechnicalCache.QQQ;
+    if (spyTech || qqqTech) {
+      dynamicState.marketRegimeCache = {
+        vix: (dynamicState.marketRegimeCache as Record<string, unknown> | undefined)?.vix as number | undefined,
+        spyPrice: spyTech?.current_price,
+        spySma20: spyTech?.sma_20,
+        spySma50: spyTech?.sma_50,
+        qqqPrice: qqqTech?.current_price,
+        qqqSma20: qqqTech?.sma_20,
+        qqqSma50: qqqTech?.sma_50,
+      };
     }
-    return out;
+
+    ctx.log("System", "market_context_refreshed", {
+      symbols: symbols.length,
+      technicals: Object.keys(nextTechnicalCache).length,
+      momentum: Object.keys(nextMomentumCache).length,
+      sectors: Object.values(nextSectorMap).filter((sector) => sector !== "unknown").length,
+      has_regime: !!spyTech || !!qqqTech,
+    });
+  }
+
+  private createPositionEntry(
+    symbol: string,
+    reason: string,
+    fallbackSentiment: number,
+    socialSnapshot: Record<string, SocialSnapshotCacheEntry>,
+    sourceLabel: string
+  ): PositionEntry {
+    const originalSignal = this.state.signalCache.find((signal) => signal.symbol === symbol);
+    const aggregatedSocial = this.getSocialSnapshotEntry(socialSnapshot, symbol);
+    const research = this.state.signalResearch[symbol];
+
+    return {
+      symbol,
+      entry_time: Date.now(),
+      entry_price: 0,
+      entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
+      entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+      entry_sources: aggregatedSocial
+        ? aggregatedSocial.sources
+        : originalSignal?.subreddits || [originalSignal?.source || sourceLabel],
+      entry_reason: reason,
+      peak_price: 0,
+      peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? fallbackSentiment,
+      recommended_entry_zone: research?.recommended_entry_zone,
+      recommended_stop_loss_pct: research?.stop_loss_pct,
+      recommended_take_profit_pct: research?.take_profit_pct,
+    };
   }
 
   private findSignalForSymbol(symbol: string): Signal | undefined {
@@ -4870,11 +5618,20 @@ export class MahoragaHarness extends DurableObject<Env> {
     const eligibleSymbols = new Set(aboveThreshold.map((signal) => this.normalizeStateSymbol(signal.symbol))).size;
 
     if (candidates.length === 0) {
+      // Log sentiment distribution to help diagnose why no candidates passed
+      const sampleSignals = allSignals.slice(0, 10).map((s) => ({
+        symbol: s.symbol,
+        raw_sentiment: s.raw_sentiment?.toFixed(3),
+        sentiment: s.sentiment?.toFixed(3),
+        source: s.source,
+      }));
       this.log("SignalResearch", "no_candidates", {
         total_signals: allSignals.length,
         not_held: notHeld.length,
-        above_threshold: aboveThreshold.length,
+        above_threshold: candidates.length,
         min_sentiment: this.state.config.min_sentiment_score,
+        min_signal_quality: this.state.config.min_signal_quality_score,
+        sample_signals: sampleSignals,
       });
       return [];
     }
@@ -4964,6 +5721,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       return result;
     } catch (error) {
+      if (isRateLimitError(error) || isUnknownModelError(error)) {
+        this.setSignalResearchCooldown(symbol, isUnknownModelError(error) ? "unknown_model" : "rate_limit");
+      }
       this.log("SignalResearch", "error", { symbol, message: String(error) });
       return null;
     }
@@ -4976,15 +5736,17 @@ export class MahoragaHarness extends DurableObject<Env> {
     const prompt = activeStrategy.prompts.researchPosition(position.symbol, position, plPct, ctx);
 
     try {
-      const response = await this._llm.complete({
-        model: prompt.model || this.state.config.llm_model,
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        max_tokens: prompt.maxTokens || 200,
+      const { analysis } = await this.createResearchService().completePromptJson<{
+        recommendation?: "HOLD" | "SELL" | "ADD";
+        risk_level?: "low" | "medium" | "high";
+        reasoning?: string;
+        key_factors?: string[];
+        exit_strategy?: string;
+      }>({
+        prompt,
+        logAgent: "PositionResearch",
+        defaultMaxTokens: 200,
         temperature: 0.3,
-        response_format: { type: "json_object" },
       });
 
       if (response.usage) {
@@ -5004,6 +5766,9 @@ export class MahoragaHarness extends DurableObject<Env> {
         symbol: position.symbol,
         recommendation: analysis.recommendation,
         risk: analysis.risk_level,
+        reasoning: analysis.reasoning,
+        key_factors: Array.isArray(analysis.key_factors) ? analysis.key_factors : [],
+        exit_strategy: analysis.exit_strategy,
       });
     } catch (error) {
       this.log("PositionResearch", "error", { symbol: position.symbol, message: String(error) });
@@ -5766,15 +6531,22 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (isTwitterEnabled(ctx)) {
         const originalSignal = this.findSignalForSymbol(entry.symbol);
         if (originalSignal) {
-          const twitterConfirm = await gatherTwitterConfirmation(ctx, entry.symbol, originalSignal.sentiment);
-          if (twitterConfirm) {
-            this.state.twitterConfirmations[entry.symbol] = twitterConfirm;
-            if (twitterConfirm.confirms_existing) {
-              finalConfidence = Math.min(1.0, finalConfidence * 1.15);
-              this.log("System", "twitter_boost", { symbol: entry.symbol, new_confidence: finalConfidence });
-            } else if (twitterConfirm.sentiment !== 0) {
-              finalConfidence *= 0.85;
+          const confirmation = await activeStrategy.capabilities.confirmEntry(
+            ctx,
+            entry,
+            originalSignal,
+            finalConfidence
+          );
+          if (confirmation) {
+            finalConfidence = confirmation.confidence;
+            if (confirmation.confirmation) {
+              this.state.twitterConfirmations[entry.symbol] =
+                confirmation.confirmation as AgentState["twitterConfirmations"][string];
             }
+            this.log("System", "entry_confirmation_adjusted", {
+              symbol: entry.symbol,
+              new_confidence: finalConfidence,
+            });
           }
         }
       }
@@ -5822,6 +6594,17 @@ export class MahoragaHarness extends DurableObject<Env> {
           this.log("Options", "options_buy_skipped_no_contract", {
             symbol: entry.symbol,
             confidence: finalConfidence,
+          });
+          await this.recordTradeDecision({
+            source: "analyst_recommendation",
+            symbol: rec.symbol,
+            action: "SELL",
+            status: "blocked",
+            confidence: rec.confidence,
+            reason: rec.reasoning,
+            pnlPct,
+            metadata: { reason: "min_hold", hold_minutes: Math.round(holdMinutes), min_hold_minutes: minHold },
+            snapshot: this.buildTradeDecisionSnapshot(rec.symbol, { account, positions, recommendation: rec }),
           });
           continue;
         }
@@ -6591,39 +7374,19 @@ export class MahoragaHarness extends DurableObject<Env> {
   // HTTP HANDLER
   // ============================================================================
 
-  private constantTimeCompare(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    let mismatch = 0;
-    for (let i = 0; i < a.length; i++) {
-      mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    }
-    return mismatch === 0;
-  }
-
   private isAuthorized(request: Request): boolean {
-    const token = this.env.MAHORAGA_API_TOKEN;
-    if (!token) {
+    if (!this.env.MAHORAGA_API_TOKEN) {
       console.warn("[MahoragaHarness] MAHORAGA_API_TOKEN not set - denying request");
-      return false;
     }
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return false;
-    return this.constantTimeCompare(authHeader.slice(7), token);
+    return bearerTokenMatches(request, this.env.MAHORAGA_API_TOKEN);
   }
 
   private isKillSwitchAuthorized(request: Request): boolean {
-    const secret = this.env.KILL_SWITCH_SECRET;
-    if (!secret) return false;
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return false;
-    return this.constantTimeCompare(authHeader.slice(7), secret);
+    return bearerTokenMatches(request, this.env.KILL_SWITCH_SECRET);
   }
 
   private unauthorizedResponse(): Response {
-    return new Response(
-      JSON.stringify({ error: "Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>" }),
-      { status: 401, headers: { "Content-Type": "application/json" } }
-    );
+    return jsonAuthResponse("Unauthorized. Requires: Authorization: Bearer <MAHORAGA_API_TOKEN>", 401);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -6705,10 +7468,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
         case "kill":
           if (!this.isKillSwitchAuthorized(request)) {
-            return new Response(
-              JSON.stringify({ error: "Forbidden. Requires: Authorization: Bearer <KILL_SWITCH_SECRET>" }),
-              { status: 403, headers: { "Content-Type": "application/json" } }
-            );
+            return jsonAuthResponse("Forbidden. Requires: Authorization: Bearer <KILL_SWITCH_SECRET>", 403);
           }
           return this.handleKillSwitch();
         default:
@@ -6784,7 +7544,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     const body = (await request.json()) as Partial<AgentConfig>;
     const merged = mergeAgentConfigWithDefaults({ ...this.state.config, ...body });
 
-    const validation = safeValidateAgentConfig(merged);
+    const validation = this.validateAgentConfigCandidate(merged);
     if (!validation.success) {
       return new Response(
         JSON.stringify({ ok: false, error: "Invalid configuration", issues: validation.error.issues }),
@@ -6795,7 +7555,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.state.config = validation.data;
     this.initializeLLM();
     await this.persist();
-    return this.jsonResponse({ ok: true, config: this.state.config });
+    return this.jsonResponse({ ok: true, config: this.getDashboardConfig() });
   }
 
   private async handleTestDiscordNotification(request: Request): Promise<Response> {
@@ -7158,31 +7918,14 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   private async handleGetHistory(url: URL): Promise<Response> {
     const alpaca = createAlpacaProviders(this.env);
-    const period = url.searchParams.get("period") || "1M";
-    const timeframe = url.searchParams.get("timeframe") || "1D";
-    const intradayReporting = url.searchParams.get("intraday_reporting") as
-      | "market_hours"
-      | "extended_hours"
-      | "continuous"
-      | null;
+    const historyParams = buildPortfolioHistoryParams(url.searchParams);
 
     try {
-      const history = await alpaca.trading.getPortfolioHistory({
-        period,
-        timeframe,
-        intraday_reporting: intradayReporting || "extended_hours",
-      });
-
-      const snapshots = history.timestamp.map((ts, i) => ({
-        timestamp: ts * 1000,
-        equity: history.equity[i],
-        pl: history.profit_loss[i],
-        pl_pct: history.profit_loss_pct[i],
-      }));
+      const history = await alpaca.trading.getPortfolioHistory(historyParams);
 
       return this.jsonResponse({
         ok: true,
-        data: { snapshots, base_value: history.base_value, timeframe: history.timeframe },
+        data: buildPortfolioHistoryPayload(history),
       });
     } catch (error) {
       this.log("System", "history_error", { error: String(error) });
@@ -7370,13 +8113,208 @@ export class MahoragaHarness extends DurableObject<Env> {
   // UTILITIES
   // ============================================================================
 
-  private log(agent: string, action: string, details: Record<string, unknown>): void {
-    const entry: LogEntry = { timestamp: new Date().toISOString(), agent, action, ...details };
-    this.state.logs.push(entry);
-    if (this.state.logs.length > 500) {
-      this.state.logs = this.state.logs.slice(-500);
+  private getDecisionCycleId(): string {
+    if (!this.currentDecisionCycleId) {
+      this.currentDecisionCycleId = generateId();
     }
+    return this.currentDecisionCycleId;
+  }
+
+  private buildTradeDecisionSnapshot(symbol: string, extras: Record<string, unknown> = {}): Record<string, unknown> {
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+    const technicalData = dynamicState.technicalDataCache as Record<string, unknown> | undefined;
+    const momentumData = dynamicState.momentumDataCache as Record<string, unknown> | undefined;
+    const sectorMap = dynamicState.sectorMap as Record<string, string> | undefined;
+    const marketRegime = dynamicState.marketRegimeCache as Record<string, unknown> | undefined;
+    const socialSnapshot = getSocialSnapshotCache(this.state);
+
+    return {
+      strategy: activeStrategy.name,
+      symbol,
+      config: this.state.config,
+      signals: this.state.signalCache.filter((signal) => signal.symbol === symbol).slice(-20),
+      signal_research: this.state.signalResearch[symbol] ?? null,
+      position_research: this.state.positionResearch[symbol] ?? null,
+      position_entry: this.findTrackedPositionEntry(symbol) ?? null,
+      social_snapshot: this.getSocialSnapshotEntry(socialSnapshot, symbol) ?? null,
+      technicals: technicalData?.[symbol] ?? null,
+      momentum: momentumData?.[symbol] ?? null,
+      sector: sectorMap?.[symbol] ?? null,
+      market_regime: marketRegime ?? null,
+      ...extras,
+    };
+  }
+
+  private async recordTradeDecision(params: TradeDecisionLogParams): Promise<void> {
+    const id = generateId();
+    const decisionAt = new Date().toISOString();
+    const date = decisionAt.slice(0, 10);
+    let snapshotR2Key: string | null = null;
+
+    if (params.snapshot) {
+      snapshotR2Key = R2Paths.tradeDecisionSnapshot(date, id);
+      try {
+        const r2 = createR2Client(this.env.ARTIFACTS);
+        await r2.putJson(snapshotR2Key, { decision_id: id, decision_at: decisionAt, ...params.snapshot });
+      } catch (error) {
+        snapshotR2Key = null;
+        console.warn("[TradeDecision] Failed to persist R2 snapshot", error);
+      }
+    }
+
+    try {
+      const db = createD1Client(this.env.DB);
+      await insertTradeDecision(db, {
+        id,
+        cycle_id: this.getDecisionCycleId(),
+        decision_at: decisionAt,
+        source: params.source,
+        symbol: params.symbol,
+        action: params.action.toUpperCase(),
+        status: params.status,
+        confidence: params.confidence,
+        reason: params.reason,
+        notional: params.notional,
+        price: params.price,
+        pnl_pct: params.pnlPct,
+        snapshot_r2_key: snapshotR2Key,
+        metadata: params.metadata ?? null,
+      });
+    } catch (error) {
+      console.warn("[TradeDecision] Failed to persist D1 row", error);
+    }
+  }
+
+  private async recordEntryDecision(
+    source: string,
+    entry: BuyCandidate,
+    status: string,
+    account: Account,
+    positions: Position[],
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    await this.recordTradeDecision({
+      source,
+      symbol: entry.symbol,
+      action: "BUY",
+      status,
+      confidence: entry.confidence,
+      reason: entry.reason,
+      notional: entry.notional,
+      metadata,
+      snapshot: this.buildTradeDecisionSnapshot(entry.symbol, { account, positions, candidate: entry, metadata }),
+    });
+  }
+
+  private async recordExitDecision(
+    source: string,
+    exit: SellCandidate,
+    status: string,
+    account: Account,
+    positions: Position[],
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    const position = positions.find((item) => item.symbol === exit.symbol);
+    const denominator = position ? position.market_value - position.unrealized_pl : 0;
+    const pnlPct = position && denominator > 0 ? (position.unrealized_pl / denominator) * 100 : null;
+
+    await this.recordTradeDecision({
+      source,
+      symbol: exit.symbol,
+      action: "SELL",
+      status,
+      reason: exit.reason,
+      price: position?.current_price ?? null,
+      pnlPct,
+      metadata,
+      snapshot: this.buildTradeDecisionSnapshot(exit.symbol, { account, positions, candidate: exit, metadata }),
+    });
+  }
+
+  private log(agent: string, action: string, details: Record<string, unknown>): void {
+    const nowMs = Date.now();
+    const entry: LogEntry = { timestamp: new Date(nowMs).toISOString(), agent, action, ...details };
+    this.state.logs.push(entry);
+    if (this.state.logs.length > this.MAX_LOG_ENTRIES) {
+      this.state.logs = this.state.logs.slice(-this.MAX_LOG_ENTRIES);
+    }
+    this.recordDailyReportActivity(nowMs, agent, action, details);
     console.log(`[${entry.timestamp}] [${agent}] ${action}`, JSON.stringify(details));
+  }
+
+  private recordDailyReportActivity(
+    timestampMs: number,
+    agent: string,
+    action: string,
+    details: Record<string, unknown>
+  ): void {
+    const bucketStart = getDailyReportBucketStart(timestampMs);
+    const bucketKey = String(bucketStart);
+    const bucket = this.state.dailyReportBuckets[bucketKey] || createDailyReportBucket(bucketStart);
+
+    let relevant = false;
+    const symbol: string | null =
+      typeof details.symbol === "string" && details.symbol.trim().length > 0 ? details.symbol.trim() : null;
+
+    if (agent === "System" && action === "gathering_data") {
+      bucket.data_gather_cycles++;
+      relevant = true;
+    } else if (agent === "Analyst" && action === "analysis_complete") {
+      bucket.analyst_runs++;
+      relevant = true;
+    } else if (agent === "System" && action === "premarket_analysis_complete") {
+      bucket.premarket_plans++;
+      relevant = true;
+    } else if (agent === "System" && action === "twitter_breaking_news") {
+      bucket.breaking_news_alerts++;
+      relevant = true;
+    } else if (/(^|_)error$/.test(action)) {
+      bucket.errors++;
+      relevant = true;
+    } else if (agent === "SignalResearch" && action === "signal_researched") {
+      bucket.researched_signals++;
+      const verdict = typeof details.verdict === "string" ? details.verdict : "";
+      if (verdict === "BUY") bucket.buy_verdicts++;
+      if (verdict === "SKIP") bucket.skip_verdicts++;
+      if (verdict === "WAIT") bucket.wait_verdicts++;
+      relevant = true;
+    } else if (agent === "PolicyBroker" && action === "buy_executed") {
+      bucket.executed_buys++;
+      const notional = typeof details.notional === "number" && Number.isFinite(details.notional) ? details.notional : 0;
+      bucket.executed_buy_notional += notional;
+      bucket.recent_trades.push({
+        side: "BUY",
+        symbol: symbol || "UNKNOWN",
+        timestamp: timestampMs,
+        reason: typeof details.reason === "string" ? details.reason : undefined,
+        notional: notional > 0 ? notional : undefined,
+      });
+      relevant = true;
+    } else if (agent === "PolicyBroker" && action === "sell_executed") {
+      bucket.executed_sells++;
+      bucket.recent_trades.push({
+        side: "SELL",
+        symbol: symbol || "UNKNOWN",
+        timestamp: timestampMs,
+        reason: typeof details.reason === "string" ? details.reason : undefined,
+      });
+      relevant = true;
+    }
+
+    if (!relevant) {
+      return;
+    }
+
+    bucket.total_events++;
+    if (symbol) {
+      bucket.symbol_counts[symbol] = (bucket.symbol_counts[symbol] || 0) + 1;
+    }
+    if (bucket.recent_trades.length > 10) {
+      bucket.recent_trades = bucket.recent_trades.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
+    }
+
+    this.state.dailyReportBuckets[bucketKey] = bucket;
+    pruneDailyReportBuckets(this.state.dailyReportBuckets, timestampMs, DAILY_REPORT_RETENTION_MS);
   }
 
   public trackLLMCost(model: string, tokensIn: number, tokensOut: number): number {
@@ -7645,6 +8583,45 @@ export function getHarnessStub(env: Env): DurableObjectStub {
   }
   const id = env.MAHORAGA_HARNESS.idFromName("main");
   return env.MAHORAGA_HARNESS.get(id);
+}
+
+function selectSignalResearchCandidatesFallback(
+  signals: Signal[],
+  minSentimentScore: number,
+  limit: number
+): StrategySignalResearchCandidate[] {
+  const aggregated = new Map<string, { sentiment: number; rawSentiment: number; sources: string[]; count: number }>();
+  for (const signal of signals) {
+    const existing = aggregated.get(signal.symbol);
+    if (!existing) {
+      aggregated.set(signal.symbol, {
+        sentiment: signal.sentiment,
+        rawSentiment: signal.raw_sentiment,
+        sources: [signal.source],
+        count: 1,
+      });
+      continue;
+    }
+
+    existing.sentiment += signal.sentiment;
+    existing.rawSentiment += signal.raw_sentiment;
+    existing.sources.push(signal.source);
+    existing.count++;
+  }
+
+  return Array.from(aggregated.entries())
+    .map(([symbol, data]) => ({
+      symbol,
+      sentiment: data.sentiment / data.count,
+      sources: Array.from(new Set(data.sources)),
+      score: data.sentiment / data.count,
+      quality: undefined,
+      rawSentiment: data.rawSentiment / data.count,
+    }))
+    .filter((candidate) => candidate.rawSentiment >= minSentimentScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ rawSentiment: _rawSentiment, ...candidate }) => candidate);
 }
 
 export async function getHarnessStatus(env: Env): Promise<unknown> {

@@ -9,6 +9,7 @@ interface LineChartSeries {
   label: string
   data: number[]
   variant?: ChartVariant
+  colorByTrend?: boolean
 }
 
 interface ChartMarker {
@@ -554,6 +555,216 @@ export const PositionTimelineChart = memo(function PositionTimelineChart({
   xDomainStart,
   xDomainEnd,
   updateToken,
+}: PositionTimelineChartProps) {
+  const [hoveredSeries, setHoveredSeries] = useState<number | null>(null)
+  const [isPulsing, setIsPulsing] = useState(false)
+  const hasMountedRef = useRef(false)
+
+  useEffect(() => {
+    if (updateToken === undefined) return
+
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true
+      return
+    }
+
+    setIsPulsing(true)
+    const timeoutId = window.setTimeout(() => setIsPulsing(false), 950)
+    return () => window.clearTimeout(timeoutId)
+  }, [updateToken])
+
+  const allPoints = series.flatMap((item) => item.points).filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.value))
+
+  if (allPoints.length === 0) {
+    return null
+  }
+
+  const viewBoxWidth = CHART_VIEWBOX_WIDTH
+  const resolvedViewBoxHeight = viewBoxHeight ?? (typeof height === 'number' ? height : 300)
+  const viewBoxHeightValue = resolvedViewBoxHeight
+  const padding = { top: 18, right: 12, bottom: 34, left: 78 }
+  const chartWidth = viewBoxWidth - padding.left - padding.right
+  const chartHeight = viewBoxHeightValue - padding.top - padding.bottom
+
+  const pointMinTimestamp = Math.min(...allPoints.map((point) => point.timestamp))
+  const pointMaxTimestamp = Math.max(...allPoints.map((point) => point.timestamp))
+  const minTimestamp = Number.isFinite(xDomainStart) ? (xDomainStart as number) : pointMinTimestamp
+  const maxTimestamp = Number.isFinite(xDomainEnd) ? Math.max(xDomainEnd as number, pointMaxTimestamp) : pointMaxTimestamp
+  const safeMaxTimestamp = maxTimestamp === minTimestamp ? minTimestamp + 60_000 : maxTimestamp
+
+  const rawMinValue = Math.min(0, ...allPoints.map((point) => point.value))
+  const rawMaxValue = Math.max(0, ...allPoints.map((point) => point.value))
+  const paddedRange = Math.max(rawMaxValue - rawMinValue, 2)
+  const minValue = rawMinValue - paddedRange * 0.12
+  const maxValue = rawMaxValue + paddedRange * 0.12
+  const valueRange = maxValue - minValue || 1
+
+  const getX = (timestamp: number) =>
+    padding.left + ((timestamp - minTimestamp) / (safeMaxTimestamp - minTimestamp || 1)) * chartWidth
+  const getY = (value: number) => padding.top + chartHeight - ((value - minValue) / valueRange) * chartHeight
+
+  const gridValues = Array.from({ length: 5 }, (_, index) => minValue + (valueRange / 4) * index)
+  const tickCount = 5
+  const timeTicks = Array.from({ length: tickCount }, (_, index) => {
+    const ratio = index / (tickCount - 1)
+    return minTimestamp + (safeMaxTimestamp - minTimestamp) * ratio
+  })
+  const zeroLineVisible = minValue < 0 && maxValue > 0
+
+  return (
+    <div className="hud-chart-shell w-full" style={{ height }}>
+      <motion.div
+        aria-hidden
+        className="hud-chart-pulse"
+        initial={false}
+        animate={isPulsing ? { opacity: [0, 0.85, 0], scale: [0.985, 1.008, 1.02] } : { opacity: 0, scale: 1 }}
+        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+      />
+      <svg
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeightValue}`}
+        className="block h-full w-full"
+        overflow="hidden"
+        preserveAspectRatio="none"
+      >
+        <g>
+          {gridValues.map((value, index) => (
+            <g key={`grid-${index}`}>
+              <line
+                x1={hoverX!}
+                y1={padding.top}
+                x2={hoverX!}
+                y2={padding.top + chartHeight}
+                stroke="var(--color-hud-text-dim)"
+                strokeWidth={1}
+                opacity={0.6}
+              />
+              <circle
+                cx={hoverX!}
+                cy={hoverY!}
+                r={4}
+                fill="var(--color-hud-bg)"
+                stroke={variantColors[series[0]?.variant ?? variant].stroke}
+                strokeWidth={2}
+              />
+            </g>
+          )
+        })()}
+      </svg>
+
+      <div className="hud-chart-overlay hud-chart-overlay--labels" aria-hidden="true">
+        {showGrid &&
+          gridValues.map((value, index) => (
+            <div
+              key={`y-label-${index}`}
+              className="hud-chart-axis-label hud-chart-axis-label-y"
+              style={{
+                top: toPercentY(getY(value), viewBoxHeightValue),
+                width: `calc(${toPercentX(padding.left, viewBoxWidth)} - 10px)`,
+              }}
+            >
+              {formatLabel(value)}
+            </div>
+          ))}
+
+        {xAxisLabels.map(({ label, x }, index) => (
+          <div
+            key={`x-label-${index}`}
+            className="hud-chart-axis-label hud-chart-axis-label-x"
+            style={{
+              left: toPercentX(x, viewBoxWidth),
+              bottom: '4px',
+            }}
+          >
+            {label}
+          </div>
+        ))}
+
+        {markers?.map((marker, index) => (
+          <div
+            key={`marker-label-${index}`}
+            className="hud-chart-marker-label"
+            style={{
+              left: toPercentX(getX(marker.index), viewBoxWidth),
+              top: '2px',
+              color: marker.color || 'var(--color-hud-text-dim)',
+            }}
+          >
+            {marker.label}
+          </div>
+        ))}
+
+        {hoverIndex !== null && hoverValue !== null && (
+          <div
+            className="hud-chart-tooltip"
+            style={{
+              left: toPercentX(hoverTooltipX!, viewBoxWidth),
+              top: toPercentY(hoverTooltipY!, viewBoxHeightValue),
+            }}
+          >
+            <div className="hud-chart-tooltip-value">{formatLabel(hoverValue)}</div>
+            {hoverLabel && <div className="hud-chart-tooltip-label">{hoverLabel}</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface PositionTimelineChartProps {
+  series: PositionTimelineSeries[]
+  height?: number | string
+  viewBoxHeight?: number
+  formatValue?: (value: number) => string
+  xDomainStart?: number
+  xDomainEnd?: number
+  updateToken?: number
+  selectedSeriesLabel?: string | null
+  onSeriesSelect?: (label: string) => void
+}
+
+const MARKET_TIME_ZONE = 'America/New_York'
+
+function formatTimelineTick(timestamp: number, minTimestamp: number, maxTimestamp: number): string {
+  const spanMs = maxTimestamp - minTimestamp
+  const date = new Date(timestamp)
+
+  if (spanMs <= 36 * 60 * 60 * 1000) {
+    return date.toLocaleTimeString('en-US', {
+      timeZone: MARKET_TIME_ZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  }
+
+  if (spanMs <= 3 * 24 * 60 * 60 * 1000) {
+    return date.toLocaleString('en-US', {
+      timeZone: MARKET_TIME_ZONE,
+      weekday: 'short',
+      hour: '2-digit',
+      hour12: false,
+    })
+  }
+
+  return date.toLocaleDateString('en-US', {
+    timeZone: MARKET_TIME_ZONE,
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+export const PositionTimelineChart = memo(function PositionTimelineChart({
+  series,
+  height = 220,
+  viewBoxHeight,
+  formatValue = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`,
+  xDomainStart,
+  xDomainEnd,
+  updateToken,
+  selectedSeriesLabel,
+  onSeriesSelect,
 }: PositionTimelineChartProps) {
   const [hoveredSeries, setHoveredSeries] = useState<number | null>(null)
   const [isPulsing, setIsPulsing] = useState(false)

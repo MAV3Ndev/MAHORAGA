@@ -55,6 +55,9 @@ export interface PositionEntry {
   peak_price: number;
   trough_price?: number;
   peak_sentiment: number;
+  recommended_entry_zone?: string;
+  recommended_stop_loss_pct?: number;
+  recommended_take_profit_pct?: number;
 }
 
 export interface RecentSellEntry {
@@ -114,6 +117,33 @@ export interface CostTracker {
   tokens_out: number;
 }
 
+export interface DailyReportTrade {
+  side: "BUY" | "SELL";
+  symbol: string;
+  timestamp: number;
+  reason?: string;
+  notional?: number;
+}
+
+export interface DailyReportBucket {
+  bucket_start_ms: number;
+  total_events: number;
+  data_gather_cycles: number;
+  analyst_runs: number;
+  premarket_plans: number;
+  breaking_news_alerts: number;
+  errors: number;
+  researched_signals: number;
+  buy_verdicts: number;
+  skip_verdicts: number;
+  wait_verdicts: number;
+  executed_buys: number;
+  executed_sells: number;
+  executed_buy_notional: number;
+  symbol_counts: Record<string, number>;
+  recent_trades: DailyReportTrade[];
+}
+
 // ---------------------------------------------------------------------------
 // Research results — output of LLM analysis
 // ---------------------------------------------------------------------------
@@ -126,7 +156,11 @@ export interface ResearchResult {
   reasoning: string;
   red_flags: string[];
   catalysts: string[];
+  sentiment?: number;
   timestamp: number;
+  recommended_entry_zone?: string;
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
 }
 
 export interface TwitterConfirmation {
@@ -173,6 +207,7 @@ export interface AgentState {
   socialSnapshotCache: Record<string, SocialSnapshotCacheEntry>;
   socialSnapshotCacheUpdatedAt: number;
   logs: LogEntry[];
+  dailyReportBuckets: Record<string, DailyReportBucket>;
   costTracker: CostTracker;
   lastDataGatherRun: number;
   lastAlarmStartedAt?: number;
@@ -181,6 +216,7 @@ export interface AgentState {
   lastPositionResearchRun: number;
   signalResearch: Record<string, ResearchResult>;
   positionResearch: Record<string, unknown>;
+  analystBuyCooldowns: Record<string, number>;
   stalenessAnalysis: Record<string, unknown>;
   twitterConfirmations: Record<string, TwitterConfirmation>;
   twitterDailyReads: number;

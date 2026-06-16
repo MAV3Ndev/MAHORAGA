@@ -48,6 +48,7 @@ export interface OrderPreview {
   /** Strategy/research confidence that produced this order, 0-1. */
   confidence?: number;
   estimated_price?: number;
+  avg_volume_20d?: number;
   estimated_cost?: number;
   buying_power_impact?: number;
 }

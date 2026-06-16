@@ -6,6 +6,7 @@
  * DEFAULT_STATE: Initial state for a fresh agent
  */
 
+import { createInitialAgentState } from "../../core/initial-state";
 import type { AgentConfig, AgentState } from "../../core/types";
 
 // ── Source weights & tuning ──────────────────────────────────────────────────
@@ -13,11 +14,11 @@ import type { AgentConfig, AgentState } from "../../core/types";
 export const SOURCE_CONFIG = {
   weights: {
     stocktwits: 0.85,
-    reddit_wallstreetbets: 0.6,
+    reddit_wallstreetbets: 0.45,
     reddit_stocks: 0.9,
     reddit_investing: 0.8,
     reddit_options: 0.85,
-    twitter_fintwit: 0.95,
+    twitter_fintwit: 0.85,
     twitter_news: 0.9,
     alpha_vantage_news: 0.88,
     gdelt_news: 0.72,
@@ -137,7 +138,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   stale_loss_exit_pct: 2,
   stale_max_hold_days: 3,
   stale_min_gain_pct: 5,
-  stale_mid_hold_days: 2,
+  stale_mid_hold_days: 1,
   stale_mid_min_gain_pct: 3,
   stale_social_volume_decay: 0.3,
   llm_provider: "openai-raw",

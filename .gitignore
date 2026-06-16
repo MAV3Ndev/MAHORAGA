@@ -37,6 +37,7 @@ dashboard/release/
 # Logs
 # -----------------------------------------------------------------------------
 *.log
+logs-*.json
 logs/
 agent.log
 mcp.log
@@ -83,6 +84,7 @@ ehthumbs.db
 .cursor/
 .opencode/
 .windsurf/
+AGENTS.md
 .github/skills/
 
 # -----------------------------------------------------------------------------

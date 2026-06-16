@@ -218,6 +218,7 @@ function ensureCryptoEntry(ctx: StrategyContext, pos: Position) {
 
 /**
  * Research a crypto symbol for BUY/SKIP/WAIT verdict.
+ * Includes retry logic for rate limit (429) errors.
  */
 export async function researchCrypto(
   ctx: StrategyContext,
@@ -225,6 +226,8 @@ export async function researchCrypto(
   momentum: number,
   sentiment: number
 ): Promise<ResearchResult | null> {
+  ctx.log("Crypto", "research_start", { symbol, momentum, sentiment, has_llm: !!ctx.llm });
+
   if (!ctx.llm) {
     ctx.log("Crypto", "skipped_no_llm", { symbol, reason: "LLM Provider not configured" });
     return null;
@@ -263,9 +266,126 @@ export async function researchCrypto(
       response_format: { type: "json_object" },
     });
 
-    const usage = response.usage;
-    if (usage) {
-      ctx.trackLLMCost(ctx.config.llm_model, usage.prompt_tokens, usage.completion_tokens);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const response = await ctx.llm.complete({
+        model: ctx.config.llm_model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a crypto analyst. Be skeptical of FOMO, but do not miss clearly actionable momentum setups. Crypto is volatile, so reserve SKIP for weak or trap-like setups and use WAIT only when the thesis is constructive but the entry is still borderline. Output valid JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 1500,
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+      });
+
+      const usage = response.usage;
+      if (usage) {
+        ctx.trackLLMCost(ctx.config.llm_model, usage.prompt_tokens, usage.completion_tokens);
+      }
+
+      const content = response.content || "{}";
+
+      ctx.log("Crypto", "research_raw_response", {
+        symbol,
+        content_preview: content.substring(0, 200),
+        content_length: content.length,
+      });
+      let analysis: {
+        verdict: "BUY" | "SKIP" | "WAIT";
+        confidence: number;
+        entry_quality: "excellent" | "good" | "fair" | "poor";
+        reasoning: string;
+        red_flags?: string[];
+        catalysts?: string[];
+      };
+
+      try {
+        analysis = parseResearchAnalysis(content);
+      } catch (parseError) {
+        ctx.log("Crypto", "research_parse_error", {
+          symbol,
+          attempt,
+          content_preview: content.substring(0, 100),
+          content_length: content.length,
+          error: String(parseError),
+        });
+
+        if (attempt < MAX_RETRIES - 1) {
+          continue;
+        }
+
+        return buildCryptoFallbackResearch(
+          ctx,
+          symbol,
+          momentum,
+          sentiment,
+          `LLM returned malformed JSON after ${MAX_RETRIES} attempts`
+        );
+      }
+
+      // Validate verdict (case-insensitive)
+      const receivedVerdict = analysis.verdict;
+      const normalizedVerdict = receivedVerdict ? String(receivedVerdict).toUpperCase().trim() : null;
+      if (!normalizedVerdict || !["BUY", "SKIP", "WAIT"].includes(normalizedVerdict)) {
+        ctx.log("Crypto", "research_invalid_verdict", {
+          symbol,
+          received_verdict: receivedVerdict,
+          received_type: typeof receivedVerdict,
+          received_confidence: analysis.confidence,
+          received_fields: Object.keys(analysis),
+        });
+        analysis.verdict = "SKIP";
+        analysis.confidence = 0.1;
+      } else {
+        analysis.verdict = normalizedVerdict as "BUY" | "SKIP" | "WAIT";
+      }
+
+      const result: ResearchResult = {
+        symbol,
+        verdict: analysis.verdict,
+        confidence: Math.max(0, Math.min(1, analysis.confidence || 0)),
+        entry_quality: analysis.entry_quality || "fair",
+        reasoning: analysis.reasoning || "No reasoning provided",
+        red_flags: analysis.red_flags || [],
+        catalysts: analysis.catalysts || [],
+        timestamp: Date.now(),
+      };
+
+      ctx.log("Crypto", "researched", {
+        symbol,
+        verdict: result.verdict,
+        confidence: result.confidence,
+        quality: result.entry_quality,
+        attempt,
+      });
+
+      return result;
+    } catch (error) {
+      lastError = String(error);
+      const isRateLimit = lastError.includes("429") || lastError.includes("rate_limit");
+
+      ctx.log("Crypto", "research_retry", {
+        symbol,
+        attempt,
+        max_retries: MAX_RETRIES,
+        is_rate_limit: isRateLimit,
+        error: lastError.substring(0, 100),
+      });
+
+      if (isRateLimit && attempt < MAX_RETRIES - 1) {
+        // Exponential backoff: 1s, 2s, 4s
+        const backoffMs = Math.min(4000, 1000 * 2 ** attempt);
+        await ctx.sleep(backoffMs);
+        continue;
+      }
+
+      ctx.log("Crypto", "research_error", { symbol, error: lastError, attempt });
+      return null;
     }
 
     const content = response.content || "{}";
@@ -286,6 +406,8 @@ export async function researchCrypto(
     ctx.log("Crypto", "research_error", { symbol, error: String(error) });
     return null;
   }
+
+  return null;
 }
 
 /**
@@ -537,6 +659,14 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
     })
     .sort((a, b) => (getCryptoMomentumPct(b.momentum) ?? 0) - (getCryptoMomentumPct(a.momentum) ?? 0));
 
+  ctx.log("Crypto", "run_start", {
+    total_signals: ctx.signals.length,
+    crypto_signals: cryptoSignals.length,
+    held_crypto: Array.from(heldCrypto),
+    has_llm: !!ctx.llm,
+    crypto_enabled: ctx.config.crypto_enabled,
+  });
+
   const CRYPTO_RESEARCH_TTL_MS = 300_000;
 
   for (const signal of cryptoSignals.slice(0, 2)) {
@@ -551,7 +681,8 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       if (research) ctx.state.set(`cryptoResearch_${normalizedSymbol}`, research);
     }
 
-    if (!research || research.verdict !== "BUY") {
+    const promotableWait = !!research && isPromotableCryptoWait(research, ctx);
+    if (!research || (research.verdict !== "BUY" && !promotableWait)) {
       ctx.log("Crypto", "research_skip", {
         symbol: normalizedSymbol,
         verdict: research?.verdict || "NO_RESEARCH",
@@ -623,6 +754,14 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       continue;
     }
 
+    if (promotableWait) {
+      ctx.log("Crypto", "wait_promoted", {
+        symbol: signal.symbol,
+        confidence: research.confidence,
+        quality: research.entry_quality,
+      });
+    }
+
     const account = await ctx.broker.getAccount();
     const sizePct = Math.min(20, ctx.config.position_size_pct_of_cash);
     const sizeMultiplier = getEntrySizeMultiplier(ctx, research.confidence);
@@ -670,4 +809,20 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       break;
     }
   }
+}
+
+function getCryptoAtr(ctx: StrategyContext, symbol: string): number | undefined {
+  const atrCache = ctx.state.get<Record<string, number>>("atrCache");
+  for (const alias of getCryptoSymbolAliases(symbol)) {
+    const atr = atrCache?.[alias];
+    if (atr !== undefined) return atr;
+  }
+  return undefined;
+}
+
+function isPromotableCryptoWait(result: ResearchResult, ctx: StrategyContext): boolean {
+  if (result.verdict !== "WAIT") return false;
+  if (!["excellent", "good", "fair"].includes(result.entry_quality)) return false;
+  if (result.red_flags.length > 1) return false;
+  return result.confidence >= ctx.config.min_analyst_confidence;
 }

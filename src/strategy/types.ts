@@ -58,6 +58,8 @@ export interface StrategyContext {
     buy(symbol: string, notional: number, reason: string, metadata?: Record<string, unknown>): Promise<boolean>;
     /** Close a position. Returns true only after the close is filled or partially filled. */
     sell(symbol: string, reason: string): Promise<boolean>;
+    /** Ensure broker-native protection exists for open equity positions. */
+    syncProtectiveStops(positions: Position[]): Promise<void>;
   };
 
   /**
@@ -68,6 +70,10 @@ export interface StrategyContext {
   state: {
     get<T>(key: string): T | undefined;
     set<T>(key: string, value: T): void;
+    namespace?: (prefix: string) => {
+      get<T>(key: string): T | undefined;
+      set<T>(key: string, value: T): void;
+    };
   };
 
   /** Current signal cache for this cycle */
@@ -140,6 +146,30 @@ export interface SellCandidate {
   reason: string;
 }
 
+export interface EntryConfirmationResult {
+  confidence: number;
+  confirmation?: unknown;
+}
+
+export interface StrategyOptionContract {
+  symbol: string;
+  max_contracts: number;
+}
+
+export interface StrategyBreakingNewsItem {
+  symbol: string;
+  headline: string;
+  is_breaking: boolean;
+}
+
+export interface StrategySignalResearchCandidate {
+  symbol: string;
+  sentiment: number;
+  sources: string[];
+  score?: number;
+  quality?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Gatherer — a named data source that produces signals
 // ---------------------------------------------------------------------------
@@ -164,8 +194,8 @@ export interface Strategy {
    */
   configSchema: z.ZodType | null;
 
-  /** Default config values (merged over core defaults at startup) */
-  defaultConfig: Partial<AgentConfig>;
+  /** Complete default config values for this strategy. */
+  defaultConfig: AgentConfig;
 
   /**
    * Data gatherers. Core calls all of them in parallel each data-gather cycle,
@@ -199,6 +229,35 @@ export interface Strategy {
    * Core ALWAYS enforces stop-loss/take-profit from config on top of this.
    */
   selectExits: (ctx: StrategyContext, positions: Position[], account: Account) => SellCandidate[];
+
+  /**
+   * Optional strategy capabilities for flows that are not universal across strategies.
+   * Core calls these only when present; custom strategies are not forced to inherit
+   * default Twitter, crypto, or options behavior.
+   */
+  capabilities?: {
+    prepareDataGathering?: (ctx: StrategyContext) => Promise<void>;
+    filterSignals?: (ctx: StrategyContext, signals: Signal[]) => Promise<Signal[]>;
+    runCryptoTrading?: (ctx: StrategyContext, positions: Position[]) => Promise<void>;
+    confirmEntry?: (
+      ctx: StrategyContext,
+      candidate: BuyCandidate,
+      signal: Signal,
+      confidence: number
+    ) => Promise<EntryConfirmationResult | null>;
+    findOptionsContract?: (
+      ctx: StrategyContext,
+      symbol: string,
+      direction: "bullish" | "bearish",
+      equity: number
+    ) => Promise<StrategyOptionContract | null>;
+    checkBreakingNews?: (ctx: StrategyContext, symbols: string[]) => Promise<StrategyBreakingNewsItem[]>;
+    selectSignalResearchCandidates?: (
+      ctx: StrategyContext,
+      signals: Signal[],
+      limit: number
+    ) => Promise<StrategySignalResearchCandidate[]> | StrategySignalResearchCandidate[];
+  };
 
   /** Optional lifecycle hooks */
   hooks?: {

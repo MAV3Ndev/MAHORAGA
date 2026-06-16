@@ -13,6 +13,7 @@ interface OpenAIResponse {
     message: {
       role: string;
       content: string;
+      reasoning_content?: string; // For GLM/extended thinking models
     };
     finish_reason: string;
   }>;

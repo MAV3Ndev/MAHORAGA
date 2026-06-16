@@ -74,8 +74,11 @@ export function getDefaultOptionsPolicyConfig(): OptionsPolicyConfig {
   };
 }
 
-export function getDefaultPolicyConfig(env: Env): PolicyConfig {
-  return {
+export function getDefaultPolicyConfig(
+  env: Env,
+  overrides: Partial<Omit<PolicyConfig, "options">> & { options?: Partial<OptionsPolicyConfig> } = {}
+): PolicyConfig {
+  const baseConfig: PolicyConfig = {
     max_position_pct_equity: parseNumber(env.DEFAULT_MAX_POSITION_PCT, 0.1),
     max_open_positions: parseNumber(env.DEFAULT_MAX_OPEN_POSITIONS, 10),
     max_notional_per_trade: parseNumber(env.DEFAULT_MAX_NOTIONAL_PER_TRADE, 5000),
@@ -98,6 +101,15 @@ export function getDefaultPolicyConfig(env: Env): PolicyConfig {
     allow_short_selling: false,
     use_cash_only: true,
     options: getDefaultOptionsPolicyConfig(),
+  };
+
+  return {
+    ...baseConfig,
+    ...overrides,
+    options: {
+      ...baseConfig.options,
+      ...overrides.options,
+    },
   };
 }
 

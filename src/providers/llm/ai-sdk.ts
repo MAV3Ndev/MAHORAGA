@@ -38,6 +38,10 @@ export interface AISDKConfig {
   apiKeys: Partial<Record<SupportedProvider, string>>;
   /** Optional OpenAI base URL override (e.g., OpenAI-compatible proxy). */
   openaiBaseUrl?: string;
+  /** Optional Anthropic base URL override (e.g., Anthropic-compatible proxy). */
+  anthropicBaseUrl?: string;
+  /** Optional Anthropic bearer auth token for Anthropic-compatible proxies. */
+  anthropicAuthToken?: string;
 }
 
 type ProviderFactory =
@@ -70,7 +74,17 @@ export class AISDKProvider implements LLMProvider {
       this.providers.openai = createOpenAI(openaiOptions);
     }
     if (config.apiKeys.anthropic) {
-      this.providers.anthropic = createAnthropic({ apiKey: config.apiKeys.anthropic });
+      const rawBaseUrl = config.anthropicBaseUrl?.trim().replace(/\/+$/, "");
+      const anthropicOptions: { apiKey?: string; authToken?: string; baseURL?: string } = {};
+      if (config.anthropicAuthToken) {
+        anthropicOptions.authToken = config.anthropicAuthToken;
+      } else {
+        anthropicOptions.apiKey = config.apiKeys.anthropic;
+      }
+      if (rawBaseUrl) {
+        anthropicOptions.baseURL = rawBaseUrl;
+      }
+      this.providers.anthropic = createAnthropic(anthropicOptions);
     }
     if (config.apiKeys.google) {
       this.providers.google = createGoogleGenerativeAI({ apiKey: config.apiKeys.google });
@@ -105,6 +119,15 @@ export class AISDKProvider implements LLMProvider {
       const parts = modelSpec.split(separator);
       const providerName = (parts[0] ?? "openai").toLowerCase() as SupportedProvider;
       const modelId = parts.slice(1).join(separator) || modelSpec;
+
+      // Require an explicit provider prefix so requests cannot silently route to a different provider.
+      const hasValidPrefix = parts.length > 1 && providerName in SUPPORTED_PROVIDERS;
+      if (!hasValidPrefix) {
+        throw createError(
+          ErrorCode.INVALID_INPUT,
+          `Model '${modelSpec}' must use provider/model format. Available providers: ${this.getAvailableProviders().join(", ")}`
+        );
+      }
 
       // Get provider instance
       const provider = this.providers[providerName];

@@ -924,8 +924,15 @@ export function selectEntries(
   const heldSymbols = new Set(positions.flatMap((p) => [p.symbol, normalizeCryptoSymbol(p.symbol)]));
   const now = Date.now();
   const candidates: BuyCandidate[] = [];
+  const verdictCounts = research.reduce<Record<string, number>>((acc, item) => {
+    acc[item.verdict] = (acc[item.verdict] || 0) + 1;
+    return acc;
+  }, {});
 
-  if (positions.length >= ctx.config.max_positions) return [];
+  if (positions.length >= ctx.config.max_positions) {
+    ctx.log("Entries", "skipped_max_positions", { max_positions: ctx.config.max_positions });
+    return [];
+  }
 
   const buyResearch = research
     .filter((r) => !heldSymbols.has(r.symbol) && !heldSymbols.has(normalizeCryptoSymbol(r.symbol)))
@@ -1050,7 +1057,7 @@ export function selectEntries(
 
     const shouldUseOptions =
       ctx.config.options_enabled &&
-      r.confidence >= ctx.config.options_min_confidence &&
+      compositeScore >= ctx.config.options_min_confidence &&
       r.entry_quality === "excellent";
 
     const metadata = buildEntryReviewMetadata(ctx, r, {
@@ -1075,8 +1082,8 @@ export function selectEntries(
 
     candidates.push({
       symbol: r.symbol,
-      confidence: r.confidence,
-      reason: r.reasoning,
+      confidence: compositeScore,
+      reason: r.verdict === "WAIT" ? `Promoted WAIT: ${r.reasoning}` : r.reasoning,
       notional,
       metadata,
       useOptions: shouldUseOptions,
@@ -1084,4 +1091,116 @@ export function selectEntries(
   }
 
   return candidates;
+}
+
+/**
+ * Build momentum data from signals for scoring.
+ * Note: Signal type doesn't have metadata, so we use known optional fields.
+ */
+function buildMomentumData(
+  signals: StrategyContext["signals"],
+  ctx: StrategyContext
+): Record<string, { priceChange1h?: number; priceChange24h?: number; volumeChange?: number }> {
+  interface MomentumCacheEntry {
+    price_change_1h?: number;
+    price_change_24h?: number;
+    volume_change?: number;
+  }
+
+  const cached = ctx.state.get<Record<string, MomentumCacheEntry>>("momentumDataCache") ?? {};
+  const data: Record<string, { priceChange1h?: number; priceChange24h?: number; volumeChange?: number }> = {};
+
+  for (const [symbol, momentum] of Object.entries(cached)) {
+    data[symbol] = {
+      priceChange1h: momentum.price_change_1h,
+      priceChange24h: momentum.price_change_24h,
+      volumeChange: momentum.volume_change,
+    };
+  }
+
+  for (const signal of signals) {
+    if (!data[signal.symbol] && signal.momentum !== undefined) {
+      data[signal.symbol] = {
+        priceChange24h: signal.momentum,
+      };
+    }
+  }
+
+  return data;
+}
+
+/**
+ * Get market regime data from context.
+ * In production, this would fetch VIX and SPY data.
+ */
+function getMarketRegimeData(ctx: StrategyContext): MarketRegimeData {
+  // Try to get from state cache first
+  const cachedRegime = ctx.state.get<MarketRegimeData>("marketRegimeCache");
+  if (cachedRegime) {
+    return cachedRegime;
+  }
+
+  // Default values if not available
+  return {
+    vix: 20, // neutral VIX
+    spyPrice: undefined,
+    spySma20: undefined,
+    spySma50: undefined,
+  };
+}
+
+/**
+ * Get technical data for a symbol.
+ * In production, this would fetch real technical indicators.
+ */
+function getTechnicalData(_symbol: string, _ctx: StrategyContext): TechnicalData {
+  interface TechnicalDataCacheEntry {
+    current_price?: number;
+    rsi?: number;
+    bb_lower?: number;
+    bb_middle?: number;
+    sma_20?: number;
+    sma_50?: number;
+    atr?: number;
+  }
+
+  const techCache = _ctx.state.get<Record<string, TechnicalDataCacheEntry>>("technicalDataCache");
+  const cached = techCache?.[_symbol];
+  const signal = _ctx.signals.find((item) => item.symbol === _symbol);
+
+  if (cached) {
+    return {
+      current_price: cached.current_price ?? signal?.price ?? 0,
+      rsi: cached.rsi,
+      bb_lower: cached.bb_lower,
+      bb_middle: cached.bb_middle,
+      sma_20: cached.sma_20,
+      sma_50: cached.sma_50,
+      atr: cached.atr,
+    };
+  }
+
+  return {
+    current_price: signal?.price ?? 0,
+  };
+}
+
+/**
+ * Get sector mapping for symbols.
+ * In production, this would be from a fundamental data provider.
+ */
+function getSectorMap(_ctx: StrategyContext): Record<string, string> {
+  return _ctx.state.get<Record<string, string>>("sectorMap") ?? {};
+}
+
+function isPromotableWait(result: ResearchResult, _ctx: StrategyContext): boolean {
+  if (result.verdict !== "WAIT") return false;
+  return false;
+}
+
+function getRequiredEntryScore(result: ResearchResult, ctx: StrategyContext): number {
+  if (isPromotableWait(result, ctx)) {
+    return Math.max(0.55, ctx.config.min_analyst_confidence - 0.05);
+  }
+  return ctx.config.min_analyst_confidence;
 }

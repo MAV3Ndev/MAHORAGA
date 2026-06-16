@@ -91,6 +91,8 @@ export const AgentConfigSchema = z
     sentiment_reversal_threshold: z.number().min(-1).max(0),
     sentiment_reversal_min_sources: z.number().int().min(1).max(10),
     position_size_pct_of_cash: z.number().min(1).max(100),
+    equity_entry_cutoff_minutes_before_close: z.number().int().min(0).max(120),
+    after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
 
     stale_position_enabled: z.boolean(),
     stale_min_hold_hours: z.number().min(0).max(168),

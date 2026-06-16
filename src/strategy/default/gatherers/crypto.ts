@@ -27,18 +27,21 @@ async function gatherCrypto(ctx: StrategyContext): Promise<Signal[]> {
       const threshold = ctx.config.crypto_momentum_threshold || 2.0;
       const hasSignificantMove = Math.abs(momentum) >= threshold;
       const isBullish = momentum > 0;
+      if (!hasSignificantMove) continue;
 
-      const rawSentiment = hasSignificantMove && isBullish ? Math.min(Math.abs(momentum) / 5, 1) : 0.1;
+      const rawSentiment = Math.min(Math.abs(momentum) / 5, 1) * (isBullish ? 1 : -1);
+      const qualityScore = Math.min(1, Math.abs(momentum) / (threshold * 2));
 
       signals.push({
         symbol,
         source: "crypto",
         source_detail: "crypto_momentum",
-        sentiment: rawSentiment,
+        sentiment: rawSentiment * 0.8,
         raw_sentiment: rawSentiment,
         volume: snapshot.daily_bar?.v || 0,
         freshness: 1.0,
         source_weight: 0.8,
+        quality_score: qualityScore,
         reason: `Crypto: ${momentum >= 0 ? "+" : ""}${momentum.toFixed(2)}% (24h)`,
         bullish: isBullish ? 1 : 0,
         bearish: isBullish ? 0 : 1,

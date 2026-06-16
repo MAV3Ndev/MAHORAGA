@@ -370,6 +370,16 @@ async function gatherReddit(ctx: StrategyContext): Promise<Signal[]> {
       const avgQuality = data.totalQuality / data.mentions;
       const finalSentiment = data.totalQuality > 0 ? data.weightedSentiment / data.mentions : avgRawSentiment * 0.5;
       const freshness = calculateTimeDecay(data.freshestPost);
+      const hasActionableSentiment = Math.abs(avgRawSentiment) >= 0.1 || data.sources.size >= 2;
+      if (!hasActionableSentiment || avgQuality < ctx.config.min_signal_quality_score) {
+        ctx.log("Reddit", "low_quality_filtered", {
+          symbol,
+          mentions: data.mentions,
+          raw_sentiment: avgRawSentiment.toFixed(3),
+          quality: avgQuality.toFixed(3),
+        });
+        continue;
+      }
 
       signals.push({
         symbol,

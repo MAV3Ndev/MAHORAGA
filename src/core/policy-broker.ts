@@ -9,11 +9,12 @@
  * They cannot bypass these safety checks.
  */
 
-import type { OrderPreview } from "../mcp/types";
+import type { OptionsOrderPreview, OrderPreview } from "../mcp/types";
 import type { PolicyConfig } from "../policy/config";
-import { type PolicyContext, PolicyEngine } from "../policy/engine";
+import { type OptionsPolicyContext, type PolicyContext, PolicyEngine } from "../policy/engine";
 import type { AlpacaProviders } from "../providers/alpaca";
-import type { Account, MarketClock, Position } from "../providers/types";
+import { getDTE } from "../providers/alpaca/options";
+import type { Account, MarketClock, Order, Position, Snapshot } from "../providers/types";
 import type { D1Client } from "../storage/d1/client";
 import { createJournalEntry, logOutcome } from "../storage/d1/queries/memory";
 import type { RiskState } from "../storage/d1/queries/risk-state";
@@ -372,25 +373,63 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     const orderSymbol = isCrypto ? normalizeCryptoSymbol(symbol) : symbol;
     const assetClass = isCrypto ? "crypto" : "us_equity";
     const timeInForce = isCrypto ? "gtc" : "day";
+    let estimatedPrice: number | undefined;
+    let avgVolume20d: number | undefined;
+
+    let assetInfo: Awaited<ReturnType<typeof alpaca.trading.getAsset>> | null = null;
 
     // Exchange validation for equities
     if (!isCrypto && deps.allowedExchanges.length > 0) {
       try {
-        const asset = await alpaca.trading.getAsset(symbol);
-        if (!asset) {
+        assetInfo = await alpaca.trading.getAsset(symbol);
+        if (!assetInfo) {
           log("PolicyBroker", "buy_blocked", { symbol, reason: "Asset not found" });
           return false;
         }
-        if (!deps.allowedExchanges.includes(asset.exchange)) {
+        if (!deps.allowedExchanges.includes(assetInfo.exchange)) {
           log("PolicyBroker", "buy_blocked", {
             symbol,
             reason: "Exchange not allowed",
-            exchange: asset.exchange,
+            exchange: assetInfo.exchange,
           });
           return false;
         }
       } catch {
         log("PolicyBroker", "buy_blocked", { symbol, reason: "Asset lookup failed" });
+        return false;
+      }
+    }
+
+    if (isCrypto) {
+      const snapshot = await alpaca.marketData.getCryptoSnapshot(orderSymbol).catch(() => null);
+      estimatedPrice =
+        snapshot?.latest_trade?.price ||
+        snapshot?.latest_quote?.ask_price ||
+        snapshot?.latest_quote?.bid_price ||
+        snapshot?.daily_bar?.c ||
+        undefined;
+    } else {
+      const [snapshot, dailyBars] = await Promise.all([
+        alpaca.marketData.getSnapshot(symbol).catch(() => null),
+        alpaca.marketData.getBars(symbol, "1Day", { limit: 20 }).catch(() => []),
+      ]);
+
+      estimatedPrice =
+        snapshot?.latest_trade?.price ||
+        snapshot?.latest_quote?.ask_price ||
+        snapshot?.latest_quote?.bid_price ||
+        snapshot?.daily_bar?.c ||
+        undefined;
+
+      avgVolume20d = computeAverageVolume20d(
+        dailyBars.length > 0 ? dailyBars.map((bar) => bar.v) : snapshot?.daily_bar?.v ? [snapshot.daily_bar.v] : []
+      );
+
+      if (!estimatedPrice || !Number.isFinite(estimatedPrice) || estimatedPrice <= 0) {
+        log("PolicyBroker", "buy_blocked", {
+          symbol,
+          reason: "Unable to determine current price",
+        });
         return false;
       }
     }
@@ -413,6 +452,58 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         getClock(),
         getRiskStateOrDefault(),
       ]);
+
+      if (!isCrypto && shouldBlockEquityEntryNearClose(clock, deps.equityEntryCutoffMinutesBeforeClose)) {
+        log("PolicyBroker", "buy_blocked", {
+          symbol,
+          reason: "Equity entry blocked near market close",
+          cutoff_minutes: deps.equityEntryCutoffMinutesBeforeClose,
+          next_close: clock.next_close,
+        });
+        return false;
+      }
+
+      const { adjustedNotional, cap } = computeCappedBuyNotional(notional, account, isCrypto);
+
+      if (adjustedNotional <= 0) {
+        log("PolicyBroker", "buy_blocked", {
+          symbol,
+          reason: "Insufficient buying power",
+          requested_notional: Math.round(notional * 100) / 100,
+          buying_power: account.buying_power,
+          daytrading_buying_power: account.daytrading_buying_power,
+          effective_cap: Math.round(cap * 100) / 100,
+          isCrypto,
+        });
+        return false;
+      }
+
+      if (adjustedNotional < notional) {
+        log("PolicyBroker", "buy_notional_adjusted", {
+          symbol,
+          requested_notional: Math.round(notional * 100) / 100,
+          adjusted_notional: adjustedNotional,
+          buying_power: account.buying_power,
+          daytrading_buying_power: account.daytrading_buying_power,
+          effective_cap: Math.round(cap * 100) / 100,
+          isCrypto,
+        });
+      }
+
+      if (adjustedNotional < 100) {
+        log("PolicyBroker", "buy_blocked", {
+          symbol,
+          reason: "Adjusted notional below minimum order size",
+          requested_notional: Math.round(notional * 100) / 100,
+          adjusted_notional: adjustedNotional,
+          min_notional: 100,
+        });
+        return false;
+      }
+
+      order.notional = adjustedNotional;
+      order.estimated_cost = adjustedNotional;
+      order.buying_power_impact = adjustedNotional;
 
       const ctx: PolicyContext = { order, account, positions, clock, riskState };
       const result = engine.evaluate(ctx);
@@ -669,13 +760,55 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       }
 
       // Execute
-      const alpacaOrder = await alpaca.trading.createOrder({
-        symbol: orderSymbol,
-        notional: Math.round(notional * 100) / 100,
-        side: "buy",
-        type: "market",
-        time_in_force: timeInForce,
-      });
+      let alpacaOrder;
+      try {
+        alpacaOrder = await alpaca.trading.createOrder({
+          symbol: orderSymbol,
+          notional: adjustedNotional,
+          side: "buy",
+          type: "market",
+          time_in_force: timeInForce,
+        });
+      } catch (error) {
+        if (!isCrypto && isTradingHaltMarketOrderError(error)) {
+          const snapshot = await alpaca.marketData.getSnapshot(orderSymbol).catch(() => null);
+          const referencePrice =
+            snapshot?.latest_quote?.ask_price ||
+            snapshot?.latest_trade?.price ||
+            snapshot?.daily_bar?.c ||
+            snapshot?.prev_daily_bar?.c ||
+            0;
+          const limitPrice = computeHaltLimitPrice(referencePrice);
+
+          if (limitPrice) {
+            log("PolicyBroker", "buy_retry_limit_on_halt", {
+              symbol: orderSymbol,
+              requested_notional: Math.round(notional * 100) / 100,
+              adjusted_notional: adjustedNotional,
+              reference_price: referencePrice,
+              limit_price: limitPrice,
+            });
+
+            alpacaOrder = await alpaca.trading.createOrder({
+              symbol: orderSymbol,
+              notional: adjustedNotional,
+              side: "buy",
+              type: "limit",
+              time_in_force: "day",
+              limit_price: limitPrice,
+              extended_hours: false,
+            });
+          } else {
+            log("PolicyBroker", "buy_failed_halt_no_price", {
+              symbol: orderSymbol,
+              error: String(error),
+            });
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
 
       const orderAccepted = !["rejected", "canceled", "expired"].includes(alpacaOrder.status);
       const orderFilled = isFilledOrderStatus(alpacaOrder.status);
@@ -702,6 +835,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         quote_mid: quoteMid,
         quote_spread_pct: quoteSpreadPct === null ? null : Number(quoteSpreadPct.toFixed(4)),
         reason,
+        order_type: alpacaOrder.order_type ?? alpacaOrder.type,
       });
 
       if (!orderAccepted) {
@@ -757,6 +891,109 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     }
   }
 
+  async function buyOption(contractSymbol: string, quantity: number, reason: string): Promise<boolean> {
+    if (!contractSymbol || contractSymbol.trim().length === 0) {
+      log("PolicyBroker", "buy_option_blocked", { reason: "Empty contract symbol" });
+      return false;
+    }
+
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      log("PolicyBroker", "buy_option_blocked", { contract: contractSymbol, reason: "Invalid quantity", quantity });
+      return false;
+    }
+
+    const parsedContract = parseOptionsContractSymbol(contractSymbol);
+    if (!parsedContract) {
+      log("PolicyBroker", "buy_option_blocked", {
+        contract: contractSymbol,
+        reason: "Invalid options contract symbol",
+      });
+      return false;
+    }
+
+    try {
+      const [account, positions, clock, riskState, snapshot] = await Promise.all([
+        getAccount(),
+        getPositions(),
+        getClock(),
+        getRiskStateOrDefault(),
+        alpaca.options.getSnapshot(contractSymbol),
+      ]);
+
+      const limitPrice = getOptionsLimitPrice(snapshot);
+      if (!limitPrice) {
+        log("PolicyBroker", "buy_option_blocked", {
+          contract: contractSymbol,
+          reason: "No valid options quote available",
+        });
+        return false;
+      }
+
+      const order: OptionsOrderPreview = {
+        contract_symbol: contractSymbol.toUpperCase(),
+        underlying: parsedContract.underlying,
+        side: "buy",
+        qty: quantity,
+        order_type: "limit",
+        limit_price: limitPrice,
+        time_in_force: "day",
+        expiration: parsedContract.expiration,
+        strike: parsedContract.strike,
+        option_type: parsedContract.optionType,
+        dte: getDTE(parsedContract.expiration),
+        delta: snapshot.greeks?.delta,
+        estimated_premium: limitPrice,
+        estimated_cost: quantity * limitPrice * 100,
+        buying_power_impact: quantity * limitPrice * 100,
+      };
+
+      const ctx: OptionsPolicyContext = { order, account, positions, clock, riskState };
+      const result = engine.evaluateOptionsOrder(ctx);
+
+      if (!result.allowed) {
+        log("PolicyBroker", "buy_option_rejected", {
+          contract: contractSymbol,
+          quantity,
+          violations: result.violations.map((v) => v.message),
+        });
+        return false;
+      }
+
+      if (result.warnings.length > 0) {
+        log("PolicyBroker", "buy_option_warnings", {
+          contract: contractSymbol,
+          warnings: result.warnings.map((w) => w.message),
+        });
+      }
+
+      const alpacaOrder = await alpaca.trading.createOrder({
+        symbol: contractSymbol.toUpperCase(),
+        qty: quantity,
+        side: "buy",
+        type: "limit",
+        limit_price: limitPrice,
+        time_in_force: "day",
+      });
+
+      log("PolicyBroker", "buy_option_executed", {
+        contract: contractSymbol.toUpperCase(),
+        underlying: parsedContract.underlying,
+        quantity,
+        premium: limitPrice,
+        estimated_cost: order.estimated_cost,
+        status: alpacaOrder.status,
+        reason,
+      });
+
+      cachedAccount = null;
+      cachedPositions = null;
+      return true;
+    } catch (error) {
+      log("PolicyBroker", "buy_option_failed", { contract: contractSymbol, error: String(error) });
+      return false;
+    }
+  }
+
   async function sell(symbol: string, reason: string): Promise<boolean> {
     if (!symbol || symbol.trim().length === 0) {
       log("PolicyBroker", "sell_blocked", { reason: "Empty symbol" });
@@ -773,6 +1010,8 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     // or cooldown would trap users in losing positions.
     // We only check kill switch to log a warning (but still execute).
     try {
+      const [clock, position] = await Promise.all([getClock(), alpaca.trading.getPosition(symbol).catch(() => null)]);
+
       if (db) {
         const riskState = await getRiskStateOrDefault();
         if (riskState.kill_switch_active) {
@@ -925,11 +1164,78 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     }
   }
 
+  async function syncProtectiveStops(positions: Position[]): Promise<void> {
+    const longEquityPositions = positions.filter(
+      (position) => position.asset_class === "us_equity" && position.side === "long" && position.qty > 0
+    );
+
+    const openOrders = await alpaca.trading.listOrders({ status: "open", limit: 200 }).catch(() => []);
+    const activeSymbols = new Set(longEquityPositions.map((position) => position.symbol));
+
+    const orphanedStops = openOrders.filter(
+      (order) =>
+        order.client_order_id.startsWith(MANAGED_STOP_ORDER_PREFIX) &&
+        (order.order_type === "stop" || order.type === "stop") &&
+        !activeSymbols.has(order.symbol)
+    );
+    await Promise.all(orphanedStops.map((order) => alpaca.trading.cancelOrder(order.id).catch(() => undefined)));
+
+    for (const position of longEquityPositions) {
+      const desiredStopPrice = computeProtectiveStopPrice(
+        position.avg_entry_price || position.current_price,
+        deps.defaultStopLossPct
+      );
+      if (!desiredStopPrice) {
+        continue;
+      }
+
+      const existingStop = openOrders.find((order) => isManagedProtectiveStop(order, position.symbol));
+      if (
+        existingStop &&
+        approximatelyEqual(parseOrderPrice(existingStop), desiredStopPrice, ORDER_PRICE_EPSILON) &&
+        approximatelyEqual(parseOrderQty(existingStop), position.qty, ORDER_QTY_EPSILON)
+      ) {
+        continue;
+      }
+
+      if (existingStop) {
+        await alpaca.trading.cancelOrder(existingStop.id).catch(() => undefined);
+      }
+
+      try {
+        await alpaca.trading.createOrder({
+          symbol: position.symbol,
+          qty: position.qty,
+          side: "sell",
+          type: "stop",
+          time_in_force: "gtc",
+          stop_price: desiredStopPrice,
+          client_order_id: buildManagedOrderId(MANAGED_STOP_ORDER_PREFIX, position.symbol),
+        });
+
+        log("PolicyBroker", "protective_stop_synced", {
+          symbol: position.symbol,
+          qty: position.qty,
+          stop_price: desiredStopPrice,
+        });
+      } catch (error) {
+        log("PolicyBroker", "protective_stop_failed", {
+          symbol: position.symbol,
+          qty: position.qty,
+          stop_price: desiredStopPrice,
+          error: String(error),
+        });
+      }
+    }
+  }
+
   return {
     getAccount,
     getPositions,
     getClock,
     buy,
+    buyOption,
     sell,
+    syncProtectiveStops,
   };
 }

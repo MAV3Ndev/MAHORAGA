@@ -2,7 +2,7 @@
  * Exit rules — decide which positions to sell.
  *
  * Core ALWAYS enforces stop-loss/take-profit on top of strategy exits.
- * This function handles: TP, SL, staleness, and options exits.
+ * This function handles: TP, SL, staleness, trailing stop, and options exits.
  */
 
 import type { Account, Position, PositionEntry, Signal } from "../../../core/types";
@@ -109,20 +109,97 @@ export function selectExits(ctx: StrategyContext, positions: Position[], _accoun
       entry.trough_price = Math.min(entry.trough_price ?? entry.entry_price ?? currentPrice, currentPrice);
     }
 
-    // Take profit
-    if (plPct >= ctx.config.take_profit_pct) {
+    // Get or initialize trailing stop state
+    const trailingStateKey = `trailingStop_${pos.symbol}`;
+    let trailingState = ctx.state.get<TrailingStopState>(trailingStateKey);
+
+    // Check advanced exits (trailing stop + dynamic TP)
+    const atr = getATR(pos.symbol, ctx);
+    const advancedResult = checkAdvancedExits(
+      pos,
+      entry,
+      atr,
+      {
+        trailing_stop_enabled: ctx.config.trailing_stop_enabled,
+        trailing_stop_pct: ctx.config.trailing_stop_pct,
+        trailing_stop_activation_pct: ctx.config.trailing_stop_activation_pct,
+        dynamic_tp_enabled: ctx.config.dynamic_tp_enabled,
+        tp_atr_multiplier: ctx.config.tp_atr_multiplier,
+        tp_min_pct: ctx.config.tp_min_pct,
+        tp_max_pct: ctx.config.tp_max_pct,
+        dynamic_tp_fallback_pct: ctx.config.dynamic_tp_fallback_pct,
+        stop_loss_pct: effectiveStopLossPct,
+      },
+      trailingState
+    );
+
+    // Update trailing state if active
+    if (ctx.config.trailing_stop_enabled && advancedResult.exitType !== "trailing_stop") {
+      const newState = getTrailingStopState(
+        pos,
+        entry,
+        {
+          trailing_stop_enabled: ctx.config.trailing_stop_enabled,
+          trailing_stop_pct: ctx.config.trailing_stop_pct,
+          trailing_stop_activation_pct: ctx.config.trailing_stop_activation_pct,
+        },
+        trailingState
+      );
+      if (newState.active || trailingState?.active) {
+        ctx.state.set(trailingStateKey, newState);
+        trailingState = newState;
+      }
+    }
+
+    // If advanced exit triggered, add to exits
+    if (advancedResult.shouldExit) {
       exits.push({
         symbol: pos.symbol,
-        reason: `Take profit at +${plPct.toFixed(1)}%`,
+        reason: advancedResult.reason,
+      });
+      // Clear trailing state on exit
+      ctx.state.set(trailingStateKey, { active: false, highPrice: 0, stopPrice: 0 });
+      continue;
+    }
+
+    // Store advanced exit info for dashboard visibility
+    if (ctx.config.trailing_stop_enabled || ctx.config.dynamic_tp_enabled) {
+      const advancedState = ctx.state.get<Record<string, unknown>>("advancedExitState") ?? {};
+      advancedState[pos.symbol] = {
+        trailingActive: trailingState?.active ?? false,
+        highPrice: trailingState?.highPrice ?? pos.current_price,
+        dynamicTpPct: advancedResult.dynamicTpPct,
+        currentStopPct: advancedResult.currentStopPct,
+      };
+      ctx.state.set("advancedExitState", advancedState);
+    }
+
+    const plPct = (pos.unrealized_pl / (pos.market_value - pos.unrealized_pl)) * 100;
+
+    // Take profit (only if dynamic TP not enabled, otherwise handled by advanced exits)
+    if (!ctx.config.dynamic_tp_enabled && plPct >= effectiveTakeProfitPct) {
+      exits.push({
+        symbol: pos.symbol,
+        reason: `Take profit at +${plPct.toFixed(1)}% (target ${effectiveTakeProfitPct.toFixed(1)}%)`,
       });
       continue;
     }
 
-    // Stop loss
-    if (plPct <= -ctx.config.stop_loss_pct) {
+    // Stop loss (only if not using advanced exits, otherwise handled there)
+    if (!ctx.config.trailing_stop_enabled && plPct <= -effectiveStopLossPct) {
       exits.push({
         symbol: pos.symbol,
-        reason: `Stop loss at ${plPct.toFixed(1)}%`,
+        reason: `Stop loss at ${plPct.toFixed(1)}% (limit ${effectiveStopLossPct.toFixed(1)}%)`,
+      });
+      continue;
+    }
+
+    const positionResearch = getPositionResearch(pos.symbol, ctx);
+    if (positionResearch?.recommendation === "SELL") {
+      const reasoning = positionResearch.reasoning?.trim();
+      exits.push({
+        symbol: pos.symbol,
+        reason: reasoning ? `Position research SELL: ${reasoning}` : "Position research SELL recommendation",
       });
       continue;
     }

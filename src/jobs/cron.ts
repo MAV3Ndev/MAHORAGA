@@ -7,6 +7,31 @@ import { cleanupExpiredApprovals } from "../storage/d1/queries/approvals";
 import { insertRawEvent, rawEventExists } from "../storage/d1/queries/events";
 import { getRiskState, resetDailyLoss } from "../storage/d1/queries/risk-state";
 
+export const CRON_SCHEDULES = {
+  eventIngestion: "*/5 13-20 * * 1-5",
+  marketOpenPrep: "0 14 * * 1-5",
+  marketCloseCleanup: "30 21 * * 1-5",
+  midnightReset: "0 5 * * *",
+  hourlyCacheRefresh: "0 * * * *",
+} as const;
+
+type CronJob = {
+  name: string;
+  run: (env: Env) => Promise<void>;
+};
+
+const CRON_JOBS: Record<string, CronJob> = {
+  [CRON_SCHEDULES.eventIngestion]: { name: "event_ingestion", run: runEventIngestion },
+  [CRON_SCHEDULES.marketOpenPrep]: { name: "market_open_prep", run: runMarketOpenPrep },
+  [CRON_SCHEDULES.marketCloseCleanup]: { name: "market_close_cleanup", run: runMarketCloseCleanup },
+  [CRON_SCHEDULES.midnightReset]: { name: "midnight_reset", run: runMidnightReset },
+  [CRON_SCHEDULES.hourlyCacheRefresh]: { name: "hourly_cache_refresh", run: runHourlyCacheRefresh },
+};
+
+export function getCronJobName(cronId: string): string | null {
+  return CRON_JOBS[cronId]?.name ?? null;
+}
+
 export async function handleCronEvent(cronId: string, env: Env): Promise<void> {
   switch (cronId) {
     case "*/5 13-21 * * 1-5":
@@ -34,6 +59,8 @@ export async function handleCronEvent(cronId: string, env: Env): Promise<void> {
     default:
       console.log(`Unknown cron: ${cronId}`);
   }
+
+  await job.run(env);
 }
 
 async function runHarnessHeartbeat(env: Env): Promise<void> {
