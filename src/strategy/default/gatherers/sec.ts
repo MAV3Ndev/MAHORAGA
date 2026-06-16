@@ -163,18 +163,31 @@ function getSecFormSentiment(form: string): { sentiment: number; sourceWeight: n
     return { sentiment: 0.18, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: "sec_s1" };
   }
   if (form === "10-Q" || form === "10-K") {
-    return { sentiment: 0.14, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: `sec_${form.toLowerCase().replace("-", "")}` };
+    return {
+      sentiment: 0.14,
+      sourceWeight: SOURCE_CONFIG.weights.sec_major_filing,
+      detail: `sec_${form.toLowerCase().replace("-", "")}`,
+    };
   }
-  return { sentiment: 0.12, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: `sec_${form.toLowerCase().replace("-", "")}` };
+  return {
+    sentiment: 0.12,
+    sourceWeight: SOURCE_CONFIG.weights.sec_major_filing,
+    detail: `sec_${form.toLowerCase().replace("-", "")}`,
+  };
 }
 
-async function fetchSecFeed(form: string, ctx: StrategyContext): Promise<Array<{
-  id: string;
-  title: string;
-  updated: string;
-  form: string;
-  company: string;
-}>> {
+async function fetchSecFeed(
+  form: string,
+  ctx: StrategyContext
+): Promise<
+  Array<{
+    id: string;
+    title: string;
+    updated: string;
+    form: string;
+    company: string;
+  }>
+> {
   const response = await fetch(
     `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=${encodeURIComponent(form)}&company=&dateb=&owner=include&count=40&output=atom`,
     {

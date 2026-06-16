@@ -60,9 +60,10 @@ export async function logOutcome(db: D1Client, params: LogOutcomeParams): Promis
   let signalsJson: string | null | undefined;
 
   if (params.signal_updates && Object.keys(params.signal_updates).length > 0) {
-    const current = await db.executeOne<{ signals_json: string | null }>(`SELECT signals_json FROM trade_journal WHERE id = ?`, [
-      params.journal_id,
-    ]);
+    const current = await db.executeOne<{ signals_json: string | null }>(
+      `SELECT signals_json FROM trade_journal WHERE id = ?`,
+      [params.journal_id]
+    );
     let existingSignals: Record<string, unknown> = {};
     if (current?.signals_json) {
       try {

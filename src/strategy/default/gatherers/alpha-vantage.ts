@@ -132,8 +132,7 @@ async function gatherAlphaVantage(ctx: StrategyContext): Promise<Signal[]> {
         if (ctx.config.ticker_blacklist?.includes(ticker)) continue;
 
         const relevance = Number(tickerSentiment.relevance_score || 0);
-        const rawSentiment =
-          Number(tickerSentiment.ticker_sentiment_score ?? item.overall_sentiment_score ?? 0) || 0;
+        const rawSentiment = Number(tickerSentiment.ticker_sentiment_score ?? item.overall_sentiment_score ?? 0) || 0;
         if (relevance < 0.08 || Math.abs(rawSentiment) < 0.05) continue;
 
         const cached = tickerCache.getCachedValidation(ticker);
@@ -145,14 +144,13 @@ async function gatherAlphaVantage(ctx: StrategyContext): Promise<Signal[]> {
 
         const freshness = calculateTimeDecay(Math.floor(published / 1000));
         const weight = relevance * freshness;
-        const current =
-          byTicker.get(ticker) || {
-            sentimentNumerator: 0,
-            relevanceTotal: 0,
-            articles: 0,
-            titles: [],
-            latestPublished: published,
-          };
+        const current = byTicker.get(ticker) || {
+          sentimentNumerator: 0,
+          relevanceTotal: 0,
+          articles: 0,
+          titles: [],
+          latestPublished: published,
+        };
         current.sentimentNumerator += rawSentiment * weight;
         current.relevanceTotal += weight;
         current.articles += 1;
@@ -177,10 +175,11 @@ async function gatherAlphaVantage(ctx: StrategyContext): Promise<Signal[]> {
         volume: aggregate.articles,
         freshness,
         source_weight: sourceWeight,
-        reason: `Alpha Vantage news: ${aggregate.articles} article(s), sentiment ${(rawSentiment * 100).toFixed(0)}%. ${aggregate.titles[0] || ""}`.slice(
-          0,
-          240
-        ),
+        reason:
+          `Alpha Vantage news: ${aggregate.articles} article(s), sentiment ${(rawSentiment * 100).toFixed(0)}%. ${aggregate.titles[0] || ""}`.slice(
+            0,
+            240
+          ),
         timestamp: Date.now(),
       });
     }

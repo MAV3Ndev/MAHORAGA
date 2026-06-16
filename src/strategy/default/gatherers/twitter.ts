@@ -110,15 +110,22 @@ function getTwitterCookieCredentials(ctx: StrategyContext): TwitterCookieCredent
   return [];
 }
 
-function rotateTwitterCredentials(ctx: StrategyContext, credentials: TwitterCookieCredential[]): TwitterCookieCredential[] {
+function rotateTwitterCredentials(
+  ctx: StrategyContext,
+  credentials: TwitterCookieCredential[]
+): TwitterCookieCredential[] {
   if (credentials.length <= 1) return credentials;
   const start = (ctx.state.get<number>(TWITTER_COOKIE_ROTATION_KEY) ?? 0) % credentials.length;
   return credentials.slice(start).concat(credentials.slice(0, start));
 }
 
-function advanceTwitterCredential(ctx: StrategyContext, credentials: TwitterCookieCredential[], credential: TwitterCookieCredential): void {
+function advanceTwitterCredential(
+  ctx: StrategyContext,
+  credentials: TwitterCookieCredential[],
+  credential: TwitterCookieCredential
+): void {
   if (credentials.length <= 1) return;
-  const currentIndex = credentials.findIndex((candidate) => candidate === credential);
+  const currentIndex = credentials.indexOf(credential);
   ctx.state.set(TWITTER_COOKIE_ROTATION_KEY, currentIndex >= 0 ? (currentIndex + 1) % credentials.length : 0);
 }
 
@@ -231,11 +238,7 @@ async function twitterSearchWithCookies(
   }
 }
 
-async function twitterSearchRecent(
-  ctx: StrategyContext,
-  query: string,
-  maxResults = 10
-): Promise<NormalizedTweet[]> {
+async function twitterSearchRecent(ctx: StrategyContext, query: string, maxResults = 10): Promise<NormalizedTweet[]> {
   if (!isTwitterEnabled(ctx)) return [];
 
   const cacheKey = hashTwitterSearchKey(query, maxResults);

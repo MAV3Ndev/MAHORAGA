@@ -149,14 +149,13 @@ async function gatherGdelt(ctx: StrategyContext): Promise<Signal[]> {
         }
 
         const weight = freshness * Math.min(2, 0.75 + catalystHits * 0.25);
-        const current =
-          byTicker.get(ticker) || {
-            weightedSentiment: 0,
-            weight: 0,
-            articles: 0,
-            latestSeen: seenAt,
-            title,
-          };
+        const current = byTicker.get(ticker) || {
+          weightedSentiment: 0,
+          weight: 0,
+          articles: 0,
+          latestSeen: seenAt,
+          title,
+        };
         current.weightedSentiment += rawSentiment * weight;
         current.weight += weight;
         current.articles += 1;

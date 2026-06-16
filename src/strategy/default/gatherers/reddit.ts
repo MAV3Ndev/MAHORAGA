@@ -73,15 +73,22 @@ function getRedditCookieCredentials(ctx: StrategyContext): RedditCookieCredentia
   return [];
 }
 
-function rotateRedditCredentials(ctx: StrategyContext, credentials: RedditCookieCredential[]): RedditCookieCredential[] {
+function rotateRedditCredentials(
+  ctx: StrategyContext,
+  credentials: RedditCookieCredential[]
+): RedditCookieCredential[] {
   if (credentials.length <= 1) return credentials;
   const start = (ctx.state.get<number>(REDDIT_COOKIE_ROTATION_KEY) ?? 0) % credentials.length;
   return credentials.slice(start).concat(credentials.slice(0, start));
 }
 
-function advanceRedditCredential(ctx: StrategyContext, credentials: RedditCookieCredential[], credential: RedditCookieCredential): void {
+function advanceRedditCredential(
+  ctx: StrategyContext,
+  credentials: RedditCookieCredential[],
+  credential: RedditCookieCredential
+): void {
   if (credentials.length <= 1) return;
-  const currentIndex = credentials.findIndex((candidate) => candidate === credential);
+  const currentIndex = credentials.indexOf(credential);
   ctx.state.set(REDDIT_COOKIE_ROTATION_KEY, currentIndex >= 0 ? (currentIndex + 1) % credentials.length : 0);
 }
 
@@ -99,7 +106,9 @@ async function fetchRedditListingWithCookies(
   cookies: string,
   userAgent: string,
   limit: number
-): Promise<{ ok: true; posts: RedditPost[]; url: string } | { ok: false; status?: number; error: string; url?: string }> {
+): Promise<
+  { ok: true; posts: RedditPost[]; url: string } | { ok: false; status?: number; error: string; url?: string }
+> {
   const endpoints = [
     `https://www.reddit.com/r/${subreddit}/hot.json?limit=${limit}&raw_json=1`,
     `https://old.reddit.com/r/${subreddit}/hot.json?limit=${limit}&raw_json=1`,
@@ -146,7 +155,12 @@ export async function testRedditCookieConnection(
     return { ok: false, cookie_count: 0, post_count: 0, error: "Reddit cookies are not configured" };
   }
 
-  const result = await fetchRedditListingWithCookies(subreddit, cookies, userAgent || DEFAULT_REDDIT_BROWSER_USER_AGENT, 1);
+  const result = await fetchRedditListingWithCookies(
+    subreddit,
+    cookies,
+    userAgent || DEFAULT_REDDIT_BROWSER_USER_AGENT,
+    1
+  );
   if (!result.ok) {
     return {
       ok: false,

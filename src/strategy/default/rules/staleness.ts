@@ -37,7 +37,7 @@ export function analyzeStaleness(
   let stalenessScore = 0;
   let timeScore = 0;
   let priceScore = 0;
-  let socialScore = 0;
+  const socialScore = 0;
   const staleMidHoldDays = Number.isFinite(config.stale_mid_hold_days)
     ? config.stale_mid_hold_days
     : config.stale_max_hold_days;
