@@ -60,6 +60,8 @@ const ACTIVE_STATUS_POLL_MS = 5000;
 const HIDDEN_STATUS_POLL_MS = 30000;
 const ACTIVE_CLOCK_TICK_MS = 1000;
 const HIDDEN_CLOCK_TICK_MS = 60000;
+const UPDATE_CHECK_INITIAL_DELAY_MS = 15000;
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const marketTimeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: MARKET_TIME_ZONE,
   hour: "2-digit",
@@ -895,6 +897,20 @@ function buildSparklineFromTimeline(
   });
 }
 
+function isActionableUpdate(status: DesktopUpdateEvent | null): status is DesktopUpdateEvent {
+  return (
+    status?.state === "available" ||
+    status?.state === "downloaded" ||
+    status?.state === "downloading" ||
+    status?.state === "installing"
+  );
+}
+
+function getUpdatePromptKey(status: DesktopUpdateEvent | null): string | null {
+  if (!isActionableUpdate(status)) return null;
+  return status.update?.version || status.latestVersion || status.update?.releaseName || "unknown";
+}
+
 export default function App() {
   const nativeShell = isNativeShell();
   const desktopPanel = isDesktopPanel();
@@ -911,6 +927,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<DesktopUpdateEvent | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [selectedResearchSymbol, setSelectedResearchSymbol] = useState<string | null>(null);
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null);
@@ -931,6 +948,8 @@ export default function App() {
   const seenActivityFeedKeysRef = useRef<Set<string>>(new Set());
   const [newActivityFeedKeys, setNewActivityFeedKeys] = useState<Set<string>>(new Set());
   const lastResumeRefreshAtRef = useRef(0);
+  const updateCheckInFlightRef = useRef(false);
+  const lastPromptedUpdateKeyRef = useRef<string | null>(null);
   const statusRequestInFlightRef = useRef(false);
   const portfolioHistoryInFlightRef = useRef(false);
   const apyHistoryInFlightRef = useRef(false);
@@ -991,6 +1010,53 @@ export default function App() {
       unsubscribe?.();
     };
   }, [appUpdateShell]);
+
+  useEffect(() => {
+    if (!appUpdateShell) return;
+
+    let cancelled = false;
+    const runBackgroundUpdateCheck = async () => {
+      if (cancelled || updateCheckInFlightRef.current) return;
+      updateCheckInFlightRef.current = true;
+      try {
+        const result = await checkDesktopUpdate(true);
+        if (!cancelled && result) {
+          setUpdateStatus(result);
+        }
+      } catch {
+        // Background checks should not interrupt the dashboard.
+      } finally {
+        updateCheckInFlightRef.current = false;
+      }
+    };
+
+    const startupTimer = window.setTimeout(() => {
+      void runBackgroundUpdateCheck();
+    }, UPDATE_CHECK_INITIAL_DELAY_MS);
+    const interval = window.setInterval(() => {
+      void runBackgroundUpdateCheck();
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(startupTimer);
+      window.clearInterval(interval);
+    };
+  }, [appUpdateShell]);
+
+  useEffect(() => {
+    const promptKey = getUpdatePromptKey(updateStatus);
+    if (!appUpdateShell || !promptKey) return;
+    if (lastPromptedUpdateKeyRef.current === promptKey) return;
+    lastPromptedUpdateKeyRef.current = promptKey;
+    setShowUpdateDialog(true);
+  }, [
+    appUpdateShell,
+    updateStatus?.latestVersion,
+    updateStatus?.state,
+    updateStatus?.update?.releaseName,
+    updateStatus?.update?.version,
+  ]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1223,7 +1289,13 @@ export default function App() {
     setUpdateBusy(true);
     try {
       const result = await checkDesktopUpdate(false);
-      if (result) setUpdateStatus(result);
+      if (result) {
+        setUpdateStatus(result);
+        if (isActionableUpdate(result)) {
+          lastPromptedUpdateKeyRef.current = getUpdatePromptKey(result);
+          setShowUpdateDialog(true);
+        }
+      }
     } finally {
       setUpdateBusy(false);
     }
@@ -1237,6 +1309,12 @@ export default function App() {
     } finally {
       setUpdateBusy(false);
     }
+  };
+
+  const handleShowUpdateDetails = () => {
+    if (!isActionableUpdate(updateStatus)) return;
+    lastPromptedUpdateKeyRef.current = getUpdatePromptKey(updateStatus);
+    setShowUpdateDialog(true);
   };
 
   // Derived state (must stay above early returns per React hooks rules)
@@ -1255,11 +1333,7 @@ export default function App() {
   const realizedPl = totalPl - unrealizedPl;
   const totalPlPct = account ? (totalPl / startingEquity) * 100 : 0;
   const syncTimeLabel = lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString("en-US", { hour12: false }) : "PENDING";
-  const updateAvailable =
-    updateStatus?.state === "available" ||
-    updateStatus?.state === "downloaded" ||
-    updateStatus?.state === "downloading" ||
-    updateStatus?.state === "installing";
+  const updateAvailable = isActionableUpdate(updateStatus);
   const updateProgressLabel =
     updateStatus?.state === "downloading" && typeof updateStatus.progress === "number"
       ? `${updateStatus.progress}%`
@@ -1268,7 +1342,7 @@ export default function App() {
     ? updateStatus.state === "available"
       ? `v${updateStatus.update?.version || updateStatus.latestVersion || "NEW"}`
       : updateStatus.state === "not-available"
-        ? "CURRENT"
+        ? `v${updateStatus.currentVersion || appVersion || updateStatus.latestVersion || "UNKNOWN"}`
         : updateStatus.state === "downloading"
           ? updateProgressLabel || "DOWNLOADING"
           : updateStatus.state === "downloaded"
@@ -1281,6 +1355,79 @@ export default function App() {
     : appVersion
       ? `v${appVersion}`
       : "UNKNOWN";
+  const updateControls = appUpdateShell ? (
+    <UpdateControls
+      appVersion={appVersion}
+      updateStatus={updateStatus}
+      updateBusy={updateBusy}
+      onCheckUpdate={() => {
+        void handleCheckUpdate();
+      }}
+      onShowUpdateDetails={handleShowUpdateDetails}
+    />
+  ) : null;
+  const updateDialog =
+    showUpdateDialog && updateStatus ? (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+        <DetailDialog title="APP UPDATE" onClose={() => setShowUpdateDialog(false)}>
+          <div className="grid gap-4">
+            <div className="border border-hud-line/60 bg-hud-bg/45 p-4">
+              <div className="hud-label mb-2 text-hud-primary">Available Version</div>
+              <div className="hud-value-md text-hud-text-bright">
+                v{updateStatus.update?.version || updateStatus.latestVersion || "NEW"}
+              </div>
+              {updateStatus.update?.releaseName && (
+                <div className="mt-2 text-sm text-hud-text">{updateStatus.update.releaseName}</div>
+              )}
+              {updateProgressLabel && <div className="mt-2 hud-value-sm text-hud-primary">{updateProgressLabel}</div>}
+              {updateStatus.message && updateStatus.state === "error" && (
+                <div className="mt-2 text-sm text-hud-warning">{updateStatus.message}</div>
+              )}
+            </div>
+
+            <div className="border border-hud-line/60 bg-hud-bg/35 p-4">
+              <div className="hud-label mb-3 text-hud-primary">Changelog</div>
+              <pre className="m-0 max-h-[42vh] overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-hud-text">
+                {updateStatus.update?.notes?.trim() || "No changelog was included with this release."}
+              </pre>
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                className="hud-button hud-button-muted"
+                onClick={() => setShowUpdateDialog(false)}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                className="hud-button"
+                onClick={() => {
+                  void handleInstallUpdate();
+                }}
+                disabled={
+                  updateBusy ||
+                  updateStatus.state === "checking" ||
+                  updateStatus.state === "downloading" ||
+                  updateStatus.state === "installing" ||
+                  updateStatus.state === "error" ||
+                  updateStatus.state === "not-available"
+                }
+              >
+                {updateStatus.state === "downloaded"
+                  ? "Apply Update"
+                  : updateStatus.state === "downloading"
+                    ? "Downloading..."
+                    : updateStatus.state === "installing"
+                      ? "Installing..."
+                      : "Install Update"}
+              </button>
+            </div>
+          </div>
+        </DetailDialog>
+      </motion.div>
+    ) : null;
   const totalPlStateLabel = totalPl >= 0 ? "Ahead Of Baseline" : "Below Baseline";
   const headerStatusItems: Array<{
     label: string;
@@ -1768,73 +1915,84 @@ export default function App() {
 
   if (!connectionLoaded) {
     return (
-      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-        <Panel title="BOOTING PANEL" className="max-w-md w-full">
-          <div className="text-center py-10 space-y-3">
-            <div className="text-hud-primary text-2xl">SYNC</div>
-            <p className="text-hud-text-dim text-sm">Loading remote link profile...</p>
-          </div>
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.32, delay: 0.36 }}
-            className="hud-startup-meta"
-          >
-            <span>BOOTSTRAP</span>
-            <span>SYNC</span>
-            <span>READY</span>
-          </motion.div>
-        </Panel>
-      </div>
+      <>
+        <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
+          <Panel title="BOOTING PANEL" className="max-w-md w-full">
+            <div className="text-center py-10 space-y-3">
+              <div className="text-hud-primary text-2xl">SYNC</div>
+              <p className="text-hud-text-dim text-sm">Loading remote link profile...</p>
+            </div>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.32, delay: 0.36 }}
+              className="hud-startup-meta"
+            >
+              <span>BOOTSTRAP</span>
+              <span>SYNC</span>
+              <span>READY</span>
+            </motion.div>
+          </Panel>
+        </div>
+        <AnimatePresence>{updateDialog}</AnimatePresence>
+      </>
     );
   }
 
   if (showSetup) {
-    return <SetupWizard initialConnection={connection} onComplete={handleSaveConnection} />;
+    return (
+      <>
+        <SetupWizard initialConnection={connection} onComplete={handleSaveConnection} updateControls={updateControls} />
+        <AnimatePresence>{updateDialog}</AnimatePresence>
+      </>
+    );
   }
 
   if (error && !status) {
     return (
-      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-        <Panel title="CONNECTION ERROR" className="max-w-xl w-full">
-          <div className="py-8 space-y-5">
-            <div className="text-center">
-              <div className="text-hud-error text-2xl mb-4">LINK LOST</div>
-              <p className="text-hud-text-dim text-sm">{error}</p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
-                <div className="hud-label text-hud-primary">Target</div>
-                <div className="hud-value-sm break-all">{connection.apiUrl || "UNSET"}</div>
+      <>
+        <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
+          <Panel title="CONNECTION ERROR" className="max-w-xl w-full">
+            <div className="py-8 space-y-5">
+              <div className="text-center">
+                <div className="text-hud-error text-2xl mb-4">LINK LOST</div>
+                <p className="text-hud-text-dim text-sm">{error}</p>
               </div>
-              <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
-                <div className="hud-label text-hud-primary">Bearer</div>
-                <div className="hud-value-sm">{maskBearerToken(connection.bearerToken)}</div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
+                  <div className="hud-label text-hud-primary">Target</div>
+                  <div className="hud-value-sm break-all">{connection.apiUrl || "UNSET"}</div>
+                </div>
+                <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
+                  <div className="hud-label text-hud-primary">Bearer</div>
+                  <div className="hud-value-sm">{maskBearerToken(connection.bearerToken)}</div>
+                </div>
               </div>
-            </div>
 
-            <div className="flex flex-wrap gap-3 justify-center">
-              <button type="button" className="hud-button" onClick={() => setShowSetup(true)}>
-                Edit Connection
-              </button>
-              <button
-                type="button"
-                className="hud-button"
-                onClick={() => {
-                  void handleSaveConnection(connection).catch((retryError) => {
-                    setError(retryError instanceof Error ? retryError.message : "Retry failed");
-                  });
-                }}
-              >
-                Retry Link
-              </button>
-            </div>
+              <div className="flex flex-wrap gap-3 justify-center">
+                <button type="button" className="hud-button" onClick={() => setShowSetup(true)}>
+                  Edit Connection
+                </button>
+                <button
+                  type="button"
+                  className="hud-button"
+                  onClick={() => {
+                    void handleSaveConnection(connection).catch((retryError) => {
+                      setError(retryError instanceof Error ? retryError.message : "Retry failed");
+                    });
+                  }}
+                >
+                  Retry Link
+                </button>
+              </div>
 
-            <UpdateControls />
-          </div>
-        </Panel>
-      </div>
+              {updateControls}
+            </div>
+          </Panel>
+        </div>
+        <AnimatePresence>{updateDialog}</AnimatePresence>
+      </>
     );
   }
 
@@ -1979,29 +2137,6 @@ export default function App() {
             </div>
 
             <div className="hud-remote-bar__actions">
-              {updateAvailable ? (
-                <button
-                  type="button"
-                  className={remoteLinkActionClass}
-                  onClick={() => {
-                    void handleInstallUpdate();
-                  }}
-                  disabled={updateBusy || updateStatus?.state === "installing"}
-                >
-                  {updateBusy || updateStatus?.state === "downloading" ? "DOWNLOADING..." : "Install Update"}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className={remoteLinkActionClass}
-                  onClick={() => {
-                    void handleCheckUpdate();
-                  }}
-                  disabled={updateBusy || updateStatus?.state === "checking"}
-                >
-                  {updateBusy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
-                </button>
-              )}
               <button
                 type="button"
                 className={remoteLinkActionClass}
@@ -2128,31 +2263,6 @@ export default function App() {
 
                           {nativeShell && (
                             <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
-                              {updateAvailable ? (
-                                <button
-                                  type="button"
-                                  className={remoteLinkActionClass}
-                                  onClick={() => {
-                                    void handleInstallUpdate();
-                                  }}
-                                  disabled={updateBusy || updateStatus?.state === "installing"}
-                                >
-                                  {updateBusy || updateStatus?.state === "downloading"
-                                    ? "DOWNLOADING..."
-                                    : "Install Update"}
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className={remoteLinkActionClass}
-                                  onClick={() => {
-                                    void handleCheckUpdate();
-                                  }}
-                                  disabled={updateBusy || updateStatus?.state === "checking"}
-                                >
-                                  {updateBusy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
-                                </button>
-                              )}
                               <button
                                 type="button"
                                 className={remoteLinkActionClass}
@@ -3410,13 +3520,23 @@ export default function App() {
           </motion.div>
         )}
 
+        {updateDialog}
+
         {showSettings && config && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <SettingsModal
               config={config}
               connection={connection}
+              appVersion={appVersion}
+              updateStatus={updateStatus}
+              updateBusy={updateBusy}
+              showAppUpdateControls={appUpdateShell}
               onSave={handleSaveConfig}
               onSaveConnection={handleSaveConnection}
+              onCheckUpdate={() => {
+                void handleCheckUpdate();
+              }}
+              onShowUpdateDetails={handleShowUpdateDetails}
               onClose={() => setShowSettings(false)}
             />
           </motion.div>

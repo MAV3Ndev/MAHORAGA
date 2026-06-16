@@ -11,6 +11,7 @@ const APP_TITLE = "MAHORAGA-Next SENTINEL";
 const APP_ICON_PATH = path.join(__dirname, "..", "public", "icons", "app-icon.png");
 const UPDATE_REPOSITORY = process.env.MAHORAGA_SENTINEL_UPDATE_REPO || "MAV3Ndev/MAHORAGA-Next";
 const UPDATE_CHECK_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases`;
+const LEGACY_USER_DATA_DIR_NAMES = ["MAHORAGA SENTINEL", "mahoraga-dashboard"];
 
 let mainWindow = null;
 let latestUpdate = null;
@@ -37,17 +38,38 @@ function getConnectionFilePath() {
   return path.join(app.getPath("userData"), "connection.json");
 }
 
+function getConnectionFileCandidates() {
+  const currentPath = getConnectionFilePath();
+  const appDataPath = app.getPath("appData");
+  return [
+    currentPath,
+    ...LEGACY_USER_DATA_DIR_NAMES.map((dirName) => path.join(appDataPath, dirName, "connection.json")),
+  ].filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
+}
+
 async function readConnectionSettings() {
-  try {
-    const raw = await readFile(getConnectionFilePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      apiUrl: normalizeApiUrl(parsed.apiUrl),
-      bearerToken: String(parsed.bearerToken || "").trim(),
-    };
-  } catch {
-    return null;
+  const currentPath = getConnectionFilePath();
+
+  for (const candidatePath of getConnectionFileCandidates()) {
+    try {
+      const raw = await readFile(candidatePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const settings = {
+        apiUrl: normalizeApiUrl(parsed.apiUrl),
+        bearerToken: String(parsed.bearerToken || "").trim(),
+      };
+
+      if (candidatePath !== currentPath && settings.apiUrl && settings.bearerToken) {
+        await saveConnectionSettings(settings);
+      }
+
+      return settings;
+    } catch {
+      // Try the next known settings location.
+    }
   }
+
+  return null;
 }
 
 async function saveConnectionSettings(settings) {

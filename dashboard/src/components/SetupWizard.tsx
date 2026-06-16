@@ -1,15 +1,15 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { ConnectionSettings } from '../lib/connection'
 import { getDefaultApiUrl, isNativeShell, normalizeApiUrl } from '../lib/connection'
 import { Panel } from './Panel'
-import { UpdateControls } from './UpdateControls'
 
 interface SetupWizardProps {
   initialConnection: ConnectionSettings
   onComplete: (connection: ConnectionSettings) => Promise<void>
+  updateControls?: ReactNode
 }
 
-export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps) {
+export function SetupWizard({ initialConnection, onComplete, updateControls }: SetupWizardProps) {
   const [apiUrl, setApiUrl] = useState(initialConnection.apiUrl || getDefaultApiUrl())
   const [bearerToken, setBearerToken] = useState(initialConnection.bearerToken || '')
   const [saving, setSaving] = useState(false)
@@ -126,7 +126,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
               {saving ? 'LINKING...' : 'CONNECT PANEL'}
             </button>
 
-            <UpdateControls />
+            {updateControls}
           </div>
         </Panel>
       </div>

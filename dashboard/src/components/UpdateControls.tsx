@@ -1,22 +1,20 @@
-import { useEffect, useState } from "react";
-import {
-  checkDesktopUpdate,
-  type DesktopUpdateEvent,
-  getDesktopAppVersion,
-  installDesktopUpdate,
-  isDesktopPanel,
-  isNativeShell,
-  subscribeDesktopUpdate,
-} from "../lib/connection";
+import clsx from "clsx";
+import type { DesktopUpdateEvent } from "../lib/connection";
 
 interface UpdateControlsProps {
+  appVersion: string | null;
+  updateStatus: DesktopUpdateEvent | null;
+  updateBusy: boolean;
   className?: string;
+  compact?: boolean;
+  onCheckUpdate: () => void;
+  onShowUpdateDetails: () => void;
 }
 
 function getUpdateLabel(status: DesktopUpdateEvent | null, appVersion: string | null): string {
   if (!status) return appVersion ? `v${appVersion}` : "UNKNOWN";
   if (status.state === "available") return `v${status.update?.version || status.latestVersion || "NEW"}`;
-  if (status.state === "not-available") return "CURRENT";
+  if (status.state === "not-available") return `v${status.currentVersion || appVersion || status.latestVersion || "UNKNOWN"}`;
   if (status.state === "downloading") {
     return typeof status.progress === "number" ? `${status.progress}%` : "DOWNLOADING";
   }
@@ -26,36 +24,15 @@ function getUpdateLabel(status: DesktopUpdateEvent | null, appVersion: string | 
   return "CHECKING";
 }
 
-export function UpdateControls({ className = "" }: UpdateControlsProps) {
-  const updateShell = isDesktopPanel() || isNativeShell();
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateEvent | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!updateShell) return;
-
-    let cancelled = false;
-    void getDesktopAppVersion()
-      .then((version) => {
-        if (!cancelled) setAppVersion(version);
-      })
-      .catch(() => {
-        if (!cancelled) setAppVersion(null);
-      });
-
-    const unsubscribe = subscribeDesktopUpdate((event) => {
-      setUpdateStatus(event);
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [updateShell]);
-
-  if (!updateShell) return null;
-
+export function UpdateControls({
+  appVersion,
+  updateStatus,
+  updateBusy,
+  className = "",
+  compact = false,
+  onCheckUpdate,
+  onShowUpdateDetails,
+}: UpdateControlsProps) {
   const updateAvailable =
     updateStatus?.state === "available" ||
     updateStatus?.state === "downloaded" ||
@@ -63,59 +40,43 @@ export function UpdateControls({ className = "" }: UpdateControlsProps) {
     updateStatus?.state === "installing";
   const label = getUpdateLabel(updateStatus, appVersion);
 
-  const checkUpdate = async () => {
-    setBusy(true);
-    try {
-      const result = await checkDesktopUpdate(false);
-      if (result) setUpdateStatus(result);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const installUpdate = async () => {
-    setBusy(true);
-    try {
-      const result = await installDesktopUpdate();
-      if (result) setUpdateStatus(result);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <div className={`border border-hud-line bg-hud-bg/70 p-4 ${className}`}>
-      <div className="mb-3 flex items-center justify-between gap-3">
+    <div
+      className={clsx(
+        "border border-hud-line bg-hud-bg/70",
+        compact ? "flex flex-wrap items-center justify-between gap-3 p-3" : "p-4",
+        className
+      )}
+    >
+      <div className={clsx("flex items-center justify-between gap-3", !compact && "mb-3")}>
         <div>
           <div className="hud-label text-hud-primary">App Update</div>
           <div className="hud-value-sm">{label}</div>
         </div>
         {updateStatus?.state === "error" && (
-          <div className="hud-value-sm max-w-[220px] text-right text-hud-warning">{updateStatus.message}</div>
+          <div className={clsx("hud-value-sm text-right text-hud-warning", compact ? "max-w-[180px]" : "max-w-[220px]")}>
+            {updateStatus.message}
+          </div>
         )}
       </div>
 
       {updateAvailable ? (
         <button
           type="button"
-          className="hud-button w-full"
-          onClick={() => {
-            void installUpdate();
-          }}
-          disabled={busy || updateStatus?.state === "installing"}
+          className={clsx("hud-button", compact ? "h-8 min-h-0 px-3 py-1.5 text-[10px]" : "w-full")}
+          onClick={onShowUpdateDetails}
+          disabled={updateBusy || updateStatus?.state === "installing"}
         >
-          {busy || updateStatus?.state === "downloading" ? "DOWNLOADING..." : "Install Update"}
+          {updateBusy || updateStatus?.state === "downloading" ? "DOWNLOADING..." : "View Update"}
         </button>
       ) : (
         <button
           type="button"
-          className="hud-button w-full"
-          onClick={() => {
-            void checkUpdate();
-          }}
-          disabled={busy || updateStatus?.state === "checking"}
+          className={clsx("hud-button", compact ? "h-8 min-h-0 px-3 py-1.5 text-[10px]" : "w-full")}
+          onClick={onCheckUpdate}
+          disabled={updateBusy || updateStatus?.state === "checking"}
         >
-          {busy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
+          {updateBusy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
         </button>
       )}
     </div>

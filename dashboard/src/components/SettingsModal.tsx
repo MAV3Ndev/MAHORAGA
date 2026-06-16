@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type { ConnectionSettings } from "../lib/connection";
+import type { ConnectionSettings, DesktopUpdateEvent } from "../lib/connection";
 import { getResponseError, normalizeApiUrl, requestAgent } from "../lib/connection";
 import type { Config } from "../types";
 import { Panel } from "./Panel";
+import { UpdateControls } from "./UpdateControls";
 
 const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
   "openai-raw": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"],
@@ -42,8 +43,14 @@ const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
 interface SettingsModalProps {
   config: Config;
   connection: ConnectionSettings;
+  appVersion: string | null;
+  updateStatus: DesktopUpdateEvent | null;
+  updateBusy: boolean;
+  showAppUpdateControls: boolean;
   onSave: (config: Config) => Promise<void> | void;
   onSaveConnection: (connection: ConnectionSettings) => Promise<void> | void;
+  onCheckUpdate: () => void;
+  onShowUpdateDetails: () => void;
   onClose: () => void;
 }
 
@@ -347,7 +354,19 @@ const CONFIG_KEY_TABS: Partial<Record<keyof Config, SettingsTab>> = {
   alpha_vantage_api_key: "system",
 };
 
-export function SettingsModal({ config, connection, onSave, onSaveConnection, onClose }: SettingsModalProps) {
+export function SettingsModal({
+  config,
+  connection,
+  appVersion,
+  updateStatus,
+  updateBusy,
+  showAppUpdateControls,
+  onSave,
+  onSaveConnection,
+  onCheckUpdate,
+  onShowUpdateDetails,
+  onClose,
+}: SettingsModalProps) {
   const [localConfig, setLocalConfig] = useState<Config>(() => ({
     ...config,
     llm_provider:
@@ -2373,6 +2392,17 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
 
           {activeTab === "system" && (
             <div className="space-y-6">
+              {showAppUpdateControls && (
+                <UpdateControls
+                  appVersion={appVersion}
+                  updateStatus={updateStatus}
+                  updateBusy={updateBusy}
+                  compact
+                  onCheckUpdate={onCheckUpdate}
+                  onShowUpdateDetails={onShowUpdateDetails}
+                />
+              )}
+
               <div>
                 <h3 className="hud-label mb-3 text-hud-primary">Remote Link</h3>
                 <div className="grid gap-3 md:grid-cols-[1.3fr_1fr_auto]">
