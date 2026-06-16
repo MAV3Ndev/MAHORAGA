@@ -10,6 +10,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { SetupWizard } from "./components/SetupWizard";
 import { StatusBar, StatusIndicator } from "./components/StatusIndicator";
 import { Tooltip, TooltipContent } from "./components/Tooltip";
+import { UpdateControls } from "./components/UpdateControls";
 import {
   type ConnectionSettings,
   type DesktopUpdateEvent,
@@ -623,7 +624,7 @@ function normalizePortfolioSnapshots(
     ).values()
   );
 
-  if (deduped.length === 0 || !Number.isFinite(currentEquity) || !currentEquity || currentEquity <= 0) {
+  if (!Number.isFinite(currentEquity) || !currentEquity || currentEquity <= 0) {
     return deduped;
   }
 
@@ -647,6 +648,44 @@ function normalizePortfolioSnapshots(
 
   next[next.length - 1] = currentSnapshot;
   return next;
+}
+
+function buildPortfolioSnapshot(timestamp: number, equity: number, startingEquity: number): PortfolioSnapshot {
+  const pl = equity - startingEquity;
+  return {
+    timestamp,
+    equity,
+    pl,
+    pl_pct: startingEquity > 0 ? pl / startingEquity : 0,
+  };
+}
+
+function ensureVisiblePortfolioHistory(
+  history: PortfolioSnapshot[],
+  period: PortfolioPeriod,
+  currentEquity: number | undefined,
+  startingEquity: number,
+  nowTimestamp: number
+): PortfolioSnapshot[] {
+  const periodStart = getPeriodStartTimestamp(period, nowTimestamp);
+  const visible = history.filter((snapshot) => snapshot.timestamp >= periodStart);
+
+  if (visible.length >= 2 || !Number.isFinite(currentEquity) || !currentEquity || currentEquity <= 0) {
+    return visible;
+  }
+
+  const latest = visible.at(-1) ?? buildPortfolioSnapshot(nowTimestamp, currentEquity, startingEquity);
+  const prior =
+    history
+      .filter((snapshot) => snapshot.timestamp < periodStart)
+      .sort((a, b) => b.timestamp - a.timestamp)[0] ?? latest;
+  const anchor = buildPortfolioSnapshot(periodStart, prior.equity, startingEquity);
+
+  if (latest.timestamp <= anchor.timestamp) {
+    return [anchor, buildPortfolioSnapshot(nowTimestamp, currentEquity, startingEquity)];
+  }
+
+  return [anchor, latest];
 }
 
 function calculateRollingApy(history: PortfolioSnapshot[]): number | null {
@@ -1280,9 +1319,14 @@ export default function App() {
   }, [account?.equity, nowTimestamp, portfolioHistory, startingEquity]);
 
   const visiblePortfolioHistory = useMemo(() => {
-    const periodStart = getPeriodStartTimestamp(portfolioPeriod, nowTimestamp);
-    return normalizedPortfolioHistory.filter((snapshot) => snapshot.timestamp >= periodStart);
-  }, [normalizedPortfolioHistory, nowTimestamp, portfolioPeriod]);
+    return ensureVisiblePortfolioHistory(
+      normalizedPortfolioHistory,
+      portfolioPeriod,
+      account?.equity,
+      startingEquity,
+      nowTimestamp
+    );
+  }, [account?.equity, normalizedPortfolioHistory, nowTimestamp, portfolioPeriod, startingEquity]);
 
   const rollingApy = useMemo(() => {
     const source = apyHistory.length > 1 ? apyHistory : normalizedPortfolioHistory;
@@ -1786,69 +1830,12 @@ export default function App() {
                 Retry Link
               </button>
             </div>
+
+            <UpdateControls />
           </div>
         </Panel>
       </div>
     );
-  }
-
-  if (!connectionLoaded) {
-    return (
-      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-        <Panel title="BOOTING PANEL" className="max-w-md w-full">
-          <div className="text-center py-10 space-y-3">
-            <div className="text-hud-primary text-2xl">SYNC</div>
-            <p className="text-hud-text-dim text-sm">Loading remote link profile...</p>
-          </div>
-        </Panel>
-      </div>
-    )
-  }
-
-  if (showSetup) {
-    return <SetupWizard initialConnection={connection} onComplete={handleSaveConnection} />
-  }
-
-  if (error && !status) {
-    return (
-      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-        <Panel title="CONNECTION ERROR" className="max-w-xl w-full">
-          <div className="py-8 space-y-5">
-            <div className="text-center">
-              <div className="text-hud-error text-2xl mb-4">LINK LOST</div>
-              <p className="text-hud-text-dim text-sm">{error}</p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
-                <div className="hud-label text-hud-primary">Target</div>
-                <div className="hud-value-sm break-all">{connection.apiUrl || 'UNSET'}</div>
-              </div>
-              <div className="border border-hud-line bg-hud-bg-panel p-4 space-y-2">
-                <div className="hud-label text-hud-primary">Bearer</div>
-                <div className="hud-value-sm">{maskBearerToken(connection.bearerToken)}</div>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-3 justify-center">
-              <button className="hud-button" onClick={() => setShowSetup(true)}>
-                Edit Connection
-              </button>
-              <button
-                className="hud-button"
-                onClick={() => {
-                  void handleSaveConnection(connection).catch((retryError) => {
-                    setError(retryError instanceof Error ? retryError.message : 'Retry failed')
-                  })
-                }}
-              >
-                Retry Link
-              </button>
-            </div>
-          </div>
-        </Panel>
-      </div>
-    )
   }
 
   return (

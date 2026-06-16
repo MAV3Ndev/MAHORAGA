@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Panel } from './Panel'
 import type { ConnectionSettings } from '../lib/connection'
 import { getDefaultApiUrl, isNativeShell, normalizeApiUrl } from '../lib/connection'
+import { Panel } from './Panel'
+import { UpdateControls } from './UpdateControls'
 
 interface SetupWizardProps {
   initialConnection: ConnectionSettings
@@ -121,9 +122,11 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
               </div>
             )}
 
-            <button className="hud-button w-full" onClick={handleSubmit} disabled={saving}>
+            <button type="button" className="hud-button w-full" onClick={handleSubmit} disabled={saving}>
               {saving ? 'LINKING...' : 'CONNECT PANEL'}
             </button>
+
+            <UpdateControls />
           </div>
         </Panel>
       </div>
