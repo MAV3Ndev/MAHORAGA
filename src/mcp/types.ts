@@ -45,6 +45,8 @@ export interface OrderPreview {
   limit_price?: number;
   stop_price?: number;
   time_in_force: "day" | "gtc" | "ioc" | "fok";
+  /** Strategy/research confidence that produced this order, 0-1. */
+  confidence?: number;
   estimated_price?: number;
   estimated_cost?: number;
   buying_power_impact?: number;
@@ -63,6 +65,8 @@ export interface OptionsOrderPreview {
   option_type: "call" | "put";
   dte: number;
   delta?: number;
+  /** Strategy/research confidence that produced this option order, 0-1. */
+  confidence?: number;
   estimated_premium?: number;
   estimated_cost?: number;
   buying_power_impact?: number;

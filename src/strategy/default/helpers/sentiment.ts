@@ -4,7 +4,27 @@
  * Pure functions — no side effects, no state.
  */
 
+import type { Signal } from "../../../core/types";
 import { SOURCE_CONFIG } from "../config";
+
+/**
+ * Return a direction-aware sentiment value.
+ *
+ * Some gatherers keep raw_sentiment as magnitude while sentiment carries direction.
+ * If a source reports more bearish than bullish votes but sentiment is positive,
+ * treat the value as bearish so downstream BUY gates do not mistake bearish
+ * intensity for bullish confirmation.
+ */
+export function getSignedSignalSentiment(signal: Signal): number | null {
+  if (Number.isFinite(signal.sentiment)) {
+    if ((signal.bearish ?? 0) > (signal.bullish ?? 0) && signal.sentiment > 0) {
+      return -Math.abs(signal.sentiment);
+    }
+    return signal.sentiment;
+  }
+
+  return Number.isFinite(signal.raw_sentiment) ? signal.raw_sentiment : null;
+}
 
 /**
  * Exponential time decay for posts/signals.

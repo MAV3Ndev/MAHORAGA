@@ -17,6 +17,41 @@ export interface OptionsContract {
   max_contracts: number;
 }
 
+export interface ParsedOptionSymbol {
+  underlying: string;
+  expiration: string;
+  optionType: "call" | "put";
+  strike: number;
+}
+
+/**
+ * Parse compact OCC-style option symbols such as AAPL260619C00195000.
+ */
+export function parseOccOptionSymbol(symbol: string): ParsedOptionSymbol | null {
+  const normalized = symbol.trim().toUpperCase().replace(/\s+/g, "");
+  const match = normalized.match(/^([A-Z.]{1,6})(\d{6})([CP])(\d{8})$/);
+  if (!match) return null;
+
+  const [, underlying, yymmdd, contractType, rawStrike] = match;
+  if (!underlying || !yymmdd || !contractType || !rawStrike) return null;
+
+  const year = 2000 + Number(yymmdd.slice(0, 2));
+  const month = yymmdd.slice(2, 4);
+  const day = yymmdd.slice(4, 6);
+  const expiration = `${year}-${month}-${day}`;
+  const expirationTime = new Date(`${expiration}T00:00:00Z`).getTime();
+  const strike = Number(rawStrike) / 1000;
+
+  if (!Number.isFinite(expirationTime) || !Number.isFinite(strike) || strike <= 0) return null;
+
+  return {
+    underlying,
+    expiration,
+    optionType: contractType === "C" ? "call" : "put",
+    strike,
+  };
+}
+
 /**
  * Find the best options contract for a symbol based on direction and delta targets.
  */
@@ -98,8 +133,8 @@ export async function findBestOptionsContract(
       const ask = optSnapshot.latest_quote?.ask_price || 0;
       if (bid === 0 || ask === 0) continue;
 
-      const spread = (ask - bid) / ask;
-      if (spread > 0.1) continue;
+      const spreadPct = ((ask - bid) / ask) * 100;
+      if (spreadPct > (ctx.config.options_max_spread_pct ?? 8)) continue;
 
       const midPrice = (bid + ask) / 2;
       const maxCost = equity * ctx.config.options_max_pct_per_trade;

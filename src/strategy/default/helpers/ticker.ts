@@ -306,7 +306,9 @@ export function extractTickers(text: string, customBlacklist: string[] = []): st
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     const ticker = (match[1] || match[2] || "").toUpperCase();
-    if (ticker.length >= 2 && ticker.length <= 5 && !TICKER_BLACKLIST.has(ticker) && !customSet.has(ticker)) {
+    const isCashtag = Boolean(match[1]);
+    const minLength = isCashtag ? 1 : 2;
+    if (ticker.length >= minLength && ticker.length <= 5 && !TICKER_BLACKLIST.has(ticker) && !customSet.has(ticker)) {
       matches.add(ticker);
     }
   }

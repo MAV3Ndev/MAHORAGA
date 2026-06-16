@@ -19,7 +19,13 @@ export interface Env {
   CLOUDFLARE_AI_GATEWAY_TOKEN?: string;
   LLM_PROVIDER?: "openai-raw" | "ai-sdk" | "cloudflare-gateway";
   LLM_MODEL?: string;
+  REDDIT_CLIENT_ID?: string;
+  REDDIT_CLIENT_SECRET?: string;
+  REDDIT_USER_AGENT?: string;
+  REDDIT_COOKIES?: string;
   TWITTER_BEARER_TOKEN?: string;
+  TWITTER_COOKIES?: string;
+  ALPHA_VANTAGE_API_KEY?: string;
   DISCORD_WEBHOOK_URL?: string;
   MAHORAGA_API_TOKEN: string;
   KILL_SWITCH_SECRET: string;

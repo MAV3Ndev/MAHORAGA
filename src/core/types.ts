@@ -50,8 +50,34 @@ export interface PositionEntry {
   entry_social_volume: number;
   entry_sources: string[];
   entry_reason: string;
+  entry_quote_mid?: number;
+  entry_slippage_pct?: number;
   peak_price: number;
+  trough_price?: number;
   peak_sentiment: number;
+}
+
+export interface RecentSellEntry {
+  symbol: string;
+  sold_at: number;
+  reason: string;
+}
+
+export interface MissedEntryOpportunity {
+  id: string;
+  symbol: string;
+  symbol_key: string;
+  blocked_at: number;
+  blocked_price: number;
+  reason: string;
+  agent: string;
+  action: string;
+  confidence?: number;
+  entry_quality?: ResearchResult["entry_quality"];
+  notional?: number;
+  evaluated_at?: number;
+  evaluation_price?: number;
+  change_pct?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,12 +164,18 @@ export interface AgentState {
   config: import("../schemas/agent-config").AgentConfig;
   signalCache: Signal[];
   positionEntries: Record<string, PositionEntry>;
+  entryPerformanceBlocks?: Record<string, unknown>;
+  entryFeaturePerformanceBlocks?: Record<string, unknown>;
+  entryPerformanceBlocksRefreshedAt?: number;
+  recentSells: Record<string, RecentSellEntry>;
+  missedEntryOpportunities: Record<string, MissedEntryOpportunity>;
   socialHistory: Record<string, SocialHistoryEntry[]>;
   socialSnapshotCache: Record<string, SocialSnapshotCacheEntry>;
   socialSnapshotCacheUpdatedAt: number;
   logs: LogEntry[];
   costTracker: CostTracker;
   lastDataGatherRun: number;
+  lastAlarmStartedAt?: number;
   lastAnalystRun: number;
   lastResearchRun: number;
   lastPositionResearchRun: number;
@@ -157,5 +189,6 @@ export interface AgentState {
   premarketPlan: PremarketPlan | null;
   lastPremarketPlanDayEt: string | null;
   lastClockIsOpen: boolean | null;
+  lastDiscordDailyReportDay: string | null;
   enabled: boolean;
 }

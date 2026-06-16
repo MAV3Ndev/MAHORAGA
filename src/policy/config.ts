@@ -35,6 +35,16 @@ export interface PolicyConfig {
   allowed_order_types: string[];
   max_daily_loss_pct: number;
   cooldown_minutes_after_loss: number;
+  /** Never add to an existing losing position (default: true). */
+  no_averaging_down: boolean;
+  /** Block new entries when open positions are in aggregate drawdown unless confidence is exceptional. */
+  open_position_loss_entry_guard_enabled: boolean;
+  open_position_loss_entry_guard_pct: number;
+  open_position_loss_guard_min_confidence: number;
+  /** Maximum autonomous buy/entry orders per UTC day. 0 disables this limiter. */
+  max_daily_entry_orders: number;
+  /** Minimum minutes between autonomous buy/entry orders. 0 disables this limiter. */
+  min_minutes_between_entries: number;
   allowed_symbols: string[] | null;
   deny_symbols: string[];
   min_avg_volume: number;
@@ -72,6 +82,12 @@ export function getDefaultPolicyConfig(env: Env): PolicyConfig {
     allowed_order_types: ["market", "limit", "stop", "stop_limit"],
     max_daily_loss_pct: parseNumber(env.DEFAULT_MAX_DAILY_LOSS_PCT, 0.02),
     cooldown_minutes_after_loss: parseNumber(env.DEFAULT_COOLDOWN_MINUTES, 30),
+    no_averaging_down: true,
+    open_position_loss_entry_guard_enabled: true,
+    open_position_loss_entry_guard_pct: 0.01,
+    open_position_loss_guard_min_confidence: 0.85,
+    max_daily_entry_orders: 8,
+    min_minutes_between_entries: 5,
     allowed_symbols: null,
     deny_symbols: [],
     min_avg_volume: 100000,
@@ -182,6 +198,42 @@ export function validatePolicyConfig(config: unknown): PolicyConfig {
 
   if (typeof c.cooldown_minutes_after_loss !== "number" || c.cooldown_minutes_after_loss < 0) {
     throw new Error("cooldown_minutes_after_loss must be non-negative");
+  }
+
+  if (typeof c.no_averaging_down !== "boolean") {
+    throw new Error("no_averaging_down must be a boolean");
+  }
+
+  if (typeof c.open_position_loss_entry_guard_enabled !== "boolean") {
+    throw new Error("open_position_loss_entry_guard_enabled must be a boolean");
+  }
+
+  if (
+    typeof c.open_position_loss_entry_guard_pct !== "number" ||
+    c.open_position_loss_entry_guard_pct < 0 ||
+    c.open_position_loss_entry_guard_pct > 1
+  ) {
+    throw new Error("open_position_loss_entry_guard_pct must be between 0 and 1");
+  }
+
+  if (
+    typeof c.open_position_loss_guard_min_confidence !== "number" ||
+    c.open_position_loss_guard_min_confidence < 0 ||
+    c.open_position_loss_guard_min_confidence > 1
+  ) {
+    throw new Error("open_position_loss_guard_min_confidence must be between 0 and 1");
+  }
+
+  if (typeof c.max_daily_entry_orders !== "number" || c.max_daily_entry_orders < 0 || c.max_daily_entry_orders > 100) {
+    throw new Error("max_daily_entry_orders must be between 0 and 100");
+  }
+
+  if (
+    typeof c.min_minutes_between_entries !== "number" ||
+    c.min_minutes_between_entries < 0 ||
+    c.min_minutes_between_entries > 1440
+  ) {
+    throw new Error("min_minutes_between_entries must be between 0 and 1440");
   }
 
   if (typeof c.approval_token_ttl_seconds !== "number" || c.approval_token_ttl_seconds < 60) {

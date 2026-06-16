@@ -5,6 +5,7 @@
 import type { Signal } from "../../../core/types";
 import type { Gatherer, StrategyContext } from "../../types";
 import { SOURCE_CONFIG } from "../config";
+import { isConfiguredCryptoSymbol, isStockTwitsCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
 import { calculateTimeDecay } from "../helpers/sentiment";
 
 async function fetchWithRetry(
@@ -57,20 +58,43 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
     }
     const trendingData = (await trendingRes.json()) as { symbols?: Array<{ symbol: string }> };
     const trending = trendingData.symbols || [];
+    let skippedUnconfiguredCrypto = 0;
+    let streamsFetched = 0;
+    let streamsEmpty = 0;
+    let symbolsWithSignals = 0;
+
+    ctx.log("StockTwits", "trending_gathered", { symbols: trending.length });
 
     for (const sym of trending.slice(0, 15)) {
+      const rawSymbol = sym.symbol.trim().toUpperCase();
+      const stockTwitsCrypto = isStockTwitsCryptoSymbol(rawSymbol);
+      if (
+        stockTwitsCrypto &&
+        (!ctx.config.crypto_enabled || !isConfiguredCryptoSymbol(rawSymbol, ctx.config.crypto_symbols || []))
+      ) {
+        skippedUnconfiguredCrypto++;
+        continue;
+      }
+
+      const signalSymbol = stockTwitsCrypto ? normalizeCryptoSymbol(rawSymbol) : rawSymbol;
+
       try {
         const streamRes = await fetchWithRetry(
-          `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(sym.symbol)}.json?limit=30`,
+          `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(rawSymbol)}.json?limit=30`,
           headers,
           ctx.log,
           ctx.sleep
         );
-        if (!streamRes) continue;
+        if (!streamRes) {
+          ctx.log("StockTwits", "stream_fetch_failed", { symbol: rawSymbol });
+          continue;
+        }
+        streamsFetched++;
         const streamData = (await streamRes.json()) as {
           messages?: Array<{ entities?: { sentiment?: { basic?: string } }; created_at?: string }>;
         };
         const messages = streamData.messages || [];
+        if (messages.length === 0) streamsEmpty++;
 
         let bullish = 0;
         let bearish = 0;
@@ -92,9 +116,10 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
 
         if (total >= 5) {
           const weightedSentiment = score * sourceWeight * avgFreshness;
+          symbolsWithSignals++;
 
           signals.push({
-            symbol: sym.symbol,
+            symbol: signalSymbol,
             source: "stocktwits",
             source_detail: "stocktwits_trending",
             sentiment: weightedSentiment,
@@ -105,15 +130,28 @@ async function gatherStockTwits(ctx: StrategyContext): Promise<Signal[]> {
             freshness: avgFreshness,
             source_weight: sourceWeight,
             reason: `StockTwits: ${Math.round(bullish)}B/${Math.round(bearish)}b (${(score * 100).toFixed(0)}%) [fresh:${(avgFreshness * 100).toFixed(0)}%]`,
+            isCrypto: stockTwitsCrypto,
             timestamp: Date.now(),
           });
         }
 
         await ctx.sleep(200);
       } catch (error) {
-        ctx.log("StockTwits", "symbol_error", { symbol: sym.symbol, error: String(error) });
+        ctx.log("StockTwits", "symbol_error", { symbol: rawSymbol, error: String(error) });
       }
     }
+
+    if (skippedUnconfiguredCrypto > 0) {
+      ctx.log("StockTwits", "skipped_unconfigured_crypto", { count: skippedUnconfiguredCrypto });
+    }
+
+    ctx.log("StockTwits", "gathered_signals", {
+      count: signals.length,
+      trending: trending.length,
+      streams_fetched: streamsFetched,
+      streams_empty: streamsEmpty,
+      symbols_with_signals: symbolsWithSignals,
+    });
   } catch (error) {
     ctx.log("StockTwits", "error", { message: String(error) });
   }

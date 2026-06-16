@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 const apiTarget = process.env.MAHORAGA_API_URL || `http://localhost:${process.env.WRANGLER_PORT || '8787'}`
 
 export default defineConfig({
+  base: './',
   plugins: [react(), tailwindcss()],
   server: {
     port: 3000,

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { OrderPreview } from "../mcp/types";
+import type { OptionsOrderPreview, OrderPreview } from "../mcp/types";
 import type { Account, MarketClock, Position } from "../providers/types";
 import type { RiskState } from "../storage/d1/queries/risk-state";
 import { getDefaultOptionsPolicyConfig, type PolicyConfig } from "./config";
-import { type PolicyContext, PolicyEngine } from "./engine";
+import { type OptionsPolicyContext, type PolicyContext, PolicyEngine } from "./engine";
 
 function createTestConfig(overrides: Partial<PolicyConfig> = {}): PolicyConfig {
   return {
@@ -13,6 +13,12 @@ function createTestConfig(overrides: Partial<PolicyConfig> = {}): PolicyConfig {
     allowed_order_types: ["market", "limit"],
     max_daily_loss_pct: 0.02,
     cooldown_minutes_after_loss: 30,
+    no_averaging_down: true,
+    open_position_loss_entry_guard_enabled: true,
+    open_position_loss_entry_guard_pct: 0.01,
+    open_position_loss_guard_min_confidence: 0.85,
+    max_daily_entry_orders: 8,
+    min_minutes_between_entries: 5,
     allowed_symbols: null,
     deny_symbols: [],
     min_avg_volume: 100000,
@@ -127,6 +133,38 @@ function createTestContext(overrides: Partial<PolicyContext> = {}): PolicyContex
   };
 }
 
+function createTestOptionsOrder(overrides: Partial<OptionsOrderPreview> = {}): OptionsOrderPreview {
+  return {
+    contract_symbol: "AAPL260619C00195000",
+    underlying: "AAPL",
+    side: "buy",
+    qty: 1,
+    order_type: "limit",
+    limit_price: 5,
+    time_in_force: "day",
+    expiration: "2026-06-19",
+    strike: 195,
+    option_type: "call",
+    dte: 45,
+    delta: 0.45,
+    confidence: 0.9,
+    estimated_premium: 5,
+    estimated_cost: 500,
+    ...overrides,
+  };
+}
+
+function createTestOptionsContext(overrides: Partial<OptionsPolicyContext> = {}): OptionsPolicyContext {
+  return {
+    order: createTestOptionsOrder(),
+    account: createTestAccount(),
+    positions: [],
+    clock: createTestClock(),
+    riskState: createTestRiskState(),
+    ...overrides,
+  };
+}
+
 describe("PolicyEngine", () => {
   let engine: PolicyEngine;
 
@@ -181,6 +219,21 @@ describe("PolicyEngine", () => {
       const result = engine.evaluate(ctx);
       expect(result.allowed).toBe(true);
     });
+
+    it("does not block risk-reducing sells during cooldown", () => {
+      const futureTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const ctx = createTestContext({
+        order: createTestOrder({ side: "sell", qty: 10 }),
+        positions: [createTestPosition({ symbol: "AAPL", qty: 10 })],
+        riskState: createTestRiskState({
+          cooldown_until: futureTime,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "loss_cooldown")).toBe(false);
+      expect(result.violations.some((v) => v.rule === "short_selling_blocked")).toBe(false);
+    });
   });
 
   describe("daily loss limit", () => {
@@ -205,6 +258,20 @@ describe("PolicyEngine", () => {
 
       const result = engine.evaluate(ctx);
       expect(result.allowed).toBe(true);
+    });
+
+    it("does not block risk-reducing sells after the daily loss limit is reached", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({ side: "sell", qty: 10 }),
+        positions: [createTestPosition({ symbol: "AAPL", qty: 10 })],
+        riskState: createTestRiskState({
+          daily_loss_usd: 2500,
+        }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "daily_loss_limit")).toBe(false);
+      expect(result.violations.some((v) => v.rule === "short_selling_blocked")).toBe(false);
     });
   });
 
@@ -231,6 +298,19 @@ describe("PolicyEngine", () => {
 
       const result = engine.evaluate(ctx);
       expect(result.violations.some((v) => v.rule === "trading_hours")).toBe(false);
+    });
+
+    it("does not block risk-reducing sells outside market hours", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({ side: "sell", qty: 10 }),
+        positions: [createTestPosition({ symbol: "AAPL", qty: 10 })],
+        clock: createTestClock({ is_open: false }),
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "trading_hours")).toBe(false);
+      expect(result.violations.some((v) => v.rule === "short_selling_blocked")).toBe(false);
+      expect(result.warnings.some((w) => w.rule === "outside_hours_exit")).toBe(true);
     });
 
     it("adds warning for extended hours trading when allowed", () => {
@@ -357,6 +437,36 @@ describe("PolicyEngine", () => {
       const result = engine.evaluate(ctx);
       expect(result.warnings.some((w) => w.rule === "position_size_warning")).toBe(true);
     });
+
+    it("blocks adding to an existing losing equity position", () => {
+      const ctx = createTestContext({
+        order: createTestOrder({ symbol: "AAPL", notional: 500 }),
+        positions: [createTestPosition({ symbol: "AAPL", unrealized_pl: -75 })],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule: "averaging_down_blocked",
+            current_value: -75,
+            limit_value: 0,
+          }),
+        ])
+      );
+    });
+
+    it("allows adding to a losing equity position when averaging-down guard is disabled", () => {
+      engine = new PolicyEngine(createTestConfig({ no_averaging_down: false }));
+      const ctx = createTestContext({
+        order: createTestOrder({ symbol: "AAPL", notional: 500 }),
+        positions: [createTestPosition({ symbol: "AAPL", unrealized_pl: -75 })],
+      });
+
+      const result = engine.evaluate(ctx);
+      expect(result.violations.some((v) => v.rule === "averaging_down_blocked")).toBe(false);
+    });
   });
 
   describe("open positions limit", () => {
@@ -472,6 +582,139 @@ describe("PolicyEngine", () => {
       const result = engine.evaluate(ctx);
       expect(result.allowed).toBe(false);
       expect(result.violations.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe("open position loss entry guard", () => {
+    it("blocks lower-confidence equity buys while open positions are in drawdown", () => {
+      const result = engine.evaluate(
+        createTestContext({
+          order: createTestOrder({ symbol: "AAPL", confidence: 0.7 }),
+          positions: [createTestPosition({ symbol: "MSFT", unrealized_pl: -1500 })],
+        })
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule: "open_position_loss_entry_guard",
+            current_value: expect.objectContaining({
+              open_loss_pct: 0.015,
+              confidence: 0.7,
+            }),
+          }),
+        ])
+      );
+    });
+
+    it("allows exceptional-confidence equity buys while open positions are in drawdown", () => {
+      const result = engine.evaluate(
+        createTestContext({
+          order: createTestOrder({ symbol: "AAPL", confidence: 0.9 }),
+          positions: [createTestPosition({ symbol: "MSFT", unrealized_pl: -1500 })],
+        })
+      );
+
+      expect(result.allowed).toBe(true);
+      expect(result.violations.some((v) => v.rule === "open_position_loss_entry_guard")).toBe(false);
+    });
+  });
+
+  describe("options confidence", () => {
+    beforeEach(() => {
+      engine = new PolicyEngine(
+        createTestConfig({
+          open_position_loss_guard_min_confidence: 0.9,
+          options: {
+            ...getDefaultOptionsPolicyConfig(),
+            options_enabled: true,
+            min_confidence_for_options: 0.85,
+          },
+        })
+      );
+    });
+
+    it("blocks option buys below the configured confidence threshold", () => {
+      const result = engine.evaluateOptionsOrder(
+        createTestOptionsContext({
+          order: createTestOptionsOrder({ confidence: 0.8 }),
+        })
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "options_min_confidence")).toBe(true);
+    });
+
+    it("allows option buys that meet the configured confidence threshold", () => {
+      const result = engine.evaluateOptionsOrder(
+        createTestOptionsContext({
+          order: createTestOptionsOrder({ confidence: 0.9 }),
+        })
+      );
+
+      expect(result.allowed).toBe(true);
+      expect(result.violations.some((v) => v.rule === "options_min_confidence")).toBe(false);
+    });
+
+    it("blocks option buys when the underlying is on the deny list", () => {
+      engine = new PolicyEngine(
+        createTestConfig({
+          deny_symbols: ["AAPL"],
+          options: {
+            ...getDefaultOptionsPolicyConfig(),
+            options_enabled: true,
+            min_confidence_for_options: 0.85,
+          },
+        })
+      );
+
+      const result = engine.evaluateOptionsOrder(
+        createTestOptionsContext({
+          order: createTestOptionsOrder({
+            contract_symbol: "AAPL260619C00195000",
+            underlying: "AAPL",
+            confidence: 0.9,
+          }),
+        })
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.violations.some((v) => v.rule === "symbol_denied")).toBe(true);
+    });
+
+    it("blocks lower-confidence option buys while open positions are in drawdown", () => {
+      const result = engine.evaluateOptionsOrder(
+        createTestOptionsContext({
+          order: createTestOptionsOrder({ confidence: 0.86 }),
+          positions: [createTestPosition({ symbol: "MSFT", unrealized_pl: -1500 })],
+        })
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule: "open_position_loss_entry_guard",
+            current_value: expect.objectContaining({
+              open_loss_pct: 0.015,
+              confidence: 0.86,
+            }),
+          }),
+        ])
+      );
+    });
+
+    it("allows exceptional-confidence option buys while open positions are in drawdown", () => {
+      const result = engine.evaluateOptionsOrder(
+        createTestOptionsContext({
+          order: createTestOptionsOrder({ confidence: 0.9 }),
+          positions: [createTestPosition({ symbol: "MSFT", unrealized_pl: -1500 })],
+        })
+      );
+
+      expect(result.allowed).toBe(true);
+      expect(result.violations.some((v) => v.rule === "open_position_loss_entry_guard")).toBe(false);
     });
   });
 

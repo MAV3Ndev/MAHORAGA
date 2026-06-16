@@ -18,7 +18,7 @@ export interface StalenessResult {
 export function analyzeStaleness(
   _symbol: string,
   currentPrice: number,
-  currentSocialVolume: number,
+  currentSocialVolume: number | null | undefined,
   entry: PositionEntry | undefined,
   config: AgentConfig
 ): StalenessResult {
@@ -52,22 +52,36 @@ export function analyzeStaleness(
   }
 
   // Social volume decay (max 30 points)
-  const volumeRatio = entry.entry_social_volume > 0 ? currentSocialVolume / entry.entry_social_volume : 1;
-  if (volumeRatio <= config.stale_social_volume_decay) {
+  const hasCurrentSocialVolume = currentSocialVolume !== null && currentSocialVolume !== undefined;
+  const volumeRatio =
+    entry.entry_social_volume > 0 && hasCurrentSocialVolume ? currentSocialVolume / entry.entry_social_volume : 1;
+  if (hasCurrentSocialVolume && volumeRatio <= config.stale_social_volume_decay) {
     stalenessScore += 30;
-  } else if (volumeRatio <= 0.5) {
+  } else if (hasCurrentSocialVolume && volumeRatio <= 0.5) {
     stalenessScore += 15;
   }
 
   stalenessScore = Math.min(100, stalenessScore);
 
+  const midHoldMomentumFailed =
+    holdDays >= config.stale_mid_hold_days &&
+    pnlPct < config.stale_mid_min_gain_pct &&
+    entry.entry_social_volume > 0 &&
+    hasCurrentSocialVolume &&
+    volumeRatio <= config.stale_social_volume_decay;
   const isStale =
-    stalenessScore >= 70 || (holdDays >= config.stale_max_hold_days && pnlPct < config.stale_min_gain_pct);
+    stalenessScore >= 70 ||
+    midHoldMomentumFailed ||
+    (holdDays >= config.stale_max_hold_days && pnlPct < config.stale_min_gain_pct);
 
   return {
     isStale,
     reason: isStale
-      ? `Staleness score ${stalenessScore}/100, held ${holdDays.toFixed(1)} days`
+      ? midHoldMomentumFailed
+        ? `Mid-hold momentum failed: +${pnlPct.toFixed(1)}% after ${holdDays.toFixed(1)} days, volume ${(
+            volumeRatio * 100
+          ).toFixed(0)}% of entry`
+        : `Staleness score ${stalenessScore}/100, held ${holdDays.toFixed(1)} days`
       : `OK (score ${stalenessScore}/100)`,
     staleness_score: stalenessScore,
   };

@@ -29,6 +29,7 @@ dashboard/node_modules/
 # -----------------------------------------------------------------------------
 dist/
 build/
+dashboard/release/
 *.js.map
 .wrangler/
 
@@ -77,6 +78,7 @@ ehthumbs.db
 # -----------------------------------------------------------------------------
 .agents/
 .claude/
+.codex
 .codex/
 .cursor/
 .opencode/

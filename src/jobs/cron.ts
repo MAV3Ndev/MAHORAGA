@@ -1,3 +1,4 @@
+import { getHarnessStub } from "../durable-objects/mahoraga-harness";
 import type { Env } from "../env.d";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createSECEdgarProvider } from "../providers/news/sec-edgar";
@@ -8,7 +9,9 @@ import { getRiskState, resetDailyLoss } from "../storage/d1/queries/risk-state";
 
 export async function handleCronEvent(cronId: string, env: Env): Promise<void> {
   switch (cronId) {
+    case "*/5 13-21 * * 1-5":
     case "*/5 13-20 * * 1-5":
+      await runHarnessHeartbeat(env);
       await runEventIngestion(env);
       break;
 
@@ -30,6 +33,32 @@ export async function handleCronEvent(cronId: string, env: Env): Promise<void> {
 
     default:
       console.log(`Unknown cron: ${cronId}`);
+  }
+}
+
+async function runHarnessHeartbeat(env: Env): Promise<void> {
+  if (!env.MAHORAGA_API_TOKEN) {
+    console.warn("MAHORAGA_API_TOKEN not configured, skipping harness heartbeat");
+    return;
+  }
+
+  try {
+    const stub = getHarnessStub(env);
+    const response = await stub.fetch(
+      new Request("http://harness/trigger", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.MAHORAGA_API_TOKEN}`,
+        },
+      })
+    );
+    if (!response.ok) {
+      console.warn(`Harness heartbeat failed: ${response.status} ${await response.text()}`);
+      return;
+    }
+    console.log("Harness heartbeat triggered");
+  } catch (error) {
+    console.error("Harness heartbeat error:", error);
   }
 }
 

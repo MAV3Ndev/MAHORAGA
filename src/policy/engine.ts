@@ -63,6 +63,13 @@ export class PolicyEngine {
     this.checkSymbolFilters(ctx, violations);
     this.checkOrderType(ctx, violations);
     this.checkNotionalLimit(ctx, violations);
+    this.checkAveragingDown(ctx, violations);
+    this.checkOpenPositionLossEntryGuard(
+      ctx,
+      violations,
+      ctx.order.confidence,
+      this.config.open_position_loss_guard_min_confidence
+    );
     this.checkPositionSize(ctx, violations, warnings);
     this.checkOpenPositionsLimit(ctx, violations);
     this.checkShortSelling(ctx, violations);
@@ -87,6 +94,7 @@ export class PolicyEngine {
   }
 
   private checkCooldown(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy") return;
     if (!ctx.riskState.cooldown_until) return;
 
     const cooldownEnd = new Date(ctx.riskState.cooldown_until);
@@ -103,6 +111,7 @@ export class PolicyEngine {
   }
 
   private checkDailyLossLimit(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (ctx.order.side !== "buy") return;
     const dailyLossPct = ctx.riskState.daily_loss_usd / ctx.account.equity;
 
     if (dailyLossPct >= this.config.max_daily_loss_pct) {
@@ -122,6 +131,14 @@ export class PolicyEngine {
     if (ctx.order.asset_class === "crypto") return;
 
     if (!ctx.clock.is_open) {
+      if (ctx.order.side === "sell") {
+        warnings.push({
+          rule: "outside_hours_exit",
+          message: "Risk-reducing sell is allowed outside market hours; verify order type and fill status",
+        });
+        return;
+      }
+
       if (!this.config.extended_hours_allowed) {
         violations.push({
           rule: "trading_hours",
@@ -192,7 +209,7 @@ export class PolicyEngine {
     if (ctx.order.side !== "buy") return;
 
     const estimatedNotional = this.estimateNotional(ctx.order);
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const existingValue = existingPosition?.market_value ?? 0;
     const totalPositionValue = estimatedNotional + existingValue;
     const positionPct = totalPositionValue / ctx.account.equity;
@@ -215,7 +232,7 @@ export class PolicyEngine {
   private checkOpenPositionsLimit(ctx: PolicyContext, violations: PolicyViolation[]): void {
     if (ctx.order.side !== "buy") return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
     const isNewPosition = !existingPosition;
     const openPositionCount = ctx.positions.length;
 
@@ -229,11 +246,58 @@ export class PolicyEngine {
     }
   }
 
+  private checkAveragingDown(ctx: PolicyContext, violations: PolicyViolation[]): void {
+    if (!this.config.no_averaging_down) return;
+    if (ctx.order.side !== "buy") return;
+
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
+    if (!existingPosition || existingPosition.unrealized_pl >= 0) return;
+
+    violations.push({
+      rule: "averaging_down_blocked",
+      message: `Cannot add to losing position ${ctx.order.symbol} (current P/L: $${existingPosition.unrealized_pl.toFixed(2)})`,
+      current_value: existingPosition.unrealized_pl,
+      limit_value: 0,
+    });
+  }
+
+  private getOpenPositionLossPct(ctx: Pick<PolicyContext, "account" | "positions">): number {
+    if (ctx.account.equity <= 0) return 0;
+    const openPnlUsd = ctx.positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
+    return Math.abs(Math.min(0, openPnlUsd)) / ctx.account.equity;
+  }
+
+  private checkOpenPositionLossEntryGuard(
+    ctx: PolicyContext,
+    violations: PolicyViolation[],
+    confidence: number | undefined,
+    minConfidence: number
+  ): void {
+    if (!this.config.open_position_loss_entry_guard_enabled) return;
+    if (ctx.order.side !== "buy") return;
+    if (this.config.open_position_loss_entry_guard_pct <= 0) return;
+
+    const openLossPct = this.getOpenPositionLossPct(ctx);
+    if (openLossPct < this.config.open_position_loss_entry_guard_pct) return;
+    const usableConfidence = Number.isFinite(confidence) ? confidence ?? 0 : 0;
+    if (usableConfidence >= minConfidence) return;
+
+    violations.push({
+      rule: "open_position_loss_entry_guard",
+      message: `Open positions are down ${(openLossPct * 100).toFixed(2)}% of equity; new entries require confidence >= ${minConfidence.toFixed(2)}`,
+      current_value: { open_loss_pct: openLossPct, confidence: usableConfidence },
+      limit_value: {
+        open_position_loss_entry_guard_pct: this.config.open_position_loss_entry_guard_pct,
+        min_confidence: minConfidence,
+      },
+    });
+  }
+
   private checkShortSelling(ctx: PolicyContext, violations: PolicyViolation[]): void {
     if (ctx.order.side !== "sell") return;
     if (this.config.allow_short_selling) return;
 
-    const existingPosition = ctx.positions.find((p) => p.symbol.toUpperCase() === ctx.order.symbol.toUpperCase());
+    const existingPosition = this.findExistingPosition(ctx.positions, ctx.order.symbol);
 
     if (!existingPosition) {
       violations.push({
@@ -282,6 +346,15 @@ export class PolicyEngine {
     return (order.qty ?? 0) * price;
   }
 
+  private findExistingPosition(positions: Position[], symbol: string): Position | undefined {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    return positions.find((position) => this.normalizeSymbol(position.symbol) === normalizedSymbol);
+  }
+
+  private normalizeSymbol(symbol: string): string {
+    return symbol.trim().toUpperCase().replace(/[\s/._-]/g, "");
+  }
+
   evaluateOptionsOrder(ctx: OptionsPolicyContext): OptionsPolicyResult {
     const violations: PolicyViolation[] = [];
     const warnings: PolicyWarning[] = [];
@@ -292,6 +365,8 @@ export class PolicyEngine {
     this.checkTradingHours(ctx as unknown as PolicyContext, violations, warnings);
 
     this.checkOptionsEnabled(violations);
+    this.checkOptionsSymbolFilters(ctx, violations);
+    this.checkOptionsConfidence(ctx, violations, warnings);
     this.checkOptionsDTE(ctx, violations);
     this.checkOptionsDelta(ctx, violations, warnings);
     this.checkOptionsStrategy(ctx, violations);
@@ -299,6 +374,7 @@ export class PolicyEngine {
     this.checkOptionsTotalExposure(ctx, violations, warnings);
     this.checkOptionsPositionCount(ctx, violations);
     this.checkOptionsAveragingDown(ctx, violations);
+    this.checkOptionsOpenPositionLossEntryGuard(ctx, violations);
     this.checkOptionsBuyingPower(ctx, violations);
 
     return {
@@ -315,6 +391,46 @@ export class PolicyEngine {
         message: "Options trading is disabled in policy config",
         current_value: false,
         limit_value: true,
+      });
+    }
+  }
+
+  private checkOptionsSymbolFilters(ctx: OptionsPolicyContext, violations: PolicyViolation[]): void {
+    const denySymbols = this.config.deny_symbols.map((symbol) => symbol.toUpperCase());
+    const contractSymbol = ctx.order.contract_symbol.toUpperCase();
+    const underlying = ctx.order.underlying.toUpperCase();
+
+    if (denySymbols.includes(contractSymbol) || denySymbols.includes(underlying)) {
+      violations.push({
+        rule: "symbol_denied",
+        message: `Option ${contractSymbol} or underlying ${underlying} is on the deny list`,
+        current_value: { contract_symbol: contractSymbol, underlying },
+        limit_value: "not in deny list",
+      });
+    }
+  }
+
+  private checkOptionsConfidence(
+    ctx: OptionsPolicyContext,
+    violations: PolicyViolation[],
+    warnings: PolicyWarning[]
+  ): void {
+    const { confidence } = ctx.order;
+    if (confidence === undefined) {
+      warnings.push({
+        rule: "options_confidence_unknown",
+        message: "Options entry confidence not available - proceeding without confidence validation",
+      });
+      return;
+    }
+
+    const minConfidence = this.config.options.min_confidence_for_options;
+    if (confidence < minConfidence) {
+      violations.push({
+        rule: "options_min_confidence",
+        message: `Options entry confidence ${confidence.toFixed(2)} is below minimum ${minConfidence.toFixed(2)}`,
+        current_value: confidence,
+        limit_value: minConfidence,
       });
     }
   }
@@ -484,6 +600,32 @@ export class PolicyEngine {
         limit_value: 0,
       });
     }
+  }
+
+  private checkOptionsOpenPositionLossEntryGuard(ctx: OptionsPolicyContext, violations: PolicyViolation[]): void {
+    if (!this.config.open_position_loss_entry_guard_enabled) return;
+    if (ctx.order.side !== "buy") return;
+
+    this.checkOpenPositionLossEntryGuard(
+      {
+        order: {
+          symbol: ctx.order.contract_symbol,
+          asset_class: "us_equity",
+          side: "buy",
+          qty: ctx.order.qty,
+          order_type: ctx.order.order_type,
+          limit_price: ctx.order.limit_price,
+          time_in_force: ctx.order.time_in_force,
+        },
+        account: ctx.account,
+        positions: ctx.positions,
+        clock: ctx.clock,
+        riskState: ctx.riskState,
+      },
+      violations,
+      ctx.order.confidence,
+      Math.max(this.config.open_position_loss_guard_min_confidence, this.config.options.min_confidence_for_options)
+    );
   }
 
   private checkOptionsBuyingPower(ctx: OptionsPolicyContext, violations: PolicyViolation[]): void {

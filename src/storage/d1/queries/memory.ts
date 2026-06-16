@@ -52,14 +52,37 @@ export interface LogOutcomeParams {
   hold_duration_mins: number;
   outcome: "win" | "loss" | "scratch";
   lessons_learned?: string;
+  signal_updates?: Record<string, unknown>;
 }
 
 export async function logOutcome(db: D1Client, params: LogOutcomeParams): Promise<void> {
   const now = nowISO();
+  let signalsJson: string | null | undefined;
+
+  if (params.signal_updates && Object.keys(params.signal_updates).length > 0) {
+    const current = await db.executeOne<{ signals_json: string | null }>(`SELECT signals_json FROM trade_journal WHERE id = ?`, [
+      params.journal_id,
+    ]);
+    let existingSignals: Record<string, unknown> = {};
+    if (current?.signals_json) {
+      try {
+        const parsed = JSON.parse(current.signals_json);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existingSignals = parsed as Record<string, unknown>;
+        }
+      } catch {
+        existingSignals = {};
+      }
+    }
+    signalsJson = JSON.stringify({ ...existingSignals, ...params.signal_updates });
+  }
+
+  const signalAssignment = signalsJson === undefined ? "" : ", signals_json = ?";
+  const signalParams = signalsJson === undefined ? [] : [signalsJson];
 
   await db.run(
     `UPDATE trade_journal 
-     SET exit_price = ?, exit_at = ?, pnl_usd = ?, pnl_pct = ?, hold_duration_mins = ?, outcome = ?, lessons_learned = ?, updated_at = ?
+     SET exit_price = ?, exit_at = ?, pnl_usd = ?, pnl_pct = ?, hold_duration_mins = ?, outcome = ?, lessons_learned = ?${signalAssignment}, updated_at = ?
      WHERE id = ?`,
     [
       params.exit_price,
@@ -69,6 +92,7 @@ export async function logOutcome(db: D1Client, params: LogOutcomeParams): Promis
       params.hold_duration_mins,
       params.outcome,
       params.lessons_learned ?? null,
+      ...signalParams,
       now,
       params.journal_id,
     ]

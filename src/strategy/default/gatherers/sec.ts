@@ -8,6 +8,12 @@ import type { Gatherer, StrategyContext } from "../../types";
 import { SOURCE_CONFIG } from "../config";
 import { tickerCache } from "../helpers/ticker";
 
+const SEC_FORMS = ["8-K", "4", "13D", "13G", "S-1", "10-Q", "10-K"];
+const SEC_COMPANY_TICKERS_CACHE_KEY = "secCompanyTickersCache";
+const SEC_COMPANY_TICKERS_CACHE_TTL_MS = 24 * 60 * 60_000;
+
+type SecCompanyTickerEntry = { cik_str: number; ticker: string; title: string };
+
 // ── XML / feed helpers ───────────────────────────────────────────────────────
 
 function extractXmlTag(xml: string, tag: string): string | null {
@@ -42,7 +48,7 @@ function parseSECAtomFeed(xml: string): Array<{
     const title = extractXmlTag(entryXml, "title") || "";
     const updated = extractXmlTag(entryXml, "updated") || new Date().toISOString();
 
-    const formMatch = title.match(/\((\d+-\w+|\w+)\)/);
+    const formMatch = title.match(/\(([A-Z0-9]+(?:-[A-Z0-9]+)?)\)/i);
     const form = formMatch ? (formMatch[1] ?? "") : "";
 
     const companyMatch = title.match(/^([^(]+)/);
@@ -71,7 +77,25 @@ function calculateSECFreshness(updatedDate: string): number {
 
 const companyToTickerCache = new Map<string, string | null>();
 
-async function resolveTickerFromCompanyName(companyName: string): Promise<string | null> {
+async function getSecCompanyTickers(ctx: StrategyContext): Promise<SecCompanyTickerEntry[]> {
+  const cached = ctx.state.get<{ timestamp: number; entries: SecCompanyTickerEntry[] }>(SEC_COMPANY_TICKERS_CACHE_KEY);
+  if (cached && Date.now() - cached.timestamp < SEC_COMPANY_TICKERS_CACHE_TTL_MS) {
+    return cached.entries;
+  }
+
+  const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
+    headers: { "User-Agent": "Mahoraga Trading Bot contact@example.com" },
+  });
+
+  if (!response.ok) return cached?.entries || [];
+
+  const data = (await response.json()) as Record<string, SecCompanyTickerEntry>;
+  const entries = Object.values(data);
+  ctx.state.set(SEC_COMPANY_TICKERS_CACHE_KEY, { timestamp: Date.now(), entries });
+  return entries;
+}
+
+async function resolveTickerFromCompanyName(ctx: StrategyContext, companyName: string): Promise<string | null> {
   const normalized = companyName.toUpperCase().trim();
 
   if (companyToTickerCache.has(normalized)) {
@@ -79,15 +103,9 @@ async function resolveTickerFromCompanyName(companyName: string): Promise<string
   }
 
   try {
-    const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
-      headers: { "User-Agent": "Mahoraga Trading Bot" },
-    });
+    const entries = await getSecCompanyTickers(ctx);
 
-    if (!response.ok) return null;
-
-    const data = (await response.json()) as Record<string, { cik_str: number; ticker: string; title: string }>;
-
-    for (const entry of Object.values(data)) {
+    for (const entry of entries) {
       const entryTitle = entry.title.toUpperCase();
       if (entryTitle === normalized || normalized.includes(entryTitle) || entryTitle.includes(normalized)) {
         companyToTickerCache.set(normalized, entry.ticker);
@@ -96,7 +114,7 @@ async function resolveTickerFromCompanyName(companyName: string): Promise<string
     }
 
     const firstWord = normalized.split(/[\s,]+/)[0];
-    for (const entry of Object.values(data)) {
+    for (const entry of entries) {
       if (entry.title.toUpperCase().startsWith(firstWord || "")) {
         companyToTickerCache.set(normalized, entry.ticker);
         return entry.ticker;
@@ -110,34 +128,68 @@ async function resolveTickerFromCompanyName(companyName: string): Promise<string
   }
 }
 
+function getSecFormSentiment(form: string): { sentiment: number; sourceWeight: number; detail: string } {
+  if (form === "8-K") {
+    return { sentiment: 0.3, sourceWeight: SOURCE_CONFIG.weights.sec_8k, detail: "sec_8k" };
+  }
+  if (form === "4") {
+    return { sentiment: 0.24, sourceWeight: SOURCE_CONFIG.weights.sec_4, detail: "sec_form4" };
+  }
+  if (form === "13D" || form === "13G") {
+    return { sentiment: 0.22, sourceWeight: SOURCE_CONFIG.weights.sec_13f, detail: `sec_${form.toLowerCase()}` };
+  }
+  if (form === "S-1") {
+    return { sentiment: 0.18, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: "sec_s1" };
+  }
+  if (form === "10-Q" || form === "10-K") {
+    return { sentiment: 0.14, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: `sec_${form.toLowerCase().replace("-", "")}` };
+  }
+  return { sentiment: 0.12, sourceWeight: SOURCE_CONFIG.weights.sec_major_filing, detail: `sec_${form.toLowerCase().replace("-", "")}` };
+}
+
+async function fetchSecFeed(form: string, ctx: StrategyContext): Promise<Array<{
+  id: string;
+  title: string;
+  updated: string;
+  form: string;
+  company: string;
+}>> {
+  const response = await fetch(
+    `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=${encodeURIComponent(form)}&company=&dateb=&owner=include&count=40&output=atom`,
+    {
+      headers: {
+        "User-Agent": "Mahoraga Trading Bot (contact@example.com)",
+        Accept: "application/atom+xml",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    ctx.log("SEC", "fetch_error", { form, status: response.status });
+    return [];
+  }
+
+  return parseSECAtomFeed(await response.text());
+}
+
 // ── Gatherer ─────────────────────────────────────────────────────────────────
 
 async function gatherSECFilings(ctx: StrategyContext): Promise<Signal[]> {
   const signals: Signal[] = [];
 
   try {
-    const response = await fetch(
-      "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom",
-      {
-        headers: {
-          "User-Agent": "Mahoraga Trading Bot (contact@example.com)",
-          Accept: "application/atom+xml",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      ctx.log("SEC", "fetch_error", { status: response.status });
-      return signals;
-    }
-
-    const text = await response.text();
-    const entries = parseSECAtomFeed(text);
+    const formResults = await Promise.all(SEC_FORMS.map((form) => fetchSecFeed(form, ctx)));
+    const entries = formResults.flat();
+    const seen = new Set<string>();
 
     const alpaca = createAlpacaProviders(ctx.env);
 
-    for (const entry of entries.slice(0, 15)) {
-      const ticker = await resolveTickerFromCompanyName(entry.company);
+    for (const entry of entries.slice(0, 50)) {
+      const dedupeKey = `${entry.company}:${entry.form}:${entry.updated}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const ticker = await resolveTickerFromCompanyName(ctx, entry.company);
       if (!ticker) continue;
 
       const cached = tickerCache.getCachedValidation(ticker);
@@ -147,27 +199,26 @@ async function gatherSECFilings(ctx: StrategyContext): Promise<Signal[]> {
         if (!isValid) continue;
       }
 
-      const sourceWeight = entry.form === "8-K" ? SOURCE_CONFIG.weights.sec_8k : SOURCE_CONFIG.weights.sec_4;
+      const formSignal = getSecFormSentiment(entry.form);
       const freshness = calculateSECFreshness(entry.updated);
 
-      const sentiment = entry.form === "8-K" ? 0.3 : 0.2;
-      const weightedSentiment = sentiment * sourceWeight * freshness;
+      const weightedSentiment = formSignal.sentiment * formSignal.sourceWeight * freshness;
 
       signals.push({
         symbol: ticker,
         source: "sec_edgar",
-        source_detail: `sec_${entry.form.toLowerCase().replace("-", "")}`,
+        source_detail: formSignal.detail,
         sentiment: weightedSentiment,
-        raw_sentiment: sentiment,
+        raw_sentiment: formSignal.sentiment,
         volume: 1,
         freshness,
-        source_weight: sourceWeight,
+        source_weight: formSignal.sourceWeight,
         reason: `SEC ${entry.form}: ${entry.company.slice(0, 50)}`,
         timestamp: Date.now(),
       });
     }
 
-    ctx.log("SEC", "gathered_signals", { count: signals.length });
+    ctx.log("SEC", "gathered_signals", { count: signals.length, entries: entries.length, forms: SEC_FORMS.join(",") });
   } catch (error) {
     ctx.log("SEC", "error", { message: String(error) });
   }
