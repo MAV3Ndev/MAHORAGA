@@ -122,7 +122,7 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           title="MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
           shopt -s nullglob
-          artifacts=(dashboard/release/*.exe dashboard/release/*.yml dashboard/release/*.blockmap)
+          artifacts=(dashboard/release/*.exe dashboard/release/latest.yml dashboard/release/*.blockmap)
 
           if [[ "${#artifacts[@]}" -eq 0 ]]; then
             echo "No release artifacts found in dashboard/release"
