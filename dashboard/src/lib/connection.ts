@@ -1,3 +1,6 @@
+import { Capacitor, registerPlugin } from '@capacitor/core'
+import type { PluginListenerHandle } from '@capacitor/core'
+
 export interface ConnectionSettings {
   apiUrl: string
   bearerToken: string
@@ -43,10 +46,6 @@ interface DesktopBridge {
   onLifecycleEvent: (listener: (event: DesktopLifecycleEvent) => void) => () => void
 }
 
-interface NativeUpdateListenerHandle {
-  remove: () => Promise<void>
-}
-
 interface NativeUpdatePlugin {
   getAppVersion: () => Promise<{ version?: string }>
   checkForUpdates: (input?: { silent?: boolean }) => Promise<DesktopUpdateEvent>
@@ -54,25 +53,18 @@ interface NativeUpdatePlugin {
   addListener?: (
     eventName: 'update',
     listener: (event: DesktopUpdateEvent) => void,
-  ) => Promise<NativeUpdateListenerHandle>
-}
-
-interface CapacitorBridge {
-  isNativePlatform?: () => boolean
-  Plugins?: {
-    SentinelUpdate?: NativeUpdatePlugin
-  }
+  ) => Promise<PluginListenerHandle>
 }
 
 declare global {
   interface Window {
-    Capacitor?: CapacitorBridge
     mahoragaDesktop?: DesktopBridge
   }
 }
 
 const API_URL_KEY = 'mahoraga_connection_url'
 const TOKEN_KEY = 'mahoraga_api_token'
+const sentinelUpdatePlugin = registerPlugin<NativeUpdatePlugin>('SentinelUpdate')
 
 export function isDesktopPanel(): boolean {
   return typeof window !== 'undefined' && Boolean(window.mahoragaDesktop)
@@ -81,13 +73,13 @@ export function isDesktopPanel(): boolean {
 export function isNativeShell(): boolean {
   if (typeof window === 'undefined') return false
   if (isDesktopPanel()) return false
-  if (window.Capacitor?.isNativePlatform?.()) return true
+  if (Capacitor.isNativePlatform()) return true
   return window.location.protocol === 'capacitor:'
 }
 
 function getNativeUpdatePlugin(): NativeUpdatePlugin | undefined {
-  if (typeof window === 'undefined') return undefined
-  return window.Capacitor?.Plugins?.SentinelUpdate
+  if (!isNativeShell()) return undefined
+  return sentinelUpdatePlugin
 }
 
 export function getDefaultApiUrl(): string {
@@ -125,8 +117,8 @@ export async function loadConnectionSettings(): Promise<ConnectionSettings> {
   }
 
   return sanitizeConnection({
-    apiUrl: localStorage.getItem(API_URL_KEY) || getDefaultApiUrl(),
-    bearerToken: localStorage.getItem(TOKEN_KEY) || '',
+    apiUrl: window.localStorage.getItem(API_URL_KEY) || getDefaultApiUrl(),
+    bearerToken: window.localStorage.getItem(TOKEN_KEY) || '',
   })
 }
 
@@ -138,8 +130,8 @@ export async function saveConnectionSettings(settings: ConnectionSettings): Prom
     return sanitizeConnection(saved)
   }
 
-  localStorage.setItem(API_URL_KEY, sanitized.apiUrl)
-  localStorage.setItem(TOKEN_KEY, sanitized.bearerToken)
+  window.localStorage.setItem(API_URL_KEY, sanitized.apiUrl)
+  window.localStorage.setItem(TOKEN_KEY, sanitized.bearerToken)
   return sanitized
 }
 
@@ -267,7 +259,7 @@ export function subscribeDesktopUpdate(
   const nativeUpdate = getNativeUpdatePlugin()
   if (nativeUpdate?.addListener) {
     let active = true
-    let handle: NativeUpdateListenerHandle | null = null
+    let handle: PluginListenerHandle | null = null
     void nativeUpdate.addListener('update', listener).then((registeredHandle) => {
       if (!active) {
         void registeredHandle.remove()

@@ -861,7 +861,7 @@ export default function App() {
   const desktopPanel = isDesktopPanel();
   const desktopShell = !nativeShell;
   const appUpdateShell = desktopPanel || nativeShell;
-  const viewportLockedShell = nativeShell || desktopPanel;
+  const viewportLockedShell = desktopPanel;
   const [connection, setConnection] = useState<ConnectionSettings>({ apiUrl: "", bearerToken: "" });
   const [connectionLoaded, setConnectionLoaded] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
@@ -911,10 +911,21 @@ export default function App() {
 
   useEffect(() => {
     const bootstrapConnection = async () => {
-      const savedConnection = await loadConnectionSettings();
-      setConnection(savedConnection);
-      setShowSetup(!savedConnection.apiUrl || !savedConnection.bearerToken);
-      setConnectionLoaded(true);
+      try {
+        const savedConnection = await loadConnectionSettings();
+        setConnection(savedConnection);
+        setShowSetup(!savedConnection.apiUrl || !savedConnection.bearerToken);
+      } catch (bootstrapError) {
+        setConnection({ apiUrl: "", bearerToken: "" });
+        setShowSetup(true);
+        setError(
+          bootstrapError instanceof Error
+            ? `Saved connection profile could not be loaded: ${bootstrapError.message}`
+            : "Saved connection profile could not be loaded."
+        );
+      } finally {
+        setConnectionLoaded(true);
+      }
     };
 
     bootstrapConnection();
@@ -924,9 +935,13 @@ export default function App() {
     if (!appUpdateShell) return;
 
     let cancelled = false;
-    void getDesktopAppVersion().then((version) => {
-      if (!cancelled) setAppVersion(version);
-    });
+    void getDesktopAppVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {
+        if (!cancelled) setAppVersion(null);
+      });
 
     const unsubscribe = subscribeDesktopUpdate((event) => {
       setUpdateStatus(event);

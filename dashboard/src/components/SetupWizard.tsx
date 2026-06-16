@@ -16,7 +16,14 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
   const nativeShell = isNativeShell()
 
   const handleSubmit = async () => {
-    const normalizedUrl = normalizeApiUrl(apiUrl)
+    let normalizedUrl = ''
+    try {
+      normalizedUrl = normalizeApiUrl(apiUrl)
+    } catch {
+      setError('API URL is invalid')
+      return
+    }
+
     const trimmedToken = bearerToken.trim()
 
     if (!normalizedUrl) {
