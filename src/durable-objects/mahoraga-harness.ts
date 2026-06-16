@@ -3003,11 +3003,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     ];
 
     if ("status" in trade && "orderType" in trade) {
-      fields.splice(
-        2,
-        0,
-        { name: "Order", value: `${trade.orderType} • ${trade.status}`, inline: true }
-      );
+      fields.splice(2, 0, { name: "Order", value: `${trade.orderType} • ${trade.status}`, inline: true });
     }
 
     if (side === "BUY" && "notional" in trade) {
