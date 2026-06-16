@@ -5,20 +5,28 @@
 An autonomous, LLM-powered trading agent that runs 24/7 on Cloudflare Workers.
 
 [![Discord](https://img.shields.io/discord/1467592472158015553?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/vMFnHe2YBh)
+[![Sentinel](https://img.shields.io/badge/Sentinel-v1.0.0-00d4ff)](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0)
 
-MAHORAGA monitors social sentiment from StockTwits and Reddit, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, and 24/7 crypto trading support.
+MAHORAGA monitors market/social signals from StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, decision audit logs, and 24/7 crypto trading support.
+
+The Windows desktop control panel, **MAHORAGA SENTINEL**, is available from the [v1.0.0 release](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
 
 ## Fork Notice
 
-This repository is a public fork of the original [ygwyg/MAHORAGA](https://github.com/ygwyg/MAHORAGA). It keeps the original Cloudflare Workers trading-agent architecture and adds a more operationally focused agent, dashboard, and audit trail.
+This repository is a public fork of the original [ygwyg/MAHORAGA](https://github.com/ygwyg/MAHORAGA). The original project established the Cloudflare Workers/Durable Object trading-agent foundation. This fork keeps that foundation and has diverged into an operational trading-agent distribution centered on MAHORAGA SENTINEL, a configurable strategy harness, stronger risk controls, and reviewable decision history.
+
+The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribution is preserved, but issues, releases, configuration defaults, and Sentinel binaries in this repository should be treated as specific to this fork.
 
 ### Main changes from upstream
 
-- **Remote dashboard app** — Adds the MAHORAGA SENTINEL dashboard with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, and trade-review export.
-- **Desktop and mobile packaging** — Adds Electron support for a Windows desktop app and Capacitor/Android project files for mobile builds.
+- **MAHORAGA SENTINEL v1.0.0** — Adds a released Windows desktop app with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, trade-review export, and GitHub Release based update checks.
+- **Release automation** — Adds GitHub Actions packaging for Sentinel, automatic changelog generation from `sentinel-v*` tags, and release artifact publishing.
+- **Desktop and mobile packaging** — Adds Electron support for Windows desktop builds and Capacitor/Android project files for mobile shells.
 - **Decision audit logs** — Adds D1-backed trade decision rows plus optional R2 snapshots, exposed through `/agent/trade-review` for reviewing why the agent bought, sold, skipped, or blocked a trade.
-- **Risk and execution guardrails** — Adds stronger policy-broker routing, approval records, risk sizing, sell/exit safeguards, staleness handling, market-session planning, and portfolio concentration checks.
-- **Research pipeline refactor** — Extracts signal research, position research, social snapshots, status payloads, record shaping, ticker validation, and strategy hooks into smaller modules with focused tests.
+- **Expanded data sources** — Adds StockTwits, Reddit cookie access, Twitter/X cookie confirmation, SEC EDGAR, GDELT news, Alpha Vantage news sentiment, and crypto momentum gatherers.
+- **Configurable source credentials** — Supports Twitter/X and Reddit cookie accounts with rotation and Dashboard connection tests, plus Dashboard/secret configuration for Alpha Vantage.
+- **Risk and execution guardrails** — Adds stronger policy-broker routing, approval records, risk sizing, sell/exit safeguards, staleness handling, market-session planning, crypto sizing, and portfolio concentration checks.
+- **Research pipeline refactor** — Extracts signal research, position research, social snapshots, status payloads, record shaping, ticker validation, source caching, and strategy hooks into smaller modules with focused tests.
 - **LLM provider flexibility** — Supports direct OpenAI, Vercel AI SDK providers, and Cloudflare AI Gateway with configurable model names and base URLs.
 - **Documentation refresh** — Adds strategy architecture docs and updates the generated documentation site for the pluggable strategy model.
 
@@ -27,7 +35,7 @@ This repository is a public fork of the original [ygwyg/MAHORAGA](https://github
 ## Features
 
 - **24/7 Operation** — Runs on Cloudflare Workers, no local machine required
-- **Multi-Source Signals** — StockTwits, Reddit (4 subreddits), Twitter confirmation
+- **Multi-Source Signals** — StockTwits, Reddit, Twitter/X confirmation, SEC EDGAR, GDELT, Alpha Vantage, and crypto momentum
 - **Multi-Provider LLM** — OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway
 - **Crypto Trading** — Trade BTC, ETH, SOL around the clock
 - **Options Support** — High-conviction options plays
@@ -36,7 +44,8 @@ This repository is a public fork of the original [ygwyg/MAHORAGA](https://github
 - **Discord Notifications** — Get alerts on BUY signals
 - **Pluggable Strategy System** — Create custom strategies without touching core files
 - **Trade Review Export** — Download indexed decision logs and R2 snapshots for post-trade analysis
-- **Desktop/Mobile Dashboard** — Run the dashboard in the browser, Electron, or Android shell
+- **Sentinel Desktop App** — Use the released Windows app to monitor, configure, test credentials, export logs, and install app updates
+- **Browser/Mobile Dashboard** — Run the dashboard in the browser, Electron, or Android shell
 
 ## Requirements
 
@@ -44,10 +53,24 @@ This repository is a public fork of the original [ygwyg/MAHORAGA](https://github
 - Cloudflare account (free tier works)
 - Alpaca account (free, paper trading supported)
 - LLM API key (OpenAI, Anthropic, Google, xAI, DeepSeek) or Cloudflare AI Gateway credentials
+- Optional data-source credentials: Alpha Vantage API key, Reddit cookies, Twitter/X cookies, or Twitter bearer token
 
 ## Quick Start
 
-### 1. Clone and install
+### Option A. Use MAHORAGA SENTINEL
+
+For normal operation, install the desktop app from the latest Sentinel release:
+
+1. Download `MAHORAGA.SENTINEL-1.0.0-x64-setup.exe` from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0).
+2. Deploy the Worker using the steps below.
+3. Open Sentinel and enter your Worker URL plus `MAHORAGA_API_TOKEN`.
+4. Use **Settings** to edit runtime config, set Twitter/X or Reddit cookie accounts, set the Alpha Vantage key, and run credential connection tests.
+
+Sentinel checks GitHub Releases for future `sentinel-v*` versions and can download/install updates from the app.
+
+### Option B. Run from source
+
+#### 1. Clone and install
 
 ```bash
 git clone https://github.com/MAV3Ndev/MAHORAGA.git
@@ -55,7 +78,7 @@ cd mahoraga
 npm install
 ```
 
-### 2. Create Cloudflare resources
+#### 2. Create Cloudflare resources
 
 ```bash
 # Create D1 database
@@ -70,7 +93,7 @@ npx wrangler kv namespace create CACHE
 npx wrangler d1 migrations apply mahoraga-db
 ```
 
-### 3. Set secrets
+#### 3. Set secrets
 
 ```bash
 # Required
@@ -100,18 +123,24 @@ npx wrangler secret put OPENAI_BASE_URL        # Optional: override OpenAI base 
 
 # Optional
 npx wrangler secret put ALPACA_PAPER         # "true" for paper trading (recommended)
-npx wrangler secret put TWITTER_BEARER_TOKEN
+npx wrangler secret put ALPHA_VANTAGE_API_KEY
+npx wrangler secret put REDDIT_COOKIES       # Optional fallback; Dashboard config supports multiple accounts
+npx wrangler secret put REDDIT_USER_AGENT
+npx wrangler secret put TWITTER_COOKIES      # Optional fallback; Dashboard config supports multiple accounts
+npx wrangler secret put TWITTER_BEARER_TOKEN # Optional fallback if not using cookies
 npx wrangler secret put DISCORD_WEBHOOK_URL
 npx wrangler secret put KILL_SWITCH_SECRET   # Emergency kill switch (separate from API token)
 ```
 
-### 4. Deploy
+Social-source cookies and Alpha Vantage can also be saved through Sentinel/Dashboard runtime config. Dashboard config is usually easier for rotating multiple Reddit or Twitter/X accounts and for running the built-in connection tests.
+
+#### 4. Deploy
 
 ```bash
 npx wrangler deploy
 ```
 
-### 5. Enable the agent
+#### 5. Enable the agent
 
 All API endpoints require authentication via Bearer token:
 
@@ -124,7 +153,7 @@ curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
   https://mahoraga.your-subdomain.workers.dev/agent/enable
 ```
 
-### 6. Monitor
+#### 6. Monitor
 
 ```bash
 # Check status
@@ -147,6 +176,22 @@ curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" \
 # Run dashboard locally
 cd dashboard && npm install && npm run dev
 ```
+
+## Sentinel Release Process
+
+Sentinel releases are driven by `sentinel-v*` tags. The release workflow builds the Windows app, verifies that `dashboard/package.json` matches the tag version, generates a changelog from commits since the previous Sentinel tag, and publishes GitHub Release artifacts.
+
+```bash
+cd dashboard
+npm version 1.0.1 --no-git-tag-version
+cd ..
+git add dashboard/package.json dashboard/package-lock.json
+git commit -m "Bump Sentinel to 1.0.1"
+git tag sentinel-v1.0.1
+git push origin main sentinel-v1.0.1
+```
+
+The published installer is the update target used by Sentinel's in-app updater. Keep version tags in the `sentinel-vX.Y.Z` format.
 
 ## Local Development
 
@@ -240,6 +285,11 @@ See `docs/harness.html` for the full customization guide.
 | `unknown_sector_max_positions` | 2 | Separate concentration cap for positions with unknown sector |
 | `options_enabled` | false | Enable options trading |
 | `crypto_enabled` | false | Enable 24/7 crypto trading |
+| `crypto_symbols` | BTC/ETH/SOL | Configured crypto symbols eligible for crypto trading |
+| `crypto_max_position_value` | 1000 | Maximum $ per crypto position |
+| `twitter_cookie_accounts` | [] | Multiple Twitter/X cookie accounts for rotated confirmation searches |
+| `reddit_cookie_accounts` | [] | Multiple Reddit cookie accounts for rotated Reddit gatherer access |
+| `alpha_vantage_api_key` | "" | Alpha Vantage news sentiment API key; can also be set as a Worker secret |
 | `llm_model` | gpt-4o-mini | Research model (cheap, for bulk analysis) |
 | `llm_analyst_model` | gpt-4o | Analyst model (smart, for trading decisions) |
 
