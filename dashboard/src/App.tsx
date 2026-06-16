@@ -1128,7 +1128,7 @@ export default function App() {
 
     const response = await requestAgent<AgentEnvelope<Status>>("/status", { connection: candidateConnection });
     if (!response.ok || !response.data?.ok || !response.data.data) {
-      throw new Error(getResponseError(response.data, "Unable to reach MAHORAGA with the provided credentials"));
+      throw new Error(getResponseError(response.data, "Unable to reach MAHORAGA-Next with the provided credentials"));
     }
 
     const savedConnection = await saveConnectionSettings(candidateConnection);
@@ -1674,7 +1674,7 @@ export default function App() {
             transition={{ duration: 0.42, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
             className="hud-startup-mark"
           >
-            MAHORAGA SENTINEL
+            MAHORAGA-Next SENTINEL
           </motion.div>
           <motion.div
             initial={{ opacity: 0, letterSpacing: "0.36em" }}
@@ -1890,7 +1890,7 @@ export default function App() {
                         desktopPanel ? "hud-title-mark font-semibold" : "font-light"
                       )}
                     >
-                      MAHORAGA SENTINEL
+                      MAHORAGA-Next SENTINEL
                     </span>
                   </div>
                   <StatusIndicator

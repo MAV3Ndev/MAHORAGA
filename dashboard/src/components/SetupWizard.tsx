@@ -38,7 +38,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
         bearerToken: trimmedToken,
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect to MAHORAGA')
+      setError(err instanceof Error ? err.message : 'Failed to connect to MAHORAGA-Next')
     } finally {
       setSaving(false)
     }
@@ -47,7 +47,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
   return (
     <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
       <div className="w-full max-w-5xl grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-        <Panel title="MAHORAGA PANEL" className="relative overflow-hidden">
+        <Panel title="MAHORAGA-Next PANEL" className="relative overflow-hidden">
           <div className="absolute inset-0 opacity-40 pointer-events-none bg-[radial-gradient(circle_at_top_left,rgba(90,154,184,0.18),transparent_45%),radial-gradient(circle_at_bottom_right,rgba(138,106,184,0.14),transparent_40%)]" />
           <div className="relative space-y-6 min-h-[420px] flex flex-col justify-between">
             <div className="space-y-5">
@@ -56,7 +56,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
                   {nativeShell ? 'ANDROID CONTROL SURFACE' : 'DESKTOP CONTROL SURFACE'}
                 </div>
                 <h1 className="text-4xl sm:text-5xl font-bold tracking-[0.14em] text-hud-text-bright m-0">
-                  MAHORAGA PANEL
+                  MAHORAGA-Next PANEL
                 </h1>
               </div>
 
@@ -88,7 +88,7 @@ export function SetupWizard({ initialConnection, onComplete }: SetupWizardProps)
               <input
                 type="text"
                 className="hud-input w-full"
-                placeholder={nativeShell ? 'https://your-mahoraga.workers.dev' : 'https://your-mahoraga.workers.dev'}
+                placeholder={nativeShell ? 'https://your-mahoraga-next.workers.dev' : 'https://your-mahoraga-next.workers.dev'}
                 value={apiUrl}
                 onChange={(event) => setApiUrl(event.target.value)}
               />

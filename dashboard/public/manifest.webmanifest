@@ -1,7 +1,7 @@
 {
-  "name": "MAHORAGA SENTINEL",
+  "name": "MAHORAGA-Next SENTINEL",
   "short_name": "SENTINEL",
-  "description": "Android-ready control surface for the MAHORAGA trading agent.",
+  "description": "Android-ready control surface for the MAHORAGA-Next trading agent.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#0a1117",

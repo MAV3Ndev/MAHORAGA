@@ -1,25 +1,25 @@
 ⚠️ **Warning:** This software is provided for educational and informational purposes only. Nothing in this repository constitutes financial, investment, legal, or tax advice.
 
-# MAHORAGA
+# MAHORAGA-Next
 
 An autonomous, LLM-powered trading agent that runs 24/7 on Cloudflare Workers.
 
 [![Discord](https://img.shields.io/discord/1467592472158015553?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/vMFnHe2YBh)
-[![Sentinel](https://img.shields.io/badge/Sentinel-v1.0.0-00d4ff)](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0)
+[![Sentinel](https://img.shields.io/badge/Sentinel-v1.0.0-00d4ff)](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.0)
 
-MAHORAGA monitors market/social signals from StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, decision audit logs, and 24/7 crypto trading support.
+MAHORAGA-Next monitors market/social signals from StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, decision audit logs, and 24/7 crypto trading support.
 
-The Windows and Android control app, **MAHORAGA SENTINEL**, is available from the [v1.0.0 release](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
+The Windows and Android control app, **MAHORAGA-Next SENTINEL**, is available from the [v1.0.0 release](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.0). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
 
 ## Fork Notice
 
-This repository is a public fork of the original [ygwyg/MAHORAGA](https://github.com/ygwyg/MAHORAGA). The original project established the Cloudflare Workers/Durable Object trading-agent foundation. This fork keeps that foundation and has diverged into an operational trading-agent distribution centered on MAHORAGA SENTINEL, a configurable strategy harness, stronger risk controls, and reviewable decision history.
+This repository is a public fork of the original [ygwyg/MAHORAGA](https://github.com/ygwyg/MAHORAGA). The original project established the Cloudflare Workers/Durable Object trading-agent foundation. This fork keeps that foundation and has diverged into an operational trading-agent distribution centered on MAHORAGA-Next SENTINEL, a configurable strategy harness, stronger risk controls, and reviewable decision history.
 
-The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribution is preserved, but issues, releases, configuration defaults, and Sentinel binaries in this repository should be treated as specific to this fork.
+The fork is maintained independently under `MAV3Ndev/MAHORAGA-Next`. Upstream attribution is preserved, but issues, releases, configuration defaults, and Sentinel binaries in this repository should be treated as specific to this fork.
 
 ### Main changes from upstream
 
-- **MAHORAGA SENTINEL v1.0.0** — Adds released Windows and Android app builds with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, trade-review export, and GitHub Release based update checks.
+- **MAHORAGA-Next SENTINEL v1.0.0** — Adds released Windows and Android app builds with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, trade-review export, and GitHub Release based update checks.
 - **Release automation** — Adds GitHub Actions packaging for Sentinel, automatic changelog generation from `sentinel-v*` tags, Windows artifact publishing, and signed Android APK publishing when signing secrets are configured.
 - **Desktop and mobile packaging** — Adds Electron support for Windows desktop builds and Capacitor/Android project files for mobile shells with native update handling.
 - **Decision audit logs** — Adds D1-backed trade decision rows plus optional R2 snapshots, exposed through `/agent/trade-review` for reviewing why the agent bought, sold, skipped, or blocked a trade.
@@ -57,11 +57,11 @@ The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribu
 
 ## Quick Start
 
-### Option A. Use MAHORAGA SENTINEL
+### Option A. Use MAHORAGA-Next SENTINEL
 
 For normal operation, install Sentinel from the latest Sentinel release:
 
-1. Download the Windows setup executable, or the Android APK if it is attached, from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0).
+1. Download the Windows setup executable, or the Android APK if it is attached, from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.0).
 2. Deploy the Worker using the steps below.
 3. Open Sentinel and enter your Worker URL plus `MAHORAGA_API_TOKEN`.
 4. Use **Settings** to edit runtime config, set Twitter/X or Reddit cookie accounts, set the Alpha Vantage key, and run credential connection tests.
@@ -73,8 +73,8 @@ Sentinel checks GitHub Releases for future `sentinel-v*` versions and can downlo
 #### 1. Clone and install
 
 ```bash
-git clone https://github.com/MAV3Ndev/MAHORAGA.git
-cd mahoraga
+git clone https://github.com/MAV3Ndev/MAHORAGA-Next.git
+cd MAHORAGA-Next
 npm install
 ```
 
@@ -150,7 +150,7 @@ export MAHORAGA_TOKEN="your-api-token"
 
 # Enable the agent
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.your-subdomain.workers.dev/agent/enable
+  https://mahoraga-next.your-subdomain.workers.dev/agent/enable
 ```
 
 #### 6. Monitor
@@ -158,20 +158,20 @@ curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
 ```bash
 # Check status
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.your-subdomain.workers.dev/agent/status
+  https://mahoraga-next.your-subdomain.workers.dev/agent/status
 
 # View recent runtime logs
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  https://mahoraga.your-subdomain.workers.dev/agent/logs
+  https://mahoraga-next.your-subdomain.workers.dev/agent/logs
 
 # Download trade-review logs with snapshots for analysis
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
-  "https://mahoraga.your-subdomain.workers.dev/agent/trade-review?days=90&limit=500&include_snapshots=true" \
-  -o mahoraga-trade-review.json
+  "https://mahoraga-next.your-subdomain.workers.dev/agent/trade-review?days=90&limit=500&include_snapshots=true" \
+  -o mahoraga-next-trade-review.json
 
 # Emergency kill switch (uses separate KILL_SWITCH_SECRET)
 curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" \
-  https://mahoraga.your-subdomain.workers.dev/agent/kill
+  https://mahoraga-next.your-subdomain.workers.dev/agent/kill
 
 # Run dashboard locally
 cd dashboard && npm install && npm run dev
@@ -199,7 +199,7 @@ The published installer is the update target used by Sentinel's in-app updater. 
 # Terminal 1 - Start wrangler
 npx wrangler dev
 
-# Terminal 2 - Start dashboard  
+# Terminal 2 - Start dashboard
 cd dashboard && npm run dev
 
 # Terminal 3 - Enable the agent
@@ -209,7 +209,7 @@ curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
 
 ## Custom Strategies
 
-Mahoraga uses a **pluggable strategy system**. The core harness is a thin orchestrator — all customizable logic lives in strategy modules. You never need to modify core files.
+MAHORAGA-Next uses a **pluggable strategy system**. The core harness is a thin orchestrator — all customizable logic lives in strategy modules. You never need to modify core files.
 
 ### How it works
 
@@ -295,7 +295,7 @@ See `docs/harness.html` for the full customization guide.
 
 ### LLM Provider Configuration
 
-MAHORAGA supports multiple LLM providers via three modes:
+MAHORAGA-Next supports multiple LLM providers via three modes:
 
 | Mode | Description | Required Env Vars |
 |------|-------------|-------------------|
@@ -352,7 +352,7 @@ npx wrangler secret put ANTHROPIC_API_KEY # Your Anthropic API key
 All `/agent/*` endpoints require Bearer token authentication using `MAHORAGA_API_TOKEN`:
 
 ```bash
-curl -H "Authorization: Bearer $MAHORAGA_TOKEN" https://mahoraga.your-subdomain.workers.dev/agent/status
+curl -H "Authorization: Bearer $MAHORAGA_TOKEN" https://mahoraga-next.your-subdomain.workers.dev/agent/status
 ```
 
 Generate a secure token: `openssl rand -base64 48`
@@ -362,7 +362,7 @@ Generate a secure token: `openssl rand -base64 48`
 The `/agent/kill` endpoint uses a separate `KILL_SWITCH_SECRET` for emergency shutdown:
 
 ```bash
-curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" https://mahoraga.your-subdomain.workers.dev/agent/kill
+curl -H "Authorization: Bearer $KILL_SWITCH_SECRET" https://mahoraga-next.your-subdomain.workers.dev/agent/kill
 ```
 
 This immediately disables the agent, cancels all alarms, and clears the signal cache.
@@ -378,7 +378,7 @@ For additional security with SSO/email verification, set up Cloudflare Access:
 # 2. Run the setup script
 CLOUDFLARE_API_TOKEN=your-token \
 CLOUDFLARE_ACCOUNT_ID=your-account-id \
-MAHORAGA_WORKER_URL=https://mahoraga.your-subdomain.workers.dev \
+MAHORAGA_WORKER_URL=https://mahoraga-next.your-subdomain.workers.dev \
 MAHORAGA_ALLOWED_EMAILS=you@example.com \
 npm run setup:access
 ```
@@ -388,7 +388,7 @@ This creates a Cloudflare Access Application with email verification or One-Time
 ## Project Structure
 
 ```
-mahoraga/
+MAHORAGA-Next/
 ├── wrangler.jsonc              # Cloudflare Workers config
 ├── src/
 │   ├── index.ts                # Entry point & routing

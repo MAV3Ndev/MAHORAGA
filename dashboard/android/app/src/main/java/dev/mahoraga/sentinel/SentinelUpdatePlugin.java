@@ -21,7 +21,7 @@ import org.json.JSONObject;
 
 @CapacitorPlugin(name = "SentinelUpdate")
 public class SentinelUpdatePlugin extends Plugin {
-    private static final String UPDATE_REPOSITORY = "MAV3Ndev/MAHORAGA";
+    private static final String UPDATE_REPOSITORY = "MAV3Ndev/MAHORAGA-Next";
     private static final String RELEASES_URL = "https://api.github.com/repos/" + UPDATE_REPOSITORY + "/releases";
 
     private JSObject latestUpdate;
@@ -119,7 +119,7 @@ public class SentinelUpdatePlugin extends Plugin {
                 latestUpdate.put("releaseName", release.optString("name", release.optString("tag_name", "")));
                 latestUpdate.put("releaseUrl", release.optString("html_url", ""));
                 latestUpdate.put("notes", release.optString("body", ""));
-                latestUpdate.put("assetName", asset.optString("name", "MAHORAGA-SENTINEL.apk"));
+                latestUpdate.put("assetName", asset.optString("name", "MAHORAGA-Next-SENTINEL.apk"));
                 latestUpdate.put("assetUrl", asset.optString("browser_download_url", ""));
                 result.put("state", "available");
                 result.put("update", latestUpdate);
@@ -170,7 +170,7 @@ public class SentinelUpdatePlugin extends Plugin {
     private void downloadFile(String rawUrl, File target, JSObject update) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(rawUrl).openConnection();
         connection.setRequestProperty("Accept", "application/octet-stream");
-        connection.setRequestProperty("User-Agent", "MAHORAGA-SENTINEL/" + getVersionName());
+        connection.setRequestProperty("User-Agent", "MAHORAGA-Next-SENTINEL/" + getVersionName());
         connection.connect();
 
         int status = connection.getResponseCode();
@@ -202,7 +202,7 @@ public class SentinelUpdatePlugin extends Plugin {
     private String fetchText(String rawUrl, String accept) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(rawUrl).openConnection();
         connection.setRequestProperty("Accept", accept);
-        connection.setRequestProperty("User-Agent", "MAHORAGA-SENTINEL/" + getVersionName());
+        connection.setRequestProperty("User-Agent", "MAHORAGA-Next-SENTINEL/" + getVersionName());
         connection.connect();
 
         int status = connection.getResponseCode();
@@ -257,7 +257,7 @@ public class SentinelUpdatePlugin extends Plugin {
     }
 
     private String sanitizeFileName(String name) {
-        String sanitized = name == null || name.trim().isEmpty() ? "MAHORAGA-SENTINEL.apk" : name;
+        String sanitized = name == null || name.trim().isEmpty() ? "MAHORAGA-Next-SENTINEL.apk" : name;
         return sanitized.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 

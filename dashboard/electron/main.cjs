@@ -5,11 +5,11 @@ const path = require("node:path");
 
 const PANEL_WIDTH = 1660;
 const PANEL_HEIGHT = 980;
-const APP_USER_MODEL_ID = "jp.mahoraga.panel";
+const APP_USER_MODEL_ID = "jp.mahoraga.next.panel";
 const RESUME_RELOAD_DELAY_MS = 1200;
-const APP_TITLE = "MAHORAGA SENTINEL";
+const APP_TITLE = "MAHORAGA-Next SENTINEL";
 const APP_ICON_PATH = path.join(__dirname, "..", "public", "icons", "app-icon.png");
-const UPDATE_REPOSITORY = process.env.MAHORAGA_SENTINEL_UPDATE_REPO || "MAV3Ndev/MAHORAGA";
+const UPDATE_REPOSITORY = process.env.MAHORAGA_SENTINEL_UPDATE_REPO || "MAV3Ndev/MAHORAGA-Next";
 const UPDATE_CHECK_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases`;
 
 let mainWindow = null;
@@ -106,7 +106,7 @@ function selectReleaseAsset(release) {
   const assets = Array.isArray(release?.assets) ? release.assets : [];
   const platformPattern = getAssetPlatformPattern();
   return (
-    assets.find((asset) => /MAHORAGA SENTINEL/i.test(asset.name || "") && platformPattern.test(asset.name || "")) ||
+    assets.find((asset) => /MAHORAGA-Next SENTINEL/i.test(asset.name || "") && platformPattern.test(asset.name || "")) ||
     assets.find((asset) => platformPattern.test(asset.name || "")) ||
     null
   );
@@ -116,7 +116,7 @@ async function fetchLatestSentinelRelease() {
   const response = await fetch(UPDATE_CHECK_URL, {
     headers: {
       Accept: "application/vnd.github+json",
-      "User-Agent": `MAHORAGA-SENTINEL/${app.getVersion()}`,
+      "User-Agent": `MAHORAGA-Next-SENTINEL/${app.getVersion()}`,
     },
   });
 
@@ -192,7 +192,7 @@ async function downloadAndInstallUpdate() {
 
   updateDownloadInFlight = true;
   const update = latestUpdate;
-  const safeAssetName = path.basename(update.assetName || `MAHORAGA-SENTINEL-${update.version}-setup.exe`);
+  const safeAssetName = path.basename(update.assetName || `MAHORAGA-Next-SENTINEL-${update.version}-setup.exe`);
   const targetPath = path.join(app.getPath("temp"), safeAssetName);
 
   try {
@@ -200,7 +200,7 @@ async function downloadAndInstallUpdate() {
     const response = await fetch(update.assetUrl, {
       headers: {
         Accept: "application/octet-stream",
-        "User-Agent": `MAHORAGA-SENTINEL/${app.getVersion()}`,
+        "User-Agent": `MAHORAGA-Next-SENTINEL/${app.getVersion()}`,
       },
     });
 
@@ -363,14 +363,14 @@ function createMainWindow() {
   });
 
   window.webContents.on("render-process-gone", (_event, details) => {
-    console.error("[MAHORAGA] Renderer process gone", details);
+    console.error("[MAHORAGA-Next] Renderer process gone", details);
     if (!window.isDestroyed()) {
       window.webContents.reloadIgnoringCache();
     }
   });
 
   window.on("unresponsive", () => {
-    console.warn("[MAHORAGA] Window became unresponsive, reloading renderer");
+    console.warn("[MAHORAGA-Next] Window became unresponsive, reloading renderer");
     if (!window.isDestroyed()) {
       window.webContents.reloadIgnoringCache();
     }

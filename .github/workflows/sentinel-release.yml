@@ -112,11 +112,6 @@ jobs:
             exit 1
           fi
 
-      - name: Install Android build dependencies
-        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
-        working-directory: dashboard
-        run: npm install --no-save @capacitor/core@^7 @capacitor/cli@^7 @capacitor/android@^7
-
       - name: Sync Sentinel Android app
         if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
         working-directory: dashboard
@@ -139,7 +134,7 @@ jobs:
         if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
         shell: bash
         run: |
-          cp dashboard/android/app/build/outputs/apk/release/app-release.apk "dashboard/release/MAHORAGA.SENTINEL-${{ steps.release.outputs.version }}-android.apk"
+          cp dashboard/android/app/build/outputs/apk/release/app-release.apk "dashboard/release/MAHORAGA-Next.SENTINEL-${{ steps.release.outputs.version }}-android.apk"
 
       - name: Generate changelog
         id: changelog
@@ -148,7 +143,7 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           previous="$(git tag --list 'sentinel-v*' --sort=-version:refname | grep -v "^${tag}$" | head -n 1 || true)"
           {
-            echo "## MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
+            echo "## MAHORAGA-Next SENTINEL ${{ steps.release.outputs.version }}"
             echo
             if [[ -n "$previous" ]]; then
               echo "Changes since $previous:"
@@ -160,9 +155,9 @@ jobs:
             echo
             echo
             echo "### Artifacts"
-            echo "- Windows installer: MAHORAGA SENTINEL setup executable"
+            echo "- Windows installer: MAHORAGA-Next SENTINEL setup executable"
             echo "- Windows portable executable"
-            echo "- Android APK: MAHORAGA SENTINEL signed APK, when Android signing secrets are configured"
+            echo "- Android APK: MAHORAGA-Next SENTINEL signed APK, when Android signing secrets are configured"
           } > SENTINEL_CHANGELOG.md
 
       - name: Publish GitHub Release
@@ -171,7 +166,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.release.outputs.tag }}"
-          title="MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
+          title="MAHORAGA-Next SENTINEL ${{ steps.release.outputs.version }}"
           shopt -s nullglob
           artifacts=(dashboard/release/*.exe dashboard/release/*.apk dashboard/release/latest.yml dashboard/release/*.blockmap)
 

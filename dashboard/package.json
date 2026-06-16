@@ -1,9 +1,9 @@
 {
-  "name": "mahoraga-dashboard",
+  "name": "mahoraga-next-dashboard",
   "private": true,
   "version": "1.0.0",
-  "description": "Desktop dashboard for the MAHORAGA autonomous trading agent.",
-  "author": "MAHORAGA contributors",
+  "description": "Desktop dashboard for the MAHORAGA-Next autonomous trading agent.",
+  "author": "MAHORAGA-Next contributors",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -16,12 +16,15 @@
     "android:release": "npm run android:sync && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
+    "@capacitor/android": "^7.6.6",
+    "@capacitor/core": "^7.6.6",
     "clsx": "^2.1.1",
     "motion": "^12.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.6.6",
     "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -34,7 +37,7 @@
   },
   "build": {
     "appId": "dev.mahoraga.sentinel",
-    "productName": "MAHORAGA SENTINEL",
+    "productName": "MAHORAGA-Next SENTINEL",
     "directories": {
       "output": "release"
     },
@@ -51,7 +54,7 @@
       {
         "provider": "github",
         "owner": "MAV3Ndev",
-        "repo": "MAHORAGA"
+        "repo": "MAHORAGA-Next"
       }
     ],
     "win": {

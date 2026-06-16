@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sentinel — MAHORAGA Desktop and Android App</title>
-  <meta name="description" content="Install, configure, update, and release MAHORAGA SENTINEL for Windows and Android.">
+  <title>Sentinel — MAHORAGA-Next Desktop and Android App</title>
+  <meta name="description" content="Install, configure, update, and release MAHORAGA-Next SENTINEL for Windows and Android.">
   <link rel="canonical" href="https://mahoraga.dev/sentinel.html">
   <link rel="icon" type="image/svg+xml" href="/mahoraga.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="/og-image.png">
@@ -15,8 +15,8 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #080a0c; --bg-subtle: #0c0f13; --surface: #0c0f13;
-      --border: rgba(122, 155, 168, 0.1); --muted: #4a5d68; --subtle: #6a7a82;
-      --text: #7a9ba8; --bright: #c8dce4; --white: #e4edf2; --gold: #CFB97D; --gold-dim: #94814C;
+      --border: rgba(122, 155, 168, 0.1); --muted: #8398a1; --subtle: #a8bbc3;
+      --text: #bed2d9; --bright: #e0edf2; --white: #f3f8fa; --gold: #CFB97D; --gold-dim: #94814C;
       --sidebar-width: 210px;
     }
     html { font-size: 14px; }
@@ -32,7 +32,7 @@
       background-size: 28px 28px; pointer-events: none;
     }
     body > * { position: relative; z-index: 1; }
-    .disclaimer { background: var(--surface); color: #999; text-align: center; padding: 10px 16px; font-size: 11px; }
+    .disclaimer { background: var(--surface); color: #b9c7cd; text-align: center; padding: 10px 16px; font-size: 11px; }
     .site-header {
       display: flex; justify-content: space-between; align-items: center;
       padding: 16px 24px; border-bottom: 1px solid var(--border);
@@ -83,11 +83,11 @@
 
   <header class="site-header">
     <a href="./index.html" class="site-logo">
-      <img src="./mahoraga.svg" alt="Mahoraga">
-      <span>Mahoraga</span>
+      <img src="./mahoraga.svg" alt="MAHORAGA-Next">
+      <span>MAHORAGA-Next</span>
     </a>
     <nav class="header-links">
-      <a href="https://github.com/MAV3Ndev/MAHORAGA">GitHub</a>
+      <a href="https://github.com/MAV3Ndev/MAHORAGA-Next">GitHub</a>
       <a href="https://discord.gg/vMFnHe2YBh">Discord</a>
     </nav>
   </header>
@@ -106,11 +106,11 @@
     </aside>
 
     <main class="main-content">
-      <h1>MAHORAGA SENTINEL</h1>
-      <p class="subtitle">Desktop and Android control app for operating a deployed MAHORAGA Worker.</p>
+      <h1>MAHORAGA-Next SENTINEL</h1>
+      <p class="subtitle">Desktop and Android control app for operating a deployed MAHORAGA-Next Worker.</p>
 
       <h2>What Sentinel Does</h2>
-      <p>Sentinel is the operational control panel for a remote MAHORAGA agent. It connects to your Worker using <code>MAHORAGA_API_TOKEN</code>, then lets you monitor account state, positions, signals, logs, runtime config, source credentials, and trade-review exports.</p>
+      <p>Sentinel is the operational control panel for a remote MAHORAGA-Next agent. It connects to your Worker using <code>MAHORAGA_API_TOKEN</code>, then lets you monitor account state, positions, signals, logs, runtime config, source credentials, and trade-review exports.</p>
       <ul>
         <li>Windows desktop app built with Electron</li>
         <li>Android shell built with Capacitor</li>
@@ -123,27 +123,27 @@
         <tr><th>Platform</th><th>Artifact</th><th>Notes</th></tr>
         <tr>
           <td>Windows</td>
-          <td><code>MAHORAGA.SENTINEL-*-x64-setup.exe</code></td>
+          <td><code>MAHORAGA-Next.SENTINEL-*-x64-setup.exe</code></td>
           <td>Recommended. Used by the in-app updater.</td>
         </tr>
         <tr>
           <td>Windows portable</td>
-          <td><code>MAHORAGA.SENTINEL-*-x64-portable.exe</code></td>
+          <td><code>MAHORAGA-Next.SENTINEL-*-x64-portable.exe</code></td>
           <td>Manual launch, not the primary updater target.</td>
         </tr>
         <tr>
           <td>Android</td>
-          <td><code>MAHORAGA.SENTINEL-*-android.apk</code></td>
+          <td><code>MAHORAGA-Next.SENTINEL-*-android.apk</code></td>
           <td>Published only when Android signing secrets are configured.</td>
         </tr>
       </table>
-      <p>Current release: <a href="https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0">Sentinel v1.0.0</a>.</p>
+      <p>Current release: <a href="https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.0">Sentinel v1.0.0</a>.</p>
 
       <h2>First Connection</h2>
       <ol>
         <li>Deploy the Worker with Alpaca, LLM, D1, KV, R2, and authentication secrets configured.</li>
         <li>Open Sentinel.</li>
-        <li>Enter the public Worker URL, for example <code>https://mahoraga.example.workers.dev</code>.</li>
+        <li>Enter the public Worker URL, for example <code>https://mahoraga-next.example.workers.dev</code>.</li>
         <li>Enter the same token stored in <code>MAHORAGA_API_TOKEN</code>.</li>
         <li>Open Settings to configure source credentials and risk parameters.</li>
       </ol>

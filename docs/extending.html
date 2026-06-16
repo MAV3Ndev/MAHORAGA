@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Extending Mahoraga — Add Custom Data Sources & Trading Strategies</title>
-  <meta name="description" content="Add your own data sources to Mahoraga: news APIs, SEC filings, options flow. Customize trading logic, entry/exit rules, and LLM prompts.">
+  <title>Extending MAHORAGA-Next — Add Custom Data Sources & Trading Strategies</title>
+  <meta name="description" content="Add your own data sources to MAHORAGA-Next: news APIs, SEC filings, options flow. Customize trading logic, entry/exit rules, and LLM prompts.">
   <link rel="canonical" href="https://mahoraga.dev/extending.html">
 
-  <meta property="og:title" content="Extending Mahoraga — Custom Data Sources">
+  <meta property="og:title" content="Extending MAHORAGA-Next — Custom Data Sources">
   <meta property="og:description" content="Add custom data sources and trading strategies to your AI trading agent.">
   <meta property="og:image" content="https://mahoraga.dev/og-image.png">
   <meta property="og:url" content="https://mahoraga.dev/extending.html">
   <meta property="og:type" content="article">
 
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Extending Mahoraga — Custom Data Sources">
-  <meta name="twitter:description" content="Add custom data sources and trading strategies to Mahoraga.">
+  <meta name="twitter:title" content="Extending MAHORAGA-Next — Custom Data Sources">
+  <meta name="twitter:description" content="Add custom data sources and trading strategies to MAHORAGA-Next.">
   <meta name="twitter:image" content="https://mahoraga.dev/og-image.png">
 
   <link rel="icon" type="image/svg+xml" href="/mahoraga.svg">
@@ -29,7 +29,7 @@
     :root {
       --bg: #080a0c; --bg-subtle: #0c0f13; --surface: #0c0f13; --surface-hover: #11151a;
       --border: rgba(122, 155, 168, 0.1); --border-hover: rgba(122, 155, 168, 0.18);
-      --muted: #4a5d68; --subtle: #6a7a82; --text: #7a9ba8; --bright: #c8dce4; --white: #e4edf2;
+      --muted: #8398a1; --subtle: #a8bbc3; --text: #bed2d9; --bright: #e0edf2; --white: #f3f8fa;
       --accent: #7a9ba8; --gold: #CFB97D; --gold-dim: #94814C; --gold-glow: rgba(207, 185, 125, 0.08);
       --sidebar-width: 210px;
     }
@@ -54,7 +54,7 @@
     body > * { position: relative; z-index: 1; }
 
     .disclaimer {
-      background: var(--surface); color: #999; text-align: center;
+      background: var(--surface); color: #b9c7cd; text-align: center;
       padding: 10px 16px; font-size: 11px; letter-spacing: 0.5px;
     }
 
@@ -141,11 +141,11 @@
 
   <header class="site-header">
     <a href="./index.html" class="site-logo">
-      <img src="./mahoraga.svg" alt="Mahoraga">
-      <span>Mahoraga</span>
+      <img src="./mahoraga.svg" alt="MAHORAGA-Next">
+      <span>MAHORAGA-Next</span>
     </a>
     <nav class="header-links">
-      <a href="https://github.com/MAV3Ndev/MAHORAGA">
+      <a href="https://github.com/MAV3Ndev/MAHORAGA-Next">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
         GitHub
       </a>
@@ -170,7 +170,7 @@
     </aside>
 
     <main class="main-content">
-      <h1>Extending Mahoraga</h1>
+      <h1>Extending MAHORAGA-Next</h1>
       <p class="subtitle">Code examples for common customizations.</p>
 
       <p>For a full customization guide, see <a href="./harness.html">Strategies</a>. This page provides copy-paste examples.</p>

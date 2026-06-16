@@ -482,7 +482,7 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "mahoraga-trade-review-" + new Date().toISOString().slice(0, 10) + ".json";
+      link.download = "mahoraga-next-trade-review-" + new Date().toISOString().slice(0, 10) + ".json";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -2381,7 +2381,7 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
                     className="hud-input"
                     value={apiUrl}
                     onChange={(e) => setApiUrl(e.target.value)}
-                    placeholder="https://your-mahoraga.workers.dev"
+                    placeholder="https://your-mahoraga-next.workers.dev"
                   />
                   <input
                     type="password"
