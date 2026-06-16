@@ -1,4 +1,4 @@
-import { Capacitor, registerPlugin } from '@capacitor/core'
+import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
 
 export interface ConnectionSettings {
@@ -158,6 +158,11 @@ function parseJson(text: string): unknown {
   }
 }
 
+function parseResponseData(data: unknown): unknown {
+  if (typeof data === 'string') return parseJson(data)
+  return data
+}
+
 export async function requestAgent<T = unknown>(
   path: string,
   options: {
@@ -198,7 +203,27 @@ export async function requestAgent<T = unknown>(
     body = JSON.stringify(options.body)
   }
 
-  const response = await fetch(buildAgentUrl(connection.apiUrl, path), {
+  const url = buildAgentUrl(connection.apiUrl, path)
+
+  if (isNativeShell()) {
+    const response = await CapacitorHttp.request({
+      url,
+      method: options.method || 'GET',
+      headers: Object.fromEntries(headers.entries()),
+      data: body,
+      responseType: 'text',
+      connectTimeout: 15000,
+      readTimeout: 30000,
+    })
+
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      data: parseResponseData(response.data) as T,
+    }
+  }
+
+  const response = await fetch(url, {
     method: options.method || 'GET',
     headers,
     body,

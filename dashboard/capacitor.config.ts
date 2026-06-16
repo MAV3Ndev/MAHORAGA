@@ -10,6 +10,11 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: false,
   },
+  plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
+  },
 }
 
 export default config
