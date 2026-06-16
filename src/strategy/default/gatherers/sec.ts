@@ -221,19 +221,25 @@ async function gatherSECFilings(ctx: StrategyContext): Promise<Signal[]> {
       }
 
       const formSignal = getSecFormSentiment(entry.form);
+      const filingSignal = classifySECFilingSentiment(entry);
       const freshness = calculateSECFreshness(entry.updated);
+      const rawSentiment =
+        Math.abs(filingSignal.sentiment) > Math.abs(formSignal.sentiment)
+          ? filingSignal.sentiment
+          : formSignal.sentiment;
 
-      const weightedSentiment = formSignal.sentiment * formSignal.sourceWeight * freshness;
+      const weightedSentiment = rawSentiment * formSignal.sourceWeight * freshness;
 
       signals.push({
         symbol: ticker,
         source: "sec_edgar",
-        source_detail: formSignal.detail,
+        source_detail: `${formSignal.detail}:${filingSignal.label}`,
         sentiment: weightedSentiment,
-        raw_sentiment: formSignal.sentiment,
+        raw_sentiment: rawSentiment,
         volume: 1,
         freshness,
         source_weight: formSignal.sourceWeight,
+        quality_score: filingSignal.qualityScore,
         reason: `SEC ${entry.form}: ${entry.company.slice(0, 50)}`,
         timestamp: Date.now(),
       });

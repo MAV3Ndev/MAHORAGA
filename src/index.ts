@@ -32,9 +32,9 @@ function withCors(request: Request, response: Response): Response {
   const headers = new Headers(response.headers);
   const corsHeaders = buildCorsHeaders(request);
 
-  for (const [key, value] of corsHeaders.entries()) {
+  corsHeaders.forEach((value, key) => {
     headers.set(key, value);
-  }
+  });
 
   return new Response(response.body, {
     status: response.status,

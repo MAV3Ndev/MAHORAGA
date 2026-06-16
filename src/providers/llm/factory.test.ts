@@ -1,25 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../env.d";
-
-let createAISDKProviderMock: ReturnType<typeof vi.fn>;
-
-function mockAISDKModule(): void {
-  createAISDKProviderMock = vi.fn(() => ({ complete: vi.fn() }));
-  vi.doMock("./ai-sdk", () => ({
-    SUPPORTED_PROVIDERS: {
-      openai: { envKey: "OPENAI_API_KEY", name: "OpenAI" },
-      anthropic: { envKey: "ANTHROPIC_API_KEY", name: "Anthropic" },
-      google: { envKey: "GOOGLE_GENERATIVE_AI_API_KEY", name: "Google" },
-      xai: { envKey: "XAI_API_KEY", name: "xAI (Grok)" },
-      deepseek: { envKey: "DEEPSEEK_API_KEY", name: "DeepSeek" },
-    },
-    createAISDKProvider: createAISDKProviderMock,
-  }));
-}
 
 describe("LLM Provider Factory", () => {
   afterEach(() => {
-    vi.doUnmock("./ai-sdk");
     vi.resetModules();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
@@ -27,10 +10,6 @@ describe("LLM Provider Factory", () => {
 
   describe("createLLMProvider", () => {
     describe("openai-raw provider", () => {
-      beforeEach(() => {
-        mockAISDKModule();
-      });
-
       it("creates OpenAI provider with API key", async () => {
         const fetchMock = vi.fn().mockResolvedValue({
           ok: true,
@@ -169,10 +148,6 @@ describe("LLM Provider Factory", () => {
     });
 
     describe("ai-sdk provider", () => {
-      beforeEach(() => {
-        mockAISDKModule();
-      });
-
       it("creates AI SDK provider with OpenAI key", async () => {
         const createOpenAIMock = vi.fn(
           () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
@@ -203,12 +178,7 @@ describe("LLM Provider Factory", () => {
 
         const provider = createLLMProvider(env);
         expect(provider).not.toBeNull();
-        expect(createAISDKProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            model: "openai/gpt-4o",
-            apiKeys: { openai: "sk-test" },
-          })
-        );
+        expect(createOpenAIMock).toHaveBeenCalledWith({ apiKey: "sk-test" });
       });
 
       it("creates AI SDK provider with Anthropic key", async () => {
@@ -241,12 +211,7 @@ describe("LLM Provider Factory", () => {
 
         const provider = createLLMProvider(env);
         expect(provider).not.toBeNull();
-        expect(createAISDKProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            model: "anthropic/claude-sonnet-4",
-            apiKeys: { anthropic: "sk-ant-test" },
-          })
-        );
+        expect(createAnthropicMock).toHaveBeenCalledWith({ apiKey: "sk-ant-test" });
       });
 
       it("creates AI SDK provider with Anthropic auth token", async () => {
@@ -346,13 +311,10 @@ describe("LLM Provider Factory", () => {
         const provider = createLLMProvider(env);
         expect(provider).not.toBeNull();
 
-        expect(createAISDKProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            model: "openai/gpt-4o-mini",
-            apiKeys: { openai: "test" },
-            openaiBaseUrl: "https://proxy.example/v1",
-          })
-        );
+        expect(createOpenAIMock).toHaveBeenCalledWith({
+          apiKey: "test",
+          baseURL: "https://proxy.example/v1",
+        });
       });
 
       it("ignores whitespace OPENAI_BASE_URL", async () => {
@@ -387,21 +349,13 @@ describe("LLM Provider Factory", () => {
         const provider = createLLMProvider(env);
         expect(provider).not.toBeNull();
 
-        expect(createAISDKProviderMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            model: "openai/gpt-4o-mini",
-            apiKeys: { openai: "test" },
-            openaiBaseUrl: undefined,
-          })
-        );
+        expect(createOpenAIMock).toHaveBeenCalledWith({
+          apiKey: "test",
+        });
       });
     });
 
     describe("cloudflare-gateway provider", () => {
-      beforeEach(() => {
-        mockAISDKModule();
-      });
-
       it("creates Cloudflare Gateway provider with all credentials", async () => {
         const fetchMock = vi.fn().mockResolvedValue({
           ok: true,
@@ -448,10 +402,6 @@ describe("LLM Provider Factory", () => {
     });
 
     describe("default provider", () => {
-      beforeEach(() => {
-        mockAISDKModule();
-      });
-
       it("defaults to openai-raw when LLM_PROVIDER not set", async () => {
         const fetchMock = vi.fn().mockResolvedValue({
           ok: true,

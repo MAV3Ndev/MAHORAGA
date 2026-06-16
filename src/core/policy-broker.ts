@@ -16,40 +16,235 @@ import type { AlpacaProviders } from "../providers/alpaca";
 import { getDTE } from "../providers/alpaca/options";
 import type { Account, MarketClock, Order, Position, Snapshot } from "../providers/types";
 import type { D1Client } from "../storage/d1/client";
-import { createJournalEntry, logOutcome } from "../storage/d1/queries/memory";
 import type { RiskState } from "../storage/d1/queries/risk-state";
-import { getRiskState, recordDailyLoss, setCooldown } from "../storage/d1/queries/risk-state";
-import { createTrade, getTradesToday } from "../storage/d1/queries/trades";
-import type { R2Client } from "../storage/r2/client";
-import { R2Paths } from "../storage/r2/paths";
-import { isCryptoSymbol, normalizeCryptoSymbol } from "../strategy/default/helpers/crypto";
+import { getRiskState } from "../storage/d1/queries/risk-state";
 import type { StrategyContext } from "../strategy/types";
-import { calculateTradeOutcome } from "./trade-outcome";
+import { isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
 
 export interface PolicyBrokerDeps {
   alpaca: AlpacaProviders;
   policyConfig: PolicyConfig;
   db: D1Client | null;
-  r2?: R2Client | null;
   log: (agent: string, action: string, details: Record<string, unknown>) => void;
   cryptoSymbols: string[];
   allowedExchanges: string[];
-  afterHoursExitLimitBufferPct?: number;
-  maxEntrySpreadPct?: number;
-  minEntryQuoteSize?: number;
-  maxEntryPriceChangePct?: number;
-  dailyLossGuardEnabled?: boolean;
-  dailyLossSoftLimitPct?: number;
-  dailyLossMinConfidence?: number;
-  dailyLossMinEntryQuality?: "excellent" | "good" | "fair" | "poor";
-  openPositionLossGuardEnabled?: boolean;
-  openPositionLossSoftLimitPct?: number;
-  openPositionLossMinConfidence?: number;
-  openPositionLossMinEntryQuality?: "excellent" | "good" | "fair" | "poor";
+  equityEntryCutoffMinutesBeforeClose: number;
+  afterHoursExitLimitBufferPct: number;
+  defaultStopLossPct: number;
   /** Called after a successful buy order */
-  onBuy?: (symbol: string, notional: number, reason: string) => void | Promise<void>;
-  /** Called after a successful sell/close order. Return value is persisted into the trade snapshot metadata. */
-  onSell?: (symbol: string, reason: string) => Record<string, unknown> | void | Promise<Record<string, unknown> | void>;
+  onBuy?: (trade: {
+    symbol: string;
+    notional: number;
+    reason: string;
+    isCrypto: boolean;
+    status: string;
+    orderType: string;
+  }) => void | Promise<void>;
+  /** Called after a successful sell/close order */
+  onSell?: (trade: { symbol: string; reason: string }) => void | Promise<void>;
+}
+
+const REGULAR_MARKET_OPEN_ET_MINUTES = 9 * 60 + 30;
+const REGULAR_MARKET_CLOSE_ET_MINUTES = 16 * 60;
+const EXTENDED_HOURS_OPEN_ET_MINUTES = 4 * 60;
+const EXTENDED_HOURS_CLOSE_ET_MINUTES = 20 * 60;
+const MANAGED_STOP_ORDER_PREFIX = "mahoraga-stop";
+const AFTER_HOURS_EXIT_ORDER_PREFIX = "mahoraga-ahx";
+const ORDER_PRICE_EPSILON = 0.02;
+const ORDER_QTY_EPSILON = 0.0001;
+
+function roundToCents(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function approximatelyEqual(left: number, right: number, epsilon: number): boolean {
+  return Math.abs(left - right) <= epsilon;
+}
+
+function buildManagedOrderId(prefix: string, symbol: string): string {
+  const normalizedSymbol = symbol
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 24);
+  return `${prefix}-${normalizedSymbol}`.slice(0, 48);
+}
+
+function extractEtClockInfo(timestamp: string): { weekday: string; minutesSinceMidnight: number } | null {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const weekday = parts.find((part) => part.type === "weekday")?.value;
+  const hour = Number.parseInt(parts.find((part) => part.type === "hour")?.value ?? "", 10);
+  const minute = Number.parseInt(parts.find((part) => part.type === "minute")?.value ?? "", 10);
+
+  if (!weekday || !Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return null;
+  }
+
+  return {
+    weekday,
+    minutesSinceMidnight: hour * 60 + minute,
+  };
+}
+
+function isWeekdayEt(weekday: string): boolean {
+  return weekday !== "Sat" && weekday !== "Sun";
+}
+
+export function isWithinExtendedHoursSession(timestamp: string): boolean {
+  const info = extractEtClockInfo(timestamp);
+  if (!info || !isWeekdayEt(info.weekday)) {
+    return false;
+  }
+
+  const minutes = info.minutesSinceMidnight;
+  const inPremarket = minutes >= EXTENDED_HOURS_OPEN_ET_MINUTES && minutes < REGULAR_MARKET_OPEN_ET_MINUTES;
+  const inAfterHours = minutes >= REGULAR_MARKET_CLOSE_ET_MINUTES && minutes < EXTENDED_HOURS_CLOSE_ET_MINUTES;
+  return inPremarket || inAfterHours;
+}
+
+export function shouldBlockEquityEntryNearClose(clock: MarketClock, cutoffMinutes: number): boolean {
+  if (!clock.is_open || cutoffMinutes <= 0) {
+    return false;
+  }
+
+  const nowMs = new Date(clock.timestamp).getTime();
+  const nextCloseMs = new Date(clock.next_close).getTime();
+  if (!Number.isFinite(nowMs) || !Number.isFinite(nextCloseMs)) {
+    return false;
+  }
+
+  const minutesUntilClose = (nextCloseMs - nowMs) / 60000;
+  return minutesUntilClose >= 0 && minutesUntilClose <= cutoffMinutes;
+}
+
+function computeProtectiveStopPrice(referencePrice: number, stopLossPct: number): number | null {
+  if (!Number.isFinite(referencePrice) || referencePrice <= 0 || !Number.isFinite(stopLossPct) || stopLossPct <= 0) {
+    return null;
+  }
+
+  return Math.max(0.01, roundToCents(referencePrice * (1 - stopLossPct / 100)));
+}
+
+function computeAfterHoursExitLimitPrice(
+  position: Pick<Position, "current_price" | "avg_entry_price">,
+  snapshot: Snapshot | null,
+  bufferPct: number
+): number | null {
+  const bidPrice = snapshot?.latest_quote?.bid_price ?? 0;
+  const latestTradePrice = snapshot?.latest_trade?.price ?? 0;
+  const fallbackPrice = position.current_price || position.avg_entry_price || 0;
+  const referencePrice = bidPrice > 0 ? bidPrice : latestTradePrice > 0 ? latestTradePrice : fallbackPrice;
+
+  if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+    return null;
+  }
+
+  const aggressivePrice = referencePrice * (1 - Math.max(0, bufferPct) / 100);
+  return Math.max(0.01, roundToCents(aggressivePrice));
+}
+
+function parseOrderPrice(order: Pick<Order, "limit_price" | "stop_price">): number {
+  const raw = order.limit_price ?? order.stop_price ?? "";
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseOrderQty(order: Pick<Order, "qty">): number {
+  const parsed = Number.parseFloat(order.qty);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isFilledOrderStatus(status: unknown): boolean {
+  return String(status ?? "").toLowerCase() === "filled";
+}
+
+export function isTradingHaltMarketOrderError(error: unknown): boolean {
+  const message = String(error).toLowerCase();
+  return message.includes("trading halt") && message.includes("limit order instead");
+}
+
+export function computeHaltLimitPrice(referencePrice: number): number | null {
+  if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+    return null;
+  }
+
+  // Small premium to improve the chance of queuing/filling when the halt lifts.
+  return Math.round(referencePrice * 1.02 * 100) / 100;
+}
+
+export function computeCappedBuyNotional(
+  requestedNotional: number,
+  account: Pick<Account, "buying_power" | "daytrading_buying_power">,
+  isCrypto: boolean
+): { adjustedNotional: number; cap: number } {
+  const buyingPowerCap = Number.isFinite(account.buying_power) ? Math.max(0, account.buying_power) : 0;
+  const dayTradingCap =
+    !isCrypto && Number.isFinite(account.daytrading_buying_power) && account.daytrading_buying_power > 0
+      ? account.daytrading_buying_power
+      : Number.POSITIVE_INFINITY;
+  const cap = Math.max(0, Math.min(buyingPowerCap, dayTradingCap));
+  const adjustedNotional = Math.min(Math.max(0, requestedNotional), cap);
+
+  return {
+    adjustedNotional: Math.round(adjustedNotional * 100) / 100,
+    cap,
+  };
+}
+
+interface ParsedOptionsContract {
+  underlying: string;
+  expiration: string;
+  optionType: "call" | "put";
+  strike: number;
+}
+
+function computeAverageVolume20d(volumes: number[]): number | undefined {
+  const validVolumes = volumes.filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (validVolumes.length === 0) return undefined;
+  return validVolumes.reduce((sum, volume) => sum + volume, 0) / validVolumes.length;
+}
+
+function getOptionsLimitPrice(snapshot: Awaited<ReturnType<AlpacaProviders["options"]["getSnapshot"]>>): number | null {
+  const bid = snapshot.latest_quote?.bid_price ?? 0;
+  const ask = snapshot.latest_quote?.ask_price ?? 0;
+
+  if (bid > 0 && ask > 0) {
+    return Math.round(((bid + ask) / 2) * 100) / 100;
+  }
+
+  const fallback = ask > 0 ? ask : bid > 0 ? bid : 0;
+  return fallback > 0 ? Math.round(fallback * 100) / 100 : null;
+}
+
+function parseOptionsContractSymbol(symbol: string): ParsedOptionsContract | null {
+  const match = symbol.toUpperCase().match(/^([A-Z]+)(\d{6})([CP])(\d+)$/);
+  if (!match) return null;
+
+  const [, underlying, rawDate, typeCode, rawStrike] = match;
+  if (!underlying || !rawDate || !typeCode || !rawStrike) return null;
+
+  const year = 2000 + Number.parseInt(rawDate.slice(0, 2), 10);
+  const month = Number.parseInt(rawDate.slice(2, 4), 10);
+  const day = Number.parseInt(rawDate.slice(4, 6), 10);
+  const strike = Number.parseInt(rawStrike, 10) / 1000;
+
+  return {
+    underlying,
+    expiration: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    optionType: typeCode === "C" ? "call" : "put",
+    strike,
+  };
 }
 
 /**
@@ -57,8 +252,8 @@ export interface PolicyBrokerDeps {
  * All orders are validated by PolicyEngine before execution.
  */
 export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["broker"] {
-  const { alpaca, policyConfig, db, r2, log } = deps;
-  const engine = new PolicyEngine({ ...policyConfig, open_position_loss_entry_guard_enabled: false });
+  const { alpaca, policyConfig, db, log } = deps;
+  const engine = new PolicyEngine(policyConfig);
 
   // Cache account/positions/clock per cycle to avoid redundant API calls
   let cachedAccount: Account | null = null;
@@ -102,263 +297,37 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
     return getRiskState(db);
   }
 
-  function parsePositiveNumber(value: unknown): number | undefined {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+  async function listOpenOrdersForSymbol(symbol: string): Promise<Order[]> {
+    return alpaca.trading.listOrders({ status: "open", limit: 50, symbols: [symbol] }).catch(() => []);
   }
 
-  function parseFiniteNumber(value: unknown): number | undefined {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : undefined;
+  function isManagedProtectiveStop(order: Order, symbol: string): boolean {
+    return (
+      order.symbol === symbol &&
+      order.side === "sell" &&
+      order.client_order_id === buildManagedOrderId(MANAGED_STOP_ORDER_PREFIX, symbol) &&
+      (order.order_type === "stop" || order.type === "stop")
+    );
   }
 
-  function getQualityRank(value: unknown): number {
-    if (value === "excellent") return 3;
-    if (value === "good") return 2;
-    if (value === "fair") return 1;
-    if (value === "poor") return 0;
-    return -1;
+  function isManagedAfterHoursExit(order: Order, symbol: string): boolean {
+    return (
+      order.symbol === symbol &&
+      order.side === "sell" &&
+      order.client_order_id === buildManagedOrderId(AFTER_HOURS_EXIT_ORDER_PREFIX, symbol)
+    );
   }
 
-  function isFilledOrderStatus(status: string): boolean {
-    return status === "filled" || status === "partially_filled";
+  async function cancelManagedOrders(symbol: string): Promise<void> {
+    const openOrders = await listOpenOrdersForSymbol(symbol);
+    const managedOrders = openOrders.filter(
+      (order) => isManagedProtectiveStop(order, symbol) || isManagedAfterHoursExit(order, symbol)
+    );
+
+    await Promise.all(managedOrders.map((order) => alpaca.trading.cancelOrder(order.id).catch(() => undefined)));
   }
 
-  function isCompleteSellOrderStatus(status: string): boolean {
-    return status === "filled";
-  }
-
-  function getSnapshotReferencePrice(snapshot: {
-    latest_trade?: { price?: number };
-    latest_quote?: { ask_price?: number; bid_price?: number };
-  }): number | undefined {
-    const tradePrice = parsePositiveNumber(snapshot.latest_trade?.price);
-    if (tradePrice !== undefined) return tradePrice;
-
-    const ask = parsePositiveNumber(snapshot.latest_quote?.ask_price);
-    const bid = parsePositiveNumber(snapshot.latest_quote?.bid_price);
-    if (ask !== undefined && bid !== undefined) return (ask + bid) / 2;
-    return ask ?? bid;
-  }
-
-  function enrichLifecycleWithExitMetrics(
-    lifecycle: Record<string, unknown> | undefined,
-    exitPrice: number
-  ): Record<string, unknown> | undefined {
-    if (!lifecycle) return undefined;
-    const entryPrice = parsePositiveNumber(lifecycle.entry_price);
-    const peakPrice = parsePositiveNumber(lifecycle.peak_price);
-    const troughPrice = parsePositiveNumber(lifecycle.trough_price);
-    if (entryPrice === undefined || exitPrice <= 0) return lifecycle;
-
-    const peakGainPct = peakPrice !== undefined ? ((peakPrice - entryPrice) / entryPrice) * 100 : undefined;
-    const troughLossPct = troughPrice !== undefined ? ((troughPrice - entryPrice) / entryPrice) * 100 : undefined;
-    const exitGainPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-    const mfePct = parseFiniteNumber(lifecycle.mfe_pct) ?? peakGainPct;
-    const maePct = parseFiniteNumber(lifecycle.mae_pct) ?? troughLossPct;
-    const givebackPct = mfePct !== undefined ? Math.max(0, mfePct - Math.max(0, exitGainPct)) : undefined;
-    const exitEfficiencyPct =
-      mfePct !== undefined && mfePct > 0 ? Math.max(0, Math.min(100, (exitGainPct / mfePct) * 100)) : undefined;
-
-    return {
-      ...lifecycle,
-      exit_price: Number(exitPrice.toFixed(4)),
-      exit_gain_pct: Number(exitGainPct.toFixed(4)),
-      ...(mfePct !== undefined ? { mfe_pct: Number(mfePct.toFixed(4)) } : {}),
-      ...(maePct !== undefined ? { mae_pct: Number(maePct.toFixed(4)) } : {}),
-      ...(givebackPct !== undefined ? { giveback_pct: Number(givebackPct.toFixed(4)) } : {}),
-      ...(exitEfficiencyPct !== undefined ? { exit_efficiency_pct: Number(exitEfficiencyPct.toFixed(4)) } : {}),
-    };
-  }
-
-  async function recordBrokerTrade(params: {
-    alpacaOrderId: string;
-    symbol: string;
-    side: "buy" | "sell";
-    qty?: number;
-    notional?: number;
-    orderType: string;
-    limitPrice?: number;
-    stopPrice?: number;
-    status: string;
-    filledQty?: number;
-    filledAvgPrice?: number;
-    reason: string;
-    metadata?: Record<string, unknown>;
-    account?: Account;
-    positions?: Position[];
-    policy?: Record<string, unknown>;
-    outcomePosition?: Position;
-  }): Promise<void> {
-    if (!db) {
-      if (params.side === "sell" && isCompleteSellOrderStatus(params.status)) {
-        await deps.onSell?.(params.symbol, params.reason);
-      }
-      return;
-    }
-
-    try {
-      const tradeId = await createTrade(db, {
-        alpaca_order_id: params.alpacaOrderId,
-        symbol: params.symbol,
-        side: params.side,
-        qty: params.qty,
-        notional: params.notional,
-        order_type: params.orderType,
-        limit_price: params.limitPrice,
-        stop_price: params.stopPrice,
-        status: params.status,
-        filled_qty: params.filledQty,
-        filled_avg_price: params.filledAvgPrice,
-      });
-      let lifecycleMetadata: Record<string, unknown> | undefined;
-
-      if (params.side === "buy") {
-        const isFilledBuy = isFilledOrderStatus(params.status);
-        if (!isFilledBuy) {
-          log("PolicyBroker", "buy_outcome_deferred", {
-            symbol: params.symbol,
-            order_id: params.alpacaOrderId,
-            status: params.status,
-            reason: "Buy order not filled yet; deferring trade journal entry",
-          });
-        }
-        const entryPrice =
-          params.filledAvgPrice ??
-          params.positions?.find(
-            (position) => normalizeCryptoSymbol(position.symbol) === normalizeCryptoSymbol(params.symbol)
-          )?.current_price ??
-          undefined;
-        if (isFilledBuy) {
-          await createJournalEntry(db, {
-            trade_id: tradeId,
-            symbol: params.symbol,
-            side: params.side,
-            entry_price: entryPrice,
-            qty: params.filledQty ?? params.qty ?? params.notional ?? 0,
-            signals: {
-              reason: params.reason,
-              ...params.metadata,
-              policy: params.policy,
-            },
-            technicals: {
-              account_equity: params.account?.equity,
-              account_cash: params.account?.cash,
-            },
-            regime_tags: ["autonomous", "policy_broker"],
-            notes: params.reason,
-          });
-        }
-      } else {
-        const isFilledSell = isCompleteSellOrderStatus(params.status);
-        if (!isFilledSell) {
-          log("PolicyBroker", "sell_outcome_deferred", {
-            symbol: params.symbol,
-            order_id: params.alpacaOrderId,
-            status: params.status,
-            reason: "Sell order not filled yet; leaving trade journal open",
-          });
-        }
-        const position =
-          params.outcomePosition ??
-          params.positions?.find((p) => normalizeCryptoSymbol(p.symbol) === normalizeCryptoSymbol(params.symbol));
-        const normalizedSymbol = normalizeCryptoSymbol(params.symbol);
-        const rawSymbol = params.symbol.trim().toUpperCase();
-        const openJournal = isFilledSell
-          ? await db.executeOne<{ id: string; entry_at: string | null }>(
-              `SELECT id, entry_at FROM trade_journal
-           WHERE symbol IN (?, ?) AND exit_at IS NULL
-           ORDER BY COALESCE(entry_at, created_at) DESC
-           LIMIT 1`,
-              [params.symbol, normalizedSymbol === params.symbol ? rawSymbol : normalizedSymbol]
-            )
-          : null;
-        if (isFilledSell && openJournal && position) {
-          const filledAvgPrice = parsePositiveNumber(params.filledAvgPrice);
-          const filledQty = parsePositiveNumber(params.filledQty) ?? parsePositiveNumber(params.qty);
-          const avgEntryPrice = parsePositiveNumber(position.avg_entry_price);
-          const exitPrice = filledAvgPrice ?? position.current_price ?? position.lastday_price ?? 0;
-          const realizedOutcome =
-            filledAvgPrice !== undefined && avgEntryPrice !== undefined && filledQty !== undefined
-              ? calculateTradeOutcome({
-                  entryPrice: avgEntryPrice,
-                  exitPrice: filledAvgPrice,
-                  qty: filledQty,
-                  entryAt: openJournal.entry_at,
-                })
-              : null;
-          const fallbackPnlUsd = position.unrealized_pl ?? 0;
-          const fallbackCostBasis = parsePositiveNumber(position.cost_basis) ?? position.market_value - fallbackPnlUsd;
-          const pnlUsd = realizedOutcome?.pnlUsd ?? fallbackPnlUsd;
-          const pnlPct = realizedOutcome?.pnlPct ?? (fallbackCostBasis !== 0 ? (pnlUsd / fallbackCostBasis) * 100 : 0);
-          const holdDurationMins = realizedOutcome?.holdDurationMins ?? 0;
-          const outcome = realizedOutcome?.outcome ?? (pnlUsd > 0 ? "win" : pnlUsd < 0 ? "loss" : "scratch");
-
-          const maybeLifecycleMetadata = deps.onSell ? await deps.onSell(params.symbol, params.reason) : undefined;
-          lifecycleMetadata =
-            maybeLifecycleMetadata && typeof maybeLifecycleMetadata === "object" && !Array.isArray(maybeLifecycleMetadata)
-              ? maybeLifecycleMetadata
-              : undefined;
-          lifecycleMetadata = enrichLifecycleWithExitMetrics(lifecycleMetadata, exitPrice);
-
-          await logOutcome(db, {
-            journal_id: openJournal.id,
-            exit_price: exitPrice,
-            pnl_usd: pnlUsd,
-            pnl_pct: pnlPct,
-            hold_duration_mins: holdDurationMins,
-            outcome,
-            lessons_learned: params.reason,
-            signal_updates: lifecycleMetadata
-              ? {
-                  exit_reason: params.reason,
-                  lifecycle: lifecycleMetadata,
-                  ...lifecycleMetadata,
-                }
-              : { exit_reason: params.reason },
-          });
-          if (outcome === "loss") {
-            await recordDailyLoss(db, Math.abs(pnlUsd));
-            const cooldownMinutes = policyConfig.cooldown_minutes_after_loss;
-            if (cooldownMinutes > 0) {
-              await setCooldown(db, new Date(Date.now() + cooldownMinutes * 60 * 1000).toISOString());
-            }
-          }
-        }
-      }
-
-      if (r2) {
-        await r2.putJson(R2Paths.tradeSnapshot(tradeId), {
-          trade_id: tradeId,
-          exported_from: "policy_broker",
-          captured_at: new Date().toISOString(),
-          symbol: params.symbol,
-          side: params.side,
-          status: params.status,
-          reason: params.reason,
-          account: params.account,
-          positions: params.positions,
-          policy: params.policy,
-          metadata: params.metadata,
-          lifecycle_metadata: lifecycleMetadata,
-        });
-      }
-    } catch (error) {
-      log("PolicyBroker", "trade_record_failed", {
-        symbol: params.symbol,
-        side: params.side,
-        order_id: params.alpacaOrderId,
-        error: String(error),
-      });
-    }
-  }
-
-  async function buy(
-    symbol: string,
-    notional: number,
-    reason: string,
-    metadata?: Record<string, unknown>
-  ): Promise<boolean> {
+  async function buy(symbol: string, notional: number, reason: string): Promise<boolean> {
     if (!symbol || symbol.trim().length === 0) {
       log("PolicyBroker", "buy_blocked", { reason: "Empty symbol" });
       return false;
@@ -442,7 +411,10 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       notional: Math.round(notional * 100) / 100,
       order_type: "market",
       time_in_force: timeInForce,
-      confidence: parseFiniteNumber(metadata?.confidence ?? metadata?.research_confidence),
+      estimated_price: estimatedPrice,
+      avg_volume_20d: avgVolume20d,
+      estimated_cost: Math.round(notional * 100) / 100,
+      buying_power_impact: Math.round(notional * 100) / 100,
     };
 
     try {
@@ -509,12 +481,10 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       const result = engine.evaluate(ctx);
 
       if (!result.allowed) {
-        const violationRules = result.violations.map((violation) => violation.rule);
         log("PolicyBroker", "buy_rejected", {
           symbol,
-          notional,
-          reason: violationRules[0] ?? "policy_violation",
-          violation_rules: violationRules,
+          requested_notional: Math.round(notional * 100) / 100,
+          adjusted_notional: adjustedNotional,
           violations: result.violations.map((v) => v.message),
         });
         return false;
@@ -525,238 +495,6 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
           symbol,
           warnings: result.warnings.map((w) => w.message),
         });
-      }
-
-      const dailyLossGuardEnabled = deps.dailyLossGuardEnabled ?? true;
-      const dailyLossSoftLimitPct = deps.dailyLossSoftLimitPct ?? 0;
-      if (!isCrypto && dailyLossGuardEnabled && dailyLossSoftLimitPct > 0 && account.equity > 0) {
-        const dailyLossPct = riskState.daily_loss_usd / account.equity;
-        if (dailyLossPct >= dailyLossSoftLimitPct) {
-          const confidence = parseFiniteNumber(metadata?.confidence ?? metadata?.research_confidence) ?? 0;
-          const minConfidence = deps.dailyLossMinConfidence ?? 0.8;
-          const quality = metadata?.entry_quality;
-          const minQuality = deps.dailyLossMinEntryQuality ?? "good";
-          if (confidence < minConfidence || getQualityRank(quality) < getQualityRank(minQuality)) {
-            log("PolicyBroker", "buy_blocked_daily_loss_soft_guard", {
-              symbol: orderSymbol,
-              reason: "daily_loss_soft_guard",
-              daily_loss_usd: riskState.daily_loss_usd,
-              daily_loss_pct: Number(dailyLossPct.toFixed(4)),
-              soft_limit_pct: dailyLossSoftLimitPct,
-              confidence,
-              min_confidence: minConfidence,
-              entry_quality: typeof quality === "string" ? quality : null,
-              min_entry_quality: minQuality,
-            });
-            return false;
-          }
-        }
-      }
-
-      const openPositionLossGuardEnabled = deps.openPositionLossGuardEnabled ?? true;
-      const openPositionLossSoftLimitPct = deps.openPositionLossSoftLimitPct ?? 0;
-      if (openPositionLossGuardEnabled && openPositionLossSoftLimitPct > 0 && account.equity > 0) {
-        const openPnlUsd = positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
-        const openLossPct = Math.abs(Math.min(0, openPnlUsd)) / account.equity;
-        if (openLossPct >= openPositionLossSoftLimitPct) {
-          const confidence = parseFiniteNumber(metadata?.confidence ?? metadata?.research_confidence) ?? 0;
-          const minConfidence = deps.openPositionLossMinConfidence ?? 0.85;
-          const quality = metadata?.entry_quality;
-          const minQuality = deps.openPositionLossMinEntryQuality ?? "excellent";
-          if (confidence < minConfidence || getQualityRank(quality) < getQualityRank(minQuality)) {
-            log("PolicyBroker", "buy_blocked_open_position_loss_guard", {
-              symbol: orderSymbol,
-              reason: "open_position_loss_guard",
-              open_pnl_usd: Number(openPnlUsd.toFixed(2)),
-              open_loss_pct: Number(openLossPct.toFixed(4)),
-              soft_limit_pct: openPositionLossSoftLimitPct,
-              confidence,
-              min_confidence: minConfidence,
-              entry_quality: typeof quality === "string" ? quality : null,
-              min_entry_quality: minQuality,
-            });
-            return false;
-          }
-        }
-      }
-
-      try {
-        const openOrders = await alpaca.trading.listOrders({ status: "open" });
-        const isOpenOrder = (status: string) => !["filled", "canceled", "expired", "rejected"].includes(status);
-        const pendingBuy = openOrders.find(
-          (openOrder) =>
-            openOrder.symbol?.toUpperCase() === orderSymbol.toUpperCase() &&
-            openOrder.side === "buy" &&
-            isOpenOrder(openOrder.status)
-        );
-        if (pendingBuy) {
-          log("PolicyBroker", "buy_blocked_pending_order", {
-            symbol: orderSymbol,
-            order_id: pendingBuy.id,
-            status: pendingBuy.status,
-          });
-          return false;
-        }
-
-        const heldSymbols = new Set(positions.map((position) => normalizeCryptoSymbol(position.symbol)));
-        const pendingNewBuySymbols = new Set(
-          openOrders
-            .filter((openOrder) => openOrder.side === "buy" && isOpenOrder(openOrder.status))
-            .map((openOrder) => normalizeCryptoSymbol(openOrder.symbol))
-            .filter((pendingSymbol) => !heldSymbols.has(pendingSymbol))
-        );
-        const isExistingPosition = heldSymbols.has(normalizeCryptoSymbol(orderSymbol));
-        if (!isExistingPosition && positions.length + pendingNewBuySymbols.size >= policyConfig.max_open_positions) {
-          log("PolicyBroker", "buy_blocked_pending_capacity", {
-            symbol: orderSymbol,
-            open_positions: positions.length,
-            pending_new_buys: pendingNewBuySymbols.size,
-            max_open_positions: policyConfig.max_open_positions,
-          });
-          return false;
-        }
-      } catch (ordersError) {
-        log("PolicyBroker", "buy_blocked_pending_order_check_unavailable", {
-          symbol: orderSymbol,
-          reason: "pending_order_check_unavailable",
-          error: String(ordersError),
-        });
-        return false;
-      }
-
-      if (db && policyConfig.max_daily_entry_orders > 0) {
-        const todayTrades = await getTradesToday(db);
-        const todayBuyTrades = todayTrades.filter((trade) => trade.side === "buy");
-        const todayBuyOrders = todayBuyTrades.length;
-        if (todayBuyOrders >= policyConfig.max_daily_entry_orders) {
-          log("PolicyBroker", "buy_blocked_daily_entry_limit", {
-            symbol: orderSymbol,
-            daily_entry_orders: todayBuyOrders,
-            max_daily_entry_orders: policyConfig.max_daily_entry_orders,
-          });
-          return false;
-        }
-
-        if (policyConfig.min_minutes_between_entries > 0) {
-          const latestBuy = todayBuyTrades
-            .map((trade) => new Date(trade.created_at).getTime())
-            .filter((timestamp) => Number.isFinite(timestamp))
-            .sort((a, b) => b - a)[0];
-          if (latestBuy !== undefined) {
-            const elapsedMinutes = (Date.now() - latestBuy) / 60_000;
-            if (elapsedMinutes < policyConfig.min_minutes_between_entries) {
-              log("PolicyBroker", "buy_blocked_entry_spacing", {
-                symbol: orderSymbol,
-                elapsed_minutes: Number(Math.max(0, elapsedMinutes).toFixed(2)),
-                min_minutes_between_entries: policyConfig.min_minutes_between_entries,
-              });
-              return false;
-            }
-          }
-        }
-      }
-
-      const maxEntryPriceChangePct = deps.maxEntryPriceChangePct ?? 0;
-      let entryPriceChangePct = parseFiniteNumber(metadata?.entry_price_change_pct);
-      if (!isCrypto && maxEntryPriceChangePct > 0 && entryPriceChangePct === undefined) {
-        try {
-          const snapshot = await alpaca.marketData.getSnapshot(orderSymbol);
-          const referencePrice = getSnapshotReferencePrice(snapshot);
-          const prevClose = parsePositiveNumber(snapshot.prev_daily_bar?.c);
-          if (referencePrice !== undefined && prevClose !== undefined) {
-            entryPriceChangePct = ((referencePrice - prevClose) / prevClose) * 100;
-          } else {
-            log("PolicyBroker", "buy_price_change_check_unavailable", {
-              symbol: orderSymbol,
-              reason: "Invalid reference or previous close",
-              reference_price: referencePrice ?? null,
-              prev_close: prevClose ?? null,
-            });
-          }
-        } catch (snapshotError) {
-          log("PolicyBroker", "buy_price_change_check_unavailable", {
-            symbol: orderSymbol,
-            reason: String(snapshotError),
-          });
-        }
-      }
-      if (!isCrypto && maxEntryPriceChangePct > 0 && entryPriceChangePct !== undefined) {
-        if (entryPriceChangePct > maxEntryPriceChangePct) {
-          log("PolicyBroker", "buy_blocked_overextended_entry", {
-            symbol: orderSymbol,
-            reason: "entry_price_change_too_high",
-            entry_price_change_pct: Number(entryPriceChangePct.toFixed(4)),
-            max_entry_price_change_pct: maxEntryPriceChangePct,
-          });
-          return false;
-        }
-      }
-
-      let quoteBid: number | null = null;
-      let quoteAsk: number | null = null;
-      let quoteMid: number | null = null;
-      let quoteSpreadPct: number | null = null;
-      let quoteBidSize: number | null = null;
-      let quoteAskSize: number | null = null;
-      const maxEntrySpreadPct = deps.maxEntrySpreadPct ?? 0;
-      const minEntryQuoteSize = deps.minEntryQuoteSize ?? 0;
-      if (!isCrypto && (maxEntrySpreadPct > 0 || minEntryQuoteSize > 0)) {
-        try {
-          const quote = await alpaca.marketData.getQuote(orderSymbol);
-          const bid = Number(quote.bid_price);
-          const ask = Number(quote.ask_price);
-          if (bid > 0 && ask > 0 && ask >= bid) {
-            quoteBid = bid;
-            quoteAsk = ask;
-            quoteMid = (bid + ask) / 2;
-            quoteSpreadPct = ((ask - bid) / ask) * 100;
-            quoteBidSize = parseFiniteNumber(quote.bid_size) ?? null;
-            quoteAskSize = parseFiniteNumber(quote.ask_size) ?? null;
-            if (quoteSpreadPct > maxEntrySpreadPct) {
-              log("PolicyBroker", "buy_blocked_wide_spread", {
-                symbol: orderSymbol,
-                reason: "wide_spread",
-                bid,
-                ask,
-                spread_pct: Number(quoteSpreadPct.toFixed(4)),
-                max_spread_pct: maxEntrySpreadPct,
-              });
-              return false;
-            }
-            if (
-              minEntryQuoteSize > 0 &&
-              (quoteBidSize === null ||
-                quoteAskSize === null ||
-                quoteBidSize < minEntryQuoteSize ||
-                quoteAskSize < minEntryQuoteSize)
-            ) {
-              log("PolicyBroker", "buy_blocked_thin_quote", {
-                symbol: orderSymbol,
-                reason: "thin_quote",
-                bid,
-                ask,
-                bid_size: quoteBidSize,
-                ask_size: quoteAskSize,
-                min_quote_size: minEntryQuoteSize,
-              });
-              return false;
-            }
-          } else {
-            log("PolicyBroker", "buy_blocked_spread_check_unavailable", {
-              symbol: orderSymbol,
-              reason: "Invalid bid/ask",
-              bid,
-              ask,
-            });
-            return false;
-          }
-        } catch (quoteError) {
-          log("PolicyBroker", "buy_blocked_spread_check_unavailable", {
-            symbol: orderSymbol,
-            reason: String(quoteError),
-          });
-          return false;
-        }
       }
 
       // Execute
@@ -810,80 +548,28 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         }
       }
 
-      const orderAccepted = !["rejected", "canceled", "expired"].includes(alpacaOrder.status);
-      const orderFilled = isFilledOrderStatus(alpacaOrder.status);
-      const filledAvgPrice = alpacaOrder.filled_avg_price ? Number(alpacaOrder.filled_avg_price) : undefined;
-      const entrySlippagePct =
-        filledAvgPrice !== undefined && Number.isFinite(filledAvgPrice) && quoteMid !== null && quoteMid > 0
-          ? ((filledAvgPrice - quoteMid) / quoteMid) * 100
-          : null;
-
-      log("PolicyBroker", orderFilled ? "buy_executed" : "buy_submitted", {
+      log("PolicyBroker", "buy_executed", {
         symbol: orderSymbol,
-        requested_symbol: symbol,
         isCrypto,
         status: alpacaOrder.status,
-        order_id: alpacaOrder.id,
-        filled_qty: alpacaOrder.filled_qty,
-        filled_avg_price: alpacaOrder.filled_avg_price,
-        entry_slippage_pct: entrySlippagePct === null ? null : Number(entrySlippagePct.toFixed(4)),
-        notional,
-        quote_bid: quoteBid,
-        quote_ask: quoteAsk,
-        quote_bid_size: quoteBidSize,
-        quote_ask_size: quoteAskSize,
-        quote_mid: quoteMid,
-        quote_spread_pct: quoteSpreadPct === null ? null : Number(quoteSpreadPct.toFixed(4)),
+        requested_notional: Math.round(notional * 100) / 100,
+        notional: adjustedNotional,
         reason,
         order_type: alpacaOrder.order_type ?? alpacaOrder.type,
-      });
-
-      if (!orderAccepted) {
-        return false;
-      }
-
-      await recordBrokerTrade({
-        alpacaOrderId: alpacaOrder.id,
-        symbol: orderSymbol,
-        side: "buy",
-        notional: Math.round(notional * 100) / 100,
-        orderType: "market",
-        status: alpacaOrder.status,
-        filledQty: Number(alpacaOrder.filled_qty) || undefined,
-        filledAvgPrice: filledAvgPrice,
-        reason,
-        metadata,
-        account,
-        positions,
-        policy: {
-          warnings: result.warnings.map((warning) => warning.message),
-          order,
-          entry_price_change_pct:
-            entryPriceChangePct === undefined ? null : Number(entryPriceChangePct.toFixed(4)),
-          quote_bid: quoteBid,
-          quote_ask: quoteAsk,
-          quote_bid_size: quoteBidSize,
-          quote_ask_size: quoteAskSize,
-          quote_mid: quoteMid,
-          quote_spread_pct: quoteSpreadPct === null ? null : Number(quoteSpreadPct.toFixed(4)),
-          entry_slippage_pct: entrySlippagePct === null ? null : Number(entrySlippagePct.toFixed(4)),
-        },
       });
 
       // Invalidate cache after order
       cachedAccount = null;
       cachedPositions = null;
 
-      if (!orderFilled) {
-        return false;
-      }
-
-      const filledQty = Number(alpacaOrder.filled_qty);
-      const filledNotional =
-        Number.isFinite(filledQty) && filledQty > 0 && filledAvgPrice !== undefined
-          ? filledQty * filledAvgPrice
-          : notional;
-      await deps.onBuy?.(symbol, filledNotional, reason);
+      await deps.onBuy?.({
+        symbol,
+        notional: adjustedNotional,
+        reason,
+        isCrypto,
+        status: String(alpacaOrder.status ?? "submitted"),
+        orderType: String(alpacaOrder.order_type ?? alpacaOrder.type ?? "market"),
+      });
       return true;
     } catch (error) {
       log("PolicyBroker", "buy_failed", { symbol, error: String(error) });
@@ -1023,140 +709,84 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         }
       }
 
-      const positions = await getPositions();
-      const position = positions.find(
-        (p) => p.symbol === symbol || normalizeCryptoSymbol(p.symbol) === normalizeCryptoSymbol(symbol)
-      );
-      const orderSymbol = position?.symbol ?? symbol;
-      try {
-        const openOrders = await alpaca.trading.listOrders({ status: "open", symbols: [orderSymbol] });
-        const pendingSell = openOrders.find(
-          (openOrder) =>
-            normalizeCryptoSymbol(openOrder.symbol) === normalizeCryptoSymbol(orderSymbol) &&
-            openOrder.side === "sell" &&
-            !["filled", "canceled", "expired", "rejected"].includes(openOrder.status)
-        );
-        if (pendingSell) {
-          log("PolicyBroker", "sell_blocked_pending_order", {
-            symbol: orderSymbol,
-            requested_symbol: symbol,
-            order_id: pendingSell.id,
-            status: pendingSell.status,
-          });
-          return false;
-        }
-      } catch (ordersError) {
-        log("PolicyBroker", "sell_pending_order_check_unavailable", {
-          symbol: orderSymbol,
-          requested_symbol: symbol,
-          reason: String(ordersError),
-        });
-      }
-      const isCrypto = isCryptoSymbol(symbol, deps.cryptoSymbols);
-      const clock = await getClock();
-      const bufferPct = deps.afterHoursExitLimitBufferPct ?? 0;
-      let sellFilled = false;
+      if (
+        position &&
+        position.asset_class === "us_equity" &&
+        position.side === "long" &&
+        position.qty > 0 &&
+        !clock.is_open &&
+        isWithinExtendedHoursSession(clock.timestamp)
+      ) {
+        const snapshot = await alpaca.marketData.getSnapshot(symbol).catch(() => null);
+        const limitPrice = computeAfterHoursExitLimitPrice(position, snapshot, deps.afterHoursExitLimitBufferPct);
+        if (limitPrice) {
+          const existingOpenOrders = await listOpenOrdersForSymbol(symbol);
+          const existingAfterHoursExit = existingOpenOrders.find((order) => isManagedAfterHoursExit(order, symbol));
+          if (
+            existingAfterHoursExit &&
+            approximatelyEqual(parseOrderPrice(existingAfterHoursExit), limitPrice, ORDER_PRICE_EPSILON) &&
+            approximatelyEqual(parseOrderQty(existingAfterHoursExit), position.qty, ORDER_QTY_EPSILON)
+          ) {
+            log("PolicyBroker", "sell_order_open", {
+              symbol,
+              reason,
+              status: existingAfterHoursExit.status,
+              order_type: existingAfterHoursExit.order_type ?? existingAfterHoursExit.type,
+              extended_hours: true,
+              limit_price: limitPrice,
+            });
+            return true;
+          }
 
-      if (!clock.is_open && !isCrypto && position && bufferPct > 0) {
-        const quote = await alpaca.marketData.getQuote(position.symbol).catch(() => null);
-        const referencePrice = quote?.bid_price || position.current_price || position.lastday_price || 0;
-        const limitPrice = Math.round(referencePrice * (1 - bufferPct / 100) * 100) / 100;
-        const qty = Math.abs(Number(position.qty));
+          if (existingAfterHoursExit) {
+            await alpaca.trading.cancelOrder(existingAfterHoursExit.id).catch(() => undefined);
+          }
 
-        if (limitPrice > 0 && qty > 0) {
+          const existingProtectiveStop = existingOpenOrders.find((order) => isManagedProtectiveStop(order, symbol));
+          if (existingProtectiveStop) {
+            await alpaca.trading.cancelOrder(existingProtectiveStop.id).catch(() => undefined);
+          }
+
           const order = await alpaca.trading.createOrder({
-            symbol: position.symbol,
-            qty,
+            symbol,
+            qty: position.qty,
             side: "sell",
             type: "limit",
-            limit_price: limitPrice,
             time_in_force: "day",
-            extended_hours: true,
-          });
-          sellFilled = isCompleteSellOrderStatus(order.status);
-          log("PolicyBroker", sellFilled ? "sell_limit_executed" : "sell_limit_submitted", {
-            symbol: position.symbol,
-            reason,
-            status: order.status,
-            order_id: order.id,
             limit_price: limitPrice,
-            buffer_pct: bufferPct,
+            extended_hours: true,
+            client_order_id: buildManagedOrderId(AFTER_HOURS_EXIT_ORDER_PREFIX, symbol),
           });
-          if (["rejected", "canceled", "expired"].includes(order.status)) {
-            return false;
-          }
-          await recordBrokerTrade({
-            alpacaOrderId: order.id,
-            symbol: position.symbol,
-            side: "sell",
-            qty,
-            orderType: "limit",
-            limitPrice,
+
+          log("PolicyBroker", isFilledOrderStatus(order.status) ? "sell_executed" : "sell_submitted", {
+            symbol,
+            reason,
             status: order.status,
-            filledQty: parsePositiveNumber(order.filled_qty),
-            filledAvgPrice: parsePositiveNumber(order.filled_avg_price),
-            reason,
-            positions,
-            outcomePosition: position,
+            order_type: order.order_type ?? order.type,
+            extended_hours: true,
+            limit_price: limitPrice,
           });
-        } else {
-          const order = await alpaca.trading.closePosition(orderSymbol);
-          sellFilled = isCompleteSellOrderStatus(order.status);
-          log("PolicyBroker", sellFilled ? "sell_executed" : "sell_submitted", {
-            symbol: orderSymbol,
-            requested_symbol: symbol,
-            reason,
-            fallback: "invalid_after_hours_limit",
-          });
-          await recordBrokerTrade({
-            alpacaOrderId: order.id,
-            symbol: orderSymbol,
-            side: "sell",
-            qty: position ? Math.abs(Number(position.qty)) : undefined,
-            orderType: "market",
-            status: order.status,
-            filledQty: parsePositiveNumber(order.filled_qty),
-            filledAvgPrice: parsePositiveNumber(order.filled_avg_price),
-            reason,
-            positions,
-            outcomePosition: position,
-          });
+
+          cachedAccount = null;
+          cachedPositions = null;
+          return true;
         }
-      } else {
-        const order = await alpaca.trading.closePosition(orderSymbol);
-        sellFilled = isCompleteSellOrderStatus(order.status);
-        log("PolicyBroker", sellFilled ? "sell_executed" : "sell_submitted", {
-          symbol: orderSymbol,
-          requested_symbol: symbol,
-          reason,
-          status: order.status,
-          order_id: order.id,
-          filled_qty: order.filled_qty,
-          filled_avg_price: order.filled_avg_price,
-        });
-        await recordBrokerTrade({
-          alpacaOrderId: order.id,
-          symbol: orderSymbol,
-          side: "sell",
-          qty: position ? Math.abs(Number(position.qty)) : undefined,
-          orderType: "market",
-          status: order.status,
-          filledQty: parsePositiveNumber(order.filled_qty),
-          filledAvgPrice: parsePositiveNumber(order.filled_avg_price),
-          reason,
-          positions,
-          outcomePosition: position,
-        });
       }
+
+      await cancelManagedOrders(symbol);
+      const order = await alpaca.trading.closePosition(symbol);
+      log("PolicyBroker", isFilledOrderStatus(order.status) ? "sell_executed" : "sell_submitted", {
+        symbol,
+        reason,
+        status: order.status,
+        order_type: order.order_type ?? order.type,
+      });
 
       // Invalidate cache after order
       cachedAccount = null;
       cachedPositions = null;
 
-      if (!sellFilled) {
-        return false;
-      }
-
+      await deps.onSell?.({ symbol, reason });
       return true;
     } catch (error) {
       log("PolicyBroker", "sell_failed", { symbol, error: String(error) });

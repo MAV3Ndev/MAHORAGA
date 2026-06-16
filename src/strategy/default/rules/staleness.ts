@@ -91,7 +91,7 @@ export function analyzeStaleness(
         ? `Mid-hold momentum failed: +${pnlPct.toFixed(1)}% after ${holdDays.toFixed(1)} days, volume ${(
             volumeRatio * 100
           ).toFixed(0)}% of entry`
-        : `Staleness score ${stalenessScore}/100, held ${holdDays.toFixed(1)} days`
+        : `Staleness score ${stalenessScore}/100, Held ${holdDays.toFixed(1)} days, below stale target ${config.stale_min_gain_pct.toFixed(1)}%`
       : `OK (score ${stalenessScore}/100)`,
     staleness_score: stalenessScore,
   };

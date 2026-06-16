@@ -86,58 +86,6 @@ function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
-type PortfolioPeriod = '5min' | '1H' | '6H' | '1D' | '7D' | '30D'
-const PORTFOLIO_PERIOD_OPTIONS = ['5min', '1H', '6H', '1D', '7D', '30D'] as const
-const APY_PERIOD_FALLBACKS: PortfolioPeriod[] = ['30D', '7D', '1D']
-const DEFAULT_TRADE_REVIEW_PARAMS: TradeReviewDownloadParams = {
-  days: '90',
-  limit: '500',
-  symbol: '',
-  action: '',
-  status: '',
-  source: '',
-  includeSnapshots: true,
-}
-const MARKET_TIME_ZONE = 'America/New_York'
-const RESUME_REFRESH_THROTTLE_MS = 5000
-const ORDER_NOTIFICATION_KEY_CAP = 240
-const ACTIVITY_FEED_KEY_CAP = 240
-const ACTIVE_STATUS_POLL_MS = 5000
-const HIDDEN_STATUS_POLL_MS = 30000
-const ACTIVE_CLOCK_TICK_MS = 1000
-const HIDDEN_CLOCK_TICK_MS = 60000
-const marketTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: MARKET_TIME_ZONE,
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-const marketWeekdayFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: MARKET_TIME_ZONE,
-  weekday: 'short',
-  day: 'numeric',
-})
-const marketMonthDayFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: MARKET_TIME_ZONE,
-  month: 'short',
-  day: 'numeric',
-})
-const marketHourMinutePartsFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: MARKET_TIME_ZONE,
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
-}
-
 function formatPercent(value: number): string {
   const sign = value >= 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;
@@ -901,89 +849,6 @@ function buildSparklineFromTimeline(
     const sampleIndex = Math.round((index / Math.max(points - 1, 1)) * (source.length - 1));
     return source[sampleIndex]!.change_pct;
   });
-}
-
-function hashSymbol(symbol: string): number {
-  return symbol.split('').reduce((accumulator, char, index) => accumulator + char.charCodeAt(0) * (index + 1), 0)
-}
-
-function estimateEntryPrice(position: Position, storedEntryPrice?: number): number {
-  if (typeof storedEntryPrice === 'number' && Number.isFinite(storedEntryPrice) && storedEntryPrice > 0) {
-    return storedEntryPrice
-  }
-
-  if (typeof position.avg_entry_price === 'number' && Number.isFinite(position.avg_entry_price) && position.avg_entry_price > 0) {
-    return position.avg_entry_price
-  }
-
-  if (typeof position.cost_basis === 'number' && Number.isFinite(position.cost_basis) && position.cost_basis > 0 && position.qty > 0) {
-    const derivedFromCostBasis = position.cost_basis / position.qty
-    if (Number.isFinite(derivedFromCostBasis) && derivedFromCostBasis > 0) {
-      return derivedFromCostBasis
-    }
-  }
-
-  if (position.qty > 0) {
-    const estimatedCostBasis = position.market_value - position.unrealized_pl
-    const derivedEntryPrice = estimatedCostBasis / position.qty
-    if (Number.isFinite(derivedEntryPrice) && derivedEntryPrice > 0) {
-      return derivedEntryPrice
-    }
-  }
-
-  return position.current_price
-}
-
-function generatePositionPriceHistory(
-  position: Position,
-  storedEntryPrice?: number,
-  points: number = 20,
-): number[] {
-  const startPrice = estimateEntryPrice(position, storedEntryPrice)
-  const finalChangePct =
-    typeof position.unrealized_plpc === 'number' && Number.isFinite(position.unrealized_plpc)
-      ? position.unrealized_plpc * 100
-      : startPrice > 0
-        ? position.side === 'short'
-          ? ((startPrice - position.current_price) / startPrice) * 100
-          : ((position.current_price - startPrice) / startPrice) * 100
-        : 0
-  const drift = finalChangePct
-  const symbolSeed = hashSymbol(position.symbol)
-  const phase = (symbolSeed % 360) * (Math.PI / 180)
-  const amplitude = Math.max(Math.abs(drift) * 0.1, 0.18)
-
-  const trendSeries = Array.from({ length: points }, (_, index) => {
-    const progress = index / Math.max(points - 1, 1)
-    const baseLine = drift * progress
-    const primaryWave = Math.sin(progress * Math.PI * 1.1 + phase) * amplitude * 0.45
-    const secondaryWave = Math.sin(progress * Math.PI * 2.4 + phase * 0.6) * amplitude * 0.12
-    const directionalBias = drift === 0 ? 0 : Math.sign(drift) * amplitude * 0.08 * progress
-    return baseLine + primaryWave + secondaryWave + directionalBias
-  })
-
-  trendSeries[0] = 0
-  trendSeries[trendSeries.length - 1] = finalChangePct
-  return trendSeries
-}
-
-function buildSparklineFromTimeline(
-  timelineHistory: PositionTimelineHistory | undefined,
-  points: number = 20,
-): number[] | null {
-  if (!timelineHistory || timelineHistory.points.length < 2) return null
-
-  const source = [...timelineHistory.points]
-    .filter((point) => Number.isFinite(point.change_pct))
-    .sort((a, b) => a.timestamp - b.timestamp)
-
-  if (source.length < 2) return null
-  if (source.length <= points) return source.map((point) => point.change_pct)
-
-  return Array.from({ length: points }, (_, index) => {
-    const sampleIndex = Math.round((index / Math.max(points - 1, 1)) * (source.length - 1))
-    return source[sampleIndex]!.change_pct
-  })
 }
 
 export default function App() {
@@ -1787,7 +1652,7 @@ export default function App() {
             <span>SYNC</span>
             <span>READY</span>
           </motion.div>
-        </motion.div>
+        </Panel>
       </div>
     );
   }

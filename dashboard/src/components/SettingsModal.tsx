@@ -748,11 +748,6 @@ export function SettingsModal({ config, connection, onSave, onSaveConnection, on
       ? "hud-button h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]"
       : "hud-button hud-button-muted h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]";
 
-  const tabButtonClass = (tab: SettingsTab) =>
-    activeTab === tab
-      ? 'hud-button h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]'
-      : 'hud-button hud-button-muted h-8 min-h-0 rounded-lg px-3 py-1.5 text-[10px] tracking-[0.12em]'
-
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <Panel

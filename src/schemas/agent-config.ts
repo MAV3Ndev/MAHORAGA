@@ -18,85 +18,17 @@ export const AgentConfigSchema = z
     min_sentiment_score: z.number().min(0).max(1),
     min_analyst_confidence: z.number().min(0).max(1),
     signal_research_limit: z.number().int().min(1).max(20),
-    max_entry_research_age_minutes: z.number().min(1).max(1440),
     entry_candidate_limit: z.number().int().min(1).max(10),
-    min_entry_selection_score: z.number().min(0).max(2),
-    min_entry_quality: z.enum(["excellent", "good", "fair", "poor"]),
-    max_entry_red_flags: z.number().int().min(0).max(10),
-    min_entry_catalysts: z.number().int().min(0).max(10),
-    min_entry_signal_sources: z.number().int().min(1).max(10),
-    min_entry_signal_consensus: z.number().min(0).max(1),
-    single_source_entry_min_confidence: z.number().min(0).max(1),
-    exceptional_entry_confidence: z.number().min(0).max(1),
-    analyst_buy_requires_research_confirmation: z.boolean(),
-    llm_size_conviction_scaling: z.boolean(),
-    llm_size_low_confidence_multiplier: z.number().min(0.1).max(1),
-    llm_size_medium_confidence_multiplier: z.number().min(0.1).max(1),
-    equity_entry_cooldown_minutes_after_open: z.number().min(0).max(120),
-    equity_entry_cutoff_minutes_before_close: z.number().min(0).max(120),
-    max_entry_spread_pct: z.number().min(0).max(10),
-    min_entry_quote_size: z.number().int().min(0).max(10000),
-    max_entry_price_change_pct: z.number().min(0).max(100),
-    bad_fill_exit_enabled: z.boolean(),
-    bad_fill_max_slippage_pct: z.number().min(0).max(10),
-    bad_fill_loss_pct: z.number().min(0).max(50),
-    bad_fill_max_hold_minutes: z.number().min(0).max(1440),
-    early_loss_exit_enabled: z.boolean(),
-    early_loss_exit_pct: z.number().min(0).max(50),
-    early_loss_exit_max_hold_minutes: z.number().min(0).max(1440),
-    after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
-    entry_timing_enabled: z.boolean(),
-    entry_rsi_min: z.number().min(0).max(100),
-    entry_rsi_max: z.number().min(0).max(100),
-    entry_bb_lower_threshold: z.number().min(0).max(1),
-    entry_max_intraday_range_position: z.number().min(0).max(1),
-    market_regime_enabled: z.boolean(),
-    regime_low_threshold: z.number().min(0).max(1),
-    regime_position_size_reduction: z.number().min(0.1).max(1),
-    portfolio_risk_enabled: z.boolean(),
-    max_positions_per_sector: z.number().int().min(1).max(10),
-    max_daily_loss_pct: z.number().min(0.001).max(1),
-    daily_loss_entry_guard_enabled: z.boolean(),
-    daily_loss_entry_guard_pct: z.number().min(0).max(1),
-    daily_loss_guard_min_confidence: z.number().min(0).max(1),
-    daily_loss_guard_min_entry_quality: z.enum(["excellent", "good", "fair", "poor"]),
-    open_position_loss_entry_guard_enabled: z.boolean(),
-    open_position_loss_entry_guard_pct: z.number().min(0).max(1),
-    open_position_loss_guard_min_confidence: z.number().min(0).max(1),
-    open_position_loss_guard_min_entry_quality: z.enum(["excellent", "good", "fair", "poor"]),
-    cooldown_minutes_after_loss: z.number().min(0).max(1440),
-    max_daily_entry_orders: z.number().int().min(0).max(100),
-    min_minutes_between_entries: z.number().min(0).max(1440),
-    adaptive_performance_block_enabled: z.boolean(),
-    adaptive_performance_lookback_days: z.number().int().min(1).max(3650),
-    adaptive_performance_min_trades: z.number().int().min(1).max(100),
-    adaptive_performance_min_win_rate: z.number().min(0).max(1),
-    llm_force_sell_pnl_pct: z.number().min(0).max(50),
-    llm_force_sell_min_confidence: z.number().min(0).max(1),
 
     take_profit_pct: z.number().min(1).max(100),
     stop_loss_pct: z.number().min(1).max(50),
-    trailing_stop_enabled: z.boolean(),
-    trailing_stop_activation_pct: z.number().min(0).max(100),
-    trailing_stop_drawdown_pct: z.number().min(0.1).max(100),
-    breakeven_stop_enabled: z.boolean(),
-    breakeven_stop_activation_pct: z.number().min(0).max(100),
-    breakeven_stop_buffer_pct: z.number().min(0).max(10),
-    profit_lock_stop_enabled: z.boolean(),
-    profit_lock_activation_pct: z.number().min(0).max(100),
-    profit_lock_floor_pct: z.number().min(0).max(10),
-    sentiment_reversal_exit_enabled: z.boolean(),
-    sentiment_reversal_min_hold_minutes: z.number().min(0).max(1440),
-    sentiment_reversal_loss_pct: z.number().min(0).max(50),
-    sentiment_reversal_threshold: z.number().min(-1).max(0),
-    sentiment_reversal_min_sources: z.number().int().min(1).max(10),
+    risk_per_trade_pct: z.number().min(0.05).max(5),
     position_size_pct_of_cash: z.number().min(1).max(100),
     equity_entry_cutoff_minutes_before_close: z.number().int().min(0).max(120),
     after_hours_exit_limit_buffer_pct: z.number().min(0).max(5),
 
     stale_position_enabled: z.boolean(),
     stale_min_hold_hours: z.number().min(0).max(168),
-    stale_loss_exit_pct: z.number().min(0).max(50),
     stale_max_hold_days: z.number().min(1).max(30),
     stale_min_gain_pct: z.number().min(0).max(100),
     stale_mid_hold_days: z.number().min(1).max(30),
@@ -106,22 +38,13 @@ export const AgentConfigSchema = z
     llm_provider: z.enum(["openai-raw", "ai-sdk", "cloudflare-gateway"]),
     llm_model: z.string().min(1),
     llm_analyst_model: z.string().min(1),
-    openai_base_url: z
-      .string()
-      .trim()
-      .max(2048)
-      .refine((value) => {
-        if (!value) return true;
-        try {
-          const url = new URL(value);
-          return url.protocol === "https:" || url.protocol === "http:";
-        } catch {
-          return false;
-        }
-      }, "openai_base_url must be a valid URL"),
+    openai_base_url: z.string().max(500),
     llm_min_hold_minutes: z.number().min(0).max(1440),
-    recent_sell_cooldown_hours: z.number().min(0).max(720),
-    defensive_sell_cooldown_hours: z.number().min(0).max(1440),
+    llm_force_sell_pnl_pct: z.number().min(0).max(50),
+    llm_force_sell_min_confidence: z.number().min(0).max(1),
+    llm_size_conviction_scaling: z.boolean(),
+    llm_size_low_confidence_multiplier: z.number().min(0.1).max(1),
+    llm_size_medium_confidence_multiplier: z.number().min(0.1).max(1),
 
     options_enabled: z.boolean(),
     options_min_confidence: z.number().min(0).max(1),
@@ -131,47 +54,66 @@ export const AgentConfigSchema = z
     options_target_delta: z.number().min(0.1).max(0.9),
     options_min_delta: z.number().min(0.1).max(0.9),
     options_max_delta: z.number().min(0.1).max(0.9),
-    options_max_spread_pct: z.number().min(0).max(100),
-    options_early_loss_exit_enabled: z.boolean(),
-    options_early_loss_exit_pct: z.number().min(0).max(100),
-    options_early_loss_exit_max_hold_minutes: z.number().min(0).max(1440),
     options_stop_loss_pct: z.number().min(1).max(100),
     options_take_profit_pct: z.number().min(1).max(500),
+    options_max_spread_pct: z.number().min(0).max(100).default(8),
 
     crypto_enabled: z.boolean(),
     crypto_symbols: z.array(z.string()),
-    crypto_max_positions: z.number().int().min(1).max(50),
     crypto_momentum_threshold: z.number().min(0.1).max(20),
-    crypto_max_momentum_pct: z.number().min(0).max(100),
     crypto_max_position_value: z.number().positive().max(100000),
     crypto_take_profit_pct: z.number().min(1).max(100),
     crypto_stop_loss_pct: z.number().min(1).max(50),
 
+    twitter_cookies: z.string().trim().max(20000).default(""),
+    twitter_cookie_accounts: z.array(CookieAccountSchema).max(20).default([]),
+    reddit_cookies: z.string().trim().max(20000).default(""),
+    reddit_cookie_accounts: z.array(CookieAccountSchema).max(20).default([]),
+    reddit_user_agent: z.string().trim().max(512).default(""),
+    alpha_vantage_api_key: z.string().trim().max(256).default(""),
+
     ticker_blacklist: z.array(z.string()),
     allowed_exchanges: z.array(z.string()),
-    starting_equity: z.number().positive().max(1_000_000_000),
-    twitter_cookies: z.string().trim().max(20000),
-    twitter_cookie_accounts: z.array(CookieAccountSchema).max(20),
-    reddit_cookies: z.string().trim().max(20000),
-    reddit_cookie_accounts: z.array(CookieAccountSchema).max(20),
-    reddit_user_agent: z.string().trim().max(512),
-    alpha_vantage_api_key: z.string().trim().max(256),
-    discord_webhook_url: z
-      .string()
-      .trim()
-      .max(2048)
-      .refine((value) => {
-        if (!value) return true;
-        try {
-          const url = new URL(value);
-          return url.protocol === "https:" || url.protocol === "http:";
-        } catch {
-          return false;
-        }
-      }, "discord_webhook_url must be a valid URL"),
     discord_daily_report_enabled: z.boolean(),
-    discord_daily_report_time: z.string().regex(/^\d{2}:\d{2}$/),
-    discord_daily_report_timezone: z.string().min(1),
+    discord_daily_report_time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+    discord_daily_report_timezone: z.string().min(1).max(100),
+
+    // ── Trailing Stop ────────────────────────────────────────────────────────
+    trailing_stop_enabled: z.boolean(),
+    trailing_stop_pct: z.number().min(1).max(50),
+    trailing_stop_activation_pct: z.number().min(1).max(50),
+
+    // ── Dynamic Take Profit ───────────────────────────────────────────────────
+    dynamic_tp_enabled: z.boolean(),
+    tp_atr_multiplier: z.number().min(1).max(10),
+    tp_min_pct: z.number().min(1).max(50),
+    tp_max_pct: z.number().min(1).max(100),
+    dynamic_tp_fallback_pct: z.number().min(1).max(100),
+
+    // ── Entry Timing Filters ──────────────────────────────────────────────────
+    entry_timing_enabled: z.boolean(),
+    entry_require_technical_data: z.boolean(),
+    entry_rsi_min: z.number().min(10).max(50),
+    entry_rsi_max: z.number().min(50).max(90),
+    entry_bb_lower_threshold: z.number().min(0).max(1),
+    min_signal_quality_score: z.number().min(0).max(1),
+
+    // ── Composite Scoring ─────────────────────────────────────────────────────
+    scoring_enabled: z.boolean(),
+    scoring_sentiment_weight: z.number().min(0).max(1),
+    scoring_technical_weight: z.number().min(0).max(1),
+    scoring_catalyst_weight: z.number().min(0).max(1),
+    scoring_momentum_weight: z.number().min(0).max(1),
+
+    // ── Market Regime ────────────────────────────────────────────────────────
+    market_regime_enabled: z.boolean(),
+    regime_low_threshold: z.number().min(0).max(1),
+    regime_position_size_reduction: z.number().min(0).max(1),
+
+    // ── Portfolio Risk ───────────────────────────────────────────────────────
+    portfolio_risk_enabled: z.boolean(),
+    max_positions_per_sector: z.number().int().min(1).max(10),
+    unknown_sector_max_positions: z.number().int().min(0).max(10),
   })
   .refine((data) => data.options_min_delta < data.options_max_delta, {
     message: "options_min_delta must be less than options_max_delta",
@@ -184,18 +126,6 @@ export const AgentConfigSchema = z
   .refine((data) => data.stale_mid_hold_days <= data.stale_max_hold_days, {
     message: "stale_mid_hold_days must be <= stale_max_hold_days",
     path: ["stale_mid_hold_days"],
-  })
-  .refine((data) => data.entry_rsi_min <= data.entry_rsi_max, {
-    message: "entry_rsi_min must be <= entry_rsi_max",
-    path: ["entry_rsi_min"],
-  })
-  .refine((data) => data.profit_lock_activation_pct < data.breakeven_stop_activation_pct, {
-    message: "profit_lock_activation_pct must be below breakeven_stop_activation_pct",
-    path: ["profit_lock_activation_pct"],
-  })
-  .refine((data) => data.profit_lock_floor_pct <= data.profit_lock_activation_pct, {
-    message: "profit_lock_floor_pct must be <= profit_lock_activation_pct",
-    path: ["profit_lock_floor_pct"],
   });
 
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;

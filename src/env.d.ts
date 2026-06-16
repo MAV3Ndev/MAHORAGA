@@ -11,6 +11,8 @@ export interface Env {
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_AUTH_TOKEN?: string;
+  ANTHROPIC_BASE_URL?: string;
   GOOGLE_GENERATIVE_AI_API_KEY?: string;
   XAI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
@@ -19,12 +21,12 @@ export interface Env {
   CLOUDFLARE_AI_GATEWAY_TOKEN?: string;
   LLM_PROVIDER?: "openai-raw" | "ai-sdk" | "cloudflare-gateway";
   LLM_MODEL?: string;
-  REDDIT_CLIENT_ID?: string;
-  REDDIT_CLIENT_SECRET?: string;
-  REDDIT_USER_AGENT?: string;
-  REDDIT_COOKIES?: string;
   TWITTER_BEARER_TOKEN?: string;
   TWITTER_COOKIES?: string;
+  REDDIT_COOKIES?: string;
+  REDDIT_USER_AGENT?: string;
+  REDDIT_CLIENT_ID?: string;
+  REDDIT_CLIENT_SECRET?: string;
   ALPHA_VANTAGE_API_KEY?: string;
   DISCORD_WEBHOOK_URL?: string;
   MAHORAGA_API_TOKEN: string;

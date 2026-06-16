@@ -54,9 +54,11 @@ export interface StrategyContext {
     getAccount(): Promise<Account>;
     getPositions(): Promise<Position[]>;
     getClock(): Promise<MarketClock>;
-    /** Execute a buy. Returns true only after the order is filled or partially filled. */
-    buy(symbol: string, notional: number, reason: string, metadata?: Record<string, unknown>): Promise<boolean>;
-    /** Close a position. Returns true only after the close is filled or partially filled. */
+    /** Execute a buy. Returns true if the order was submitted. */
+    buy(symbol: string, notional: number, reason: string): Promise<boolean>;
+    /** Execute a long options buy. Returns true if the order was submitted. */
+    buyOption(contractSymbol: string, quantity: number, reason: string): Promise<boolean>;
+    /** Close a position. Returns true if the close was submitted. */
     sell(symbol: string, reason: string): Promise<boolean>;
     /** Ensure broker-native protection exists for open equity positions. */
     syncProtectiveStops(positions: Position[]): Promise<void>;
@@ -135,8 +137,6 @@ export interface BuyCandidate {
   reason: string;
   /** Dollar amount to buy */
   notional: number;
-  /** Entry decision features persisted with the trade journal for later review. */
-  metadata?: Record<string, unknown>;
   /** Hint to core to route through options trading */
   useOptions?: boolean;
 }

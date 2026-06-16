@@ -4,44 +4,13 @@
  * These return PromptTemplate objects. The core harness makes the LLM call.
  */
 
-import type { Position, Signal } from "../../../core/types";
-import type { PromptTemplate, ResearchPositionPromptBuilder, ResearchSignalPromptBuilder } from "../../types";
-
-function normalizePromptSymbol(symbol: string): string {
-  return symbol
-    .trim()
-    .toUpperCase()
-    .replace(/[\s/._-]/g, "");
-}
-
-function formatPercent(value: number | undefined): string {
-  return Number.isFinite(value) ? `${((value ?? 0) * 100).toFixed(0)}%` : "n/a";
-}
-
-function signalEvidenceLines(symbol: string, signals: Signal[]): string {
-  const symbolKey = normalizePromptSymbol(symbol);
-  const matching = signals
-    .filter((signal) => normalizePromptSymbol(signal.symbol) === symbolKey)
-    .sort((a, b) => Math.abs(b.sentiment) * Math.max(1, b.volume) - Math.abs(a.sentiment) * Math.max(1, a.volume))
-    .slice(0, 8);
-
-  if (matching.length === 0) {
-    return "- No per-source signal details were available for this symbol.";
-  }
-
-  return matching
-    .map((signal, index) => {
-      const votes =
-        signal.bullish !== undefined || signal.bearish !== undefined
-          ? `, votes=${signal.bullish ?? 0}B/${signal.bearish ?? 0}b`
-          : "";
-      const quality = signal.quality_score !== undefined ? `, quality=${formatPercent(signal.quality_score)}` : "";
-      const freshness = signal.freshness !== undefined ? `, freshness=${formatPercent(signal.freshness)}` : "";
-      const reason = signal.reason ? `, reason="${signal.reason.slice(0, 180)}"` : "";
-      return `${index + 1}. ${signal.source}:${signal.source_detail} sentiment=${formatPercent(signal.sentiment)}, volume=${signal.volume}${votes}${quality}${freshness}${reason}`;
-    })
-    .join("\n");
-}
+import type { Position } from "../../../core/types";
+import type {
+  PromptTemplate,
+  ResearchPositionPromptBuilder,
+  ResearchSignalPromptBuilder,
+  StrategyContext,
+} from "../../types";
 
 /**
  * Signal research prompt — evaluate whether to BUY a symbol based on
@@ -54,12 +23,14 @@ export const researchSignalPrompt: ResearchSignalPromptBuilder = (
   price: number,
   ctx
 ): PromptTemplate => {
-  const evidence = signalEvidenceLines(symbol, ctx.signals);
+  // Extract technical data from state cache if available
+  const technicalData = getTechnicalDataFromCache(symbol, ctx);
+  const momentumData = getMomentumDataFromCache(symbol, ctx);
 
   return {
     system:
-      "You are a stock research analyst. Be skeptical of hype, but use the provided source evidence instead of treating missing context as proof against the setup. Only recommend BUY for strong, timely setups with clear catalysts, good/excellent entry quality, and no material red flags. Output valid JSON only.",
-    user: `Should we BUY this stock based on social sentiment and fundamentals?
+      "You are a stock research analyst. Be skeptical of hype, but do not be overly timid when the setup is actionable. Use BUY when risk/reward is favorable now, SKIP for bad setups, and WAIT only for names that need a meaningfully better trigger. Output valid JSON only.",
+    user: `Should we BUY this stock? Provide a thorough analysis considering social sentiment, technical setup, and catalysts.
 
 SYMBOL: ${symbol}
 SENTIMENT: ${(sentiment * 100).toFixed(0)}% bullish (sources: ${sources.join(", ")})
@@ -69,17 +40,12 @@ CURRENT DATA:
 ${technicalData}
 ${momentumData}
 
-SOURCE EVIDENCE:
-${evidence}
-
-Evaluate if this is a good entry. Consider:
-- Is the sentiment justified by specific catalysts, not only crowd enthusiasm?
-- Is it too late, already pumped, illiquid, or vulnerable to reversal?
-- Are there red flags such as weak source quality, no clear catalyst, valuation/news risk, or one-sided social hype?
-- Treat SEC filings, high-quality Reddit DD, multiple independent sources, or strong fresh StockTwits breadth as possible catalysts only when the evidence lines support them.
-- Do not invent catalysts not supported by SOURCE EVIDENCE.
-- Do not recommend BUY unless entry_quality is "good" or "excellent".
-- A BUY must include at least one concrete catalyst and should have an empty red_flags array.
+EVALUATION CRITERIA:
+1. ENTRY QUALITY: Is this a pullback entry or a breakout? RSI 40-55 suggests pullback, >70 overbought
+2. CATALYSTS: Any upcoming earnings, FDA decisions, partnerships, or news?
+3. TREND: Is price above key SMAs (20, 50)? Is it in an uptrend?
+4. MOMENTUM: Recent price action and volume trends
+5. RISK: Red flags, dilution, regulatory concerns?
 
 DECISION GUIDANCE:
 - Use BUY if the setup is actionable now and the thesis is strong enough to enter immediately
@@ -99,7 +65,8 @@ Provide your analysis with these exact JSON fields:
   "stop_loss_pct": number (recommended stop loss as % from entry),
   "take_profit_pct": number (recommended take profit as % from entry)
 }`,
-    maxTokens: 250,
+    model: ctx.config.llm_analyst_model,
+    maxTokens: 400,
   };
 };
 
