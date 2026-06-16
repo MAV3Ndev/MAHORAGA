@@ -41,7 +41,14 @@ export interface PolicyBrokerDeps {
     orderType: string;
   }) => void | Promise<void>;
   /** Called after a successful sell/close order */
-  onSell?: (trade: { symbol: string; reason: string }) => void | Promise<void>;
+  onSell?: (trade: {
+    symbol: string;
+    reason: string;
+    status: string;
+    orderType: string;
+    extendedHours?: boolean;
+    limitPrice?: number;
+  }) => void | Promise<void>;
 }
 
 const REGULAR_MARKET_OPEN_ET_MINUTES = 9 * 60 + 30;
@@ -769,6 +776,14 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
 
           cachedAccount = null;
           cachedPositions = null;
+          await deps.onSell?.({
+            symbol,
+            reason,
+            status: String(order.status ?? "submitted"),
+            orderType: String(order.order_type ?? order.type ?? "limit"),
+            extendedHours: true,
+            limitPrice,
+          });
           return true;
         }
       }
@@ -786,7 +801,12 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
       cachedAccount = null;
       cachedPositions = null;
 
-      await deps.onSell?.({ symbol, reason });
+      await deps.onSell?.({
+        symbol,
+        reason,
+        status: String(order.status ?? "submitted"),
+        orderType: String(order.order_type ?? order.type ?? "market"),
+      });
       return true;
     } catch (error) {
       log("PolicyBroker", "sell_failed", { symbol, error: String(error) });

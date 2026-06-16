@@ -89,6 +89,7 @@ function createDeps(overrides?: {
       equityEntryCutoffMinutesBeforeClose: 15,
       afterHoursExitLimitBufferPct: 0.25,
       defaultStopLossPct: 5,
+      onSell: vi.fn(),
     },
   };
 }
@@ -185,6 +186,14 @@ describe("createPolicyBroker", () => {
         extended_hours: true,
       })
     );
+    expect(deps.onSell).toHaveBeenCalledWith({
+      symbol: "SKLZ",
+      reason: "After-hours stop loss",
+      status: "accepted",
+      orderType: "limit",
+      extendedHours: true,
+      limitPrice: 6.78,
+    });
   });
 
   it("logs an existing after-hours exit order as open, not executed", async () => {
@@ -218,6 +227,7 @@ describe("createPolicyBroker", () => {
         extended_hours: true,
       })
     );
+    expect(deps.onSell).not.toHaveBeenCalled();
   });
 
   it("logs regular closePosition responses as submitted unless filled", async () => {
@@ -240,6 +250,12 @@ describe("createPolicyBroker", () => {
         status: "accepted",
       })
     );
+    expect(deps.onSell).toHaveBeenCalledWith({
+      symbol: "SKLZ",
+      reason: "Regular-hours exit",
+      status: "accepted",
+      orderType: "market",
+    });
   });
 
   it("creates protective stop orders for open long equity positions", async () => {

@@ -2979,7 +2979,14 @@ export class MahoragaHarness extends DurableObject<Env> {
     side: "BUY" | "SELL",
     trade:
       | { symbol: string; notional: number; reason: string; isCrypto: boolean; status: string; orderType: string }
-      | { symbol: string; reason: string }
+      | {
+          symbol: string;
+          reason: string;
+          status: string;
+          orderType: string;
+          extendedHours?: boolean;
+          limitPrice?: number;
+        }
   ): Promise<void> {
     if (!this.env.DISCORD_WEBHOOK_URL) return;
 
@@ -2995,14 +3002,24 @@ export class MahoragaHarness extends DurableObject<Env> {
       },
     ];
 
-    if (side === "BUY" && "notional" in trade) {
+    if ("status" in trade && "orderType" in trade) {
       fields.splice(
         2,
         0,
-        { name: "Notional", value: `$${trade.notional.toFixed(2)}`, inline: true },
         { name: "Order", value: `${trade.orderType} • ${trade.status}`, inline: true }
       );
+    }
+
+    if (side === "BUY" && "notional" in trade) {
+      fields.splice(2, 0, { name: "Notional", value: `$${trade.notional.toFixed(2)}`, inline: true });
       fields.push({ name: "Asset Class", value: trade.isCrypto ? "Crypto" : "Equity", inline: true });
+    }
+
+    if (side === "SELL" && "extendedHours" in trade && trade.extendedHours) {
+      fields.push({ name: "Session", value: "Extended hours", inline: true });
+    }
+    if (side === "SELL" && "limitPrice" in trade && typeof trade.limitPrice === "number") {
+      fields.push({ name: "Limit", value: `$${trade.limitPrice.toFixed(2)}`, inline: true });
     }
 
     await this.postDiscordEmbed("trade", trade.symbol, {
