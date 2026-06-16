@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, Menu, Notification, powerMonitor, shell } = require("electron");
+const { createWriteStream } = require("node:fs");
 const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 
@@ -8,8 +9,12 @@ const APP_USER_MODEL_ID = "jp.mahoraga.panel";
 const RESUME_RELOAD_DELAY_MS = 1200;
 const APP_TITLE = "MAHORAGA SENTINEL";
 const APP_ICON_PATH = path.join(__dirname, "..", "public", "icons", "app-icon.png");
+const UPDATE_REPOSITORY = process.env.MAHORAGA_SENTINEL_UPDATE_REPO || "MAV3Ndev/MAHORAGA";
+const UPDATE_CHECK_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases`;
 
 let mainWindow = null;
+let latestUpdate = null;
+let updateDownloadInFlight = false;
 
 // Keep Chromium's GPU pipeline enabled for smooth dashboard rendering.
 // Black-screen recovery is handled by the lifecycle reload hooks below.
@@ -63,6 +68,201 @@ function buildAgentUrl(baseUrl, agentPath) {
   root.pathname = `${basePath}/agent${requested.pathname}`.replace(/\/{2,}/g, "/");
   root.search = requested.search;
   return root.toString();
+}
+
+function emitUpdateStatus(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("mahoraga:update", {
+    timestamp: Date.now(),
+    ...payload,
+  });
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left || "0").replace(/^v/i, "").split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = String(right || "0").replace(/^v/i, "").split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const delta = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (delta !== 0) return delta > 0 ? 1 : -1;
+  }
+
+  return 0;
+}
+
+function getAssetPlatformPattern() {
+  if (process.platform === "win32") return /setup\.exe$/i;
+  if (process.platform === "darwin") return /\.(dmg|zip)$/i;
+  return /\.(appimage|deb|rpm)$/i;
+}
+
+function normalizeReleaseVersion(release) {
+  const raw = String(release?.tag_name || release?.name || "").trim();
+  return raw.replace(/^sentinel-v/i, "").replace(/^v/i, "");
+}
+
+function selectReleaseAsset(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const platformPattern = getAssetPlatformPattern();
+  return (
+    assets.find((asset) => /MAHORAGA SENTINEL/i.test(asset.name || "") && platformPattern.test(asset.name || "")) ||
+    assets.find((asset) => platformPattern.test(asset.name || "")) ||
+    null
+  );
+}
+
+async function fetchLatestSentinelRelease() {
+  const response = await fetch(UPDATE_CHECK_URL, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": `MAHORAGA-SENTINEL/${app.getVersion()}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub release check failed: HTTP ${response.status}`);
+  }
+
+  const releases = await response.json();
+  if (!Array.isArray(releases)) return null;
+
+  return (
+    releases.find((release) => {
+      if (release?.draft || release?.prerelease) return false;
+      if (!/^sentinel-v/i.test(String(release?.tag_name || ""))) return false;
+      const asset = selectReleaseAsset(release);
+      return Boolean(asset);
+    }) || null
+  );
+}
+
+async function checkForUpdates({ silent = false } = {}) {
+  const currentVersion = app.getVersion();
+
+  if (!silent) {
+    emitUpdateStatus({ state: "checking", currentVersion });
+  }
+
+  try {
+    const release = await fetchLatestSentinelRelease();
+    if (!release) {
+      latestUpdate = null;
+      const result = { state: "not-available", currentVersion, message: "No Sentinel release artifact found." };
+      emitUpdateStatus(result);
+      return result;
+    }
+
+    const latestVersion = normalizeReleaseVersion(release);
+    const asset = selectReleaseAsset(release);
+    const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
+
+    latestUpdate = hasUpdate
+      ? {
+          version: latestVersion,
+          releaseName: release.name || release.tag_name,
+          releaseUrl: release.html_url,
+          notes: release.body || "",
+          assetName: asset.name,
+          assetUrl: asset.browser_download_url,
+        }
+      : null;
+
+    const result = hasUpdate
+      ? { state: "available", currentVersion, update: latestUpdate }
+      : { state: "not-available", currentVersion, latestVersion };
+    emitUpdateStatus(result);
+    return result;
+  } catch (error) {
+    const result = { state: "error", currentVersion, message: String(error instanceof Error ? error.message : error) };
+    emitUpdateStatus(result);
+    return result;
+  }
+}
+
+async function downloadAndInstallUpdate() {
+  if (updateDownloadInFlight) {
+    return { state: "downloading", update: latestUpdate };
+  }
+
+  if (!latestUpdate) {
+    const checked = await checkForUpdates({ silent: true });
+    if (checked.state !== "available") return checked;
+  }
+
+  updateDownloadInFlight = true;
+  const update = latestUpdate;
+  const safeAssetName = path.basename(update.assetName || `MAHORAGA-SENTINEL-${update.version}-setup.exe`);
+  const targetPath = path.join(app.getPath("temp"), safeAssetName);
+
+  try {
+    emitUpdateStatus({ state: "downloading", update });
+    const response = await fetch(update.assetUrl, {
+      headers: {
+        Accept: "application/octet-stream",
+        "User-Agent": `MAHORAGA-SENTINEL/${app.getVersion()}`,
+      },
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`Update download failed: HTTP ${response.status}`);
+    }
+
+    const totalBytes = Number(response.headers.get("content-length") || 0);
+    let downloadedBytes = 0;
+    await mkdir(path.dirname(targetPath), { recursive: true });
+
+    await new Promise((resolve, reject) => {
+      const file = createWriteStream(targetPath);
+      const reader = response.body.getReader();
+
+      file.on("error", reject);
+      file.on("finish", resolve);
+
+      const pump = () => {
+        reader
+          .read()
+          .then(({ done, value }) => {
+            if (done) {
+              file.end();
+              return;
+            }
+
+            const chunk = Buffer.from(value);
+            downloadedBytes += chunk.length;
+            if (totalBytes > 0) {
+              emitUpdateStatus({
+                state: "downloading",
+                update,
+                progress: Math.round((downloadedBytes / totalBytes) * 100),
+              });
+            }
+
+            if (!file.write(chunk)) {
+              file.once("drain", pump);
+              return;
+            }
+            pump();
+          })
+          .catch(reject);
+      };
+
+      pump();
+    });
+
+    emitUpdateStatus({ state: "downloaded", update, filePath: targetPath });
+    const openError = await shell.openPath(targetPath);
+    if (openError) throw new Error(openError);
+
+    setTimeout(() => app.quit(), 700);
+    return { state: "installing", update };
+  } catch (error) {
+    const result = { state: "error", update, message: String(error instanceof Error ? error.message : error) };
+    emitUpdateStatus(result);
+    return result;
+  } finally {
+    updateDownloadInFlight = false;
+  }
 }
 
 async function requestAgent(input) {
@@ -202,6 +402,9 @@ app.whenReady().then(() => {
   ipcMain.handle("mahoraga:connection:load", async () => readConnectionSettings());
   ipcMain.handle("mahoraga:connection:save", async (_event, settings) => saveConnectionSettings(settings));
   ipcMain.handle("mahoraga:request", async (_event, input) => requestAgent(input));
+  ipcMain.handle("mahoraga:app-version", async () => app.getVersion());
+  ipcMain.handle("mahoraga:update:check", async (_event, input) => checkForUpdates(input));
+  ipcMain.handle("mahoraga:update:install", async () => downloadAndInstallUpdate());
   ipcMain.handle("mahoraga:open-external", async (_event, url) => {
     await shell.openExternal(url);
   });
@@ -221,6 +424,12 @@ app.whenReady().then(() => {
   });
 
   mainWindow = createMainWindow();
+
+  if (app.isPackaged) {
+    setTimeout(() => {
+      void checkForUpdates({ silent: true });
+    }, 10_000);
+  }
 
   powerMonitor.on("resume", () => recoverWindow("system-resume"));
   powerMonitor.on("unlock-screen", () => recoverWindow("screen-unlock"));

@@ -12,7 +12,11 @@ import { StatusBar, StatusIndicator } from "./components/StatusIndicator";
 import { Tooltip, TooltipContent } from "./components/Tooltip";
 import {
   type ConnectionSettings,
+  type DesktopUpdateEvent,
+  checkDesktopUpdate,
+  getDesktopAppVersion,
   getResponseError,
+  installDesktopUpdate,
   isDesktopPanel,
   isNativeShell,
   loadConnectionSettings,
@@ -21,6 +25,7 @@ import {
   requestAgent,
   saveConnectionSettings,
   showDesktopNotification,
+  subscribeDesktopUpdate,
   subscribeDesktopLifecycle,
 } from "./lib/connection";
 import type {
@@ -863,6 +868,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [busyAction, setBusyAction] = useState<"enable" | "disable" | "trigger" | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateEvent | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [selectedResearchSymbol, setSelectedResearchSymbol] = useState<string | null>(null);
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null);
@@ -910,6 +918,24 @@ export default function App() {
 
     bootstrapConnection();
   }, []);
+
+  useEffect(() => {
+    if (!desktopPanel) return;
+
+    let cancelled = false;
+    void getDesktopAppVersion().then((version) => {
+      if (!cancelled) setAppVersion(version);
+    });
+
+    const unsubscribe = subscribeDesktopUpdate((event) => {
+      setUpdateStatus(event);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [desktopPanel]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1138,6 +1164,26 @@ export default function App() {
     }
   };
 
+  const handleCheckUpdate = async () => {
+    setUpdateBusy(true);
+    try {
+      const result = await checkDesktopUpdate(false);
+      if (result) setUpdateStatus(result);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    setUpdateBusy(true);
+    try {
+      const result = await installDesktopUpdate();
+      if (result) setUpdateStatus(result);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
   // Derived state (must stay above early returns per React hooks rules)
   const account = status?.account;
   const positions = status?.positions || [];
@@ -1154,6 +1200,32 @@ export default function App() {
   const realizedPl = totalPl - unrealizedPl;
   const totalPlPct = account ? (totalPl / startingEquity) * 100 : 0;
   const syncTimeLabel = lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString("en-US", { hour12: false }) : "PENDING";
+  const updateAvailable =
+    updateStatus?.state === "available" ||
+    updateStatus?.state === "downloaded" ||
+    updateStatus?.state === "downloading" ||
+    updateStatus?.state === "installing";
+  const updateProgressLabel =
+    updateStatus?.state === "downloading" && typeof updateStatus.progress === "number"
+      ? `${updateStatus.progress}%`
+      : null;
+  const updateStateLabel = updateStatus
+    ? updateStatus.state === "available"
+      ? `v${updateStatus.update?.version || updateStatus.latestVersion || "NEW"}`
+      : updateStatus.state === "not-available"
+        ? "CURRENT"
+        : updateStatus.state === "downloading"
+          ? updateProgressLabel || "DOWNLOADING"
+          : updateStatus.state === "downloaded"
+            ? "READY"
+            : updateStatus.state === "installing"
+              ? "INSTALLING"
+              : updateStatus.state === "error"
+                ? "ERROR"
+                : "CHECKING"
+    : appVersion
+      ? `v${appVersion}`
+      : "UNKNOWN";
   const totalPlStateLabel = totalPl >= 0 ? "Ahead Of Baseline" : "Below Baseline";
   const headerStatusItems: Array<{
     label: string;
@@ -1886,9 +1958,47 @@ export default function App() {
                   {error ? "DEGRADED" : "STABLE"}
                 </span>
               </div>
+              <div className="hud-remote-bar__meta">
+                <span className="hud-label">Version</span>
+                <span
+                  className={clsx(
+                    "hud-remote-bar__value",
+                    updateStatus?.state === "error"
+                      ? "text-hud-warning"
+                      : updateAvailable
+                        ? "text-hud-success"
+                        : "text-hud-primary"
+                  )}
+                >
+                  {updateStateLabel}
+                </span>
+              </div>
             </div>
 
             <div className="hud-remote-bar__actions">
+              {updateAvailable ? (
+                <button
+                  type="button"
+                  className={remoteLinkActionClass}
+                  onClick={() => {
+                    void handleInstallUpdate();
+                  }}
+                  disabled={updateBusy || updateStatus?.state === "installing"}
+                >
+                  {updateBusy || updateStatus?.state === "downloading" ? "DOWNLOADING..." : "Install Update"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={remoteLinkActionClass}
+                  onClick={() => {
+                    void handleCheckUpdate();
+                  }}
+                  disabled={updateBusy || updateStatus?.state === "checking"}
+                >
+                  {updateBusy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
+                </button>
+              )}
               <button
                 type="button"
                 className={remoteLinkActionClass}

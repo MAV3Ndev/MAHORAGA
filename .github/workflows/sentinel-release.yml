@@ -1,0 +1,137 @@
+name: Sentinel Release
+
+on:
+  push:
+    tags:
+      - "sentinel-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Sentinel version or tag, for example 1.0.2 or sentinel-v1.0.2"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            raw="${{ inputs.version }}"
+            if [[ "$raw" == sentinel-v* ]]; then
+              tag="$raw"
+            else
+              tag="sentinel-v$raw"
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          version="${tag#sentinel-v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Verify dashboard package version
+        shell: bash
+        working-directory: dashboard
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$package_version" != "${{ steps.release.outputs.version }}" ]]; then
+            echo "dashboard/package.json version ($package_version) must match ${{ steps.release.outputs.tag }}"
+            exit 1
+          fi
+
+      - name: Create release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git tag "$tag"
+            git push origin "$tag"
+          else
+            tag_commit="$(git rev-list -n 1 "$tag")"
+            head_commit="$(git rev-parse HEAD)"
+            if [[ "$tag_commit" != "$head_commit" ]]; then
+              echo "$tag already exists but does not point to the workflow commit."
+              echo "Tag commit: $tag_commit"
+              echo "Workflow commit: $head_commit"
+              exit 1
+            fi
+          fi
+
+      - name: Build Sentinel Windows app
+        working-directory: dashboard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release:win
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          previous="$(git tag --list 'sentinel-v*' --sort=-version:refname | grep -v "^${tag}$" | head -n 1 || true)"
+          {
+            echo "## MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
+            echo
+            if [[ -n "$previous" ]]; then
+              echo "Changes since $previous:"
+              git log "${previous}..${tag}" --pretty=format:'- %s (%h)' --no-merges
+            else
+              echo "Initial Sentinel release:"
+              git log "$tag" --pretty=format:'- %s (%h)' --no-merges
+            fi
+            echo
+            echo
+            echo "### Artifacts"
+            echo "- Windows installer: MAHORAGA SENTINEL setup executable"
+            echo "- Windows portable executable"
+          } > SENTINEL_CHANGELOG.md
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          title="MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
+          shopt -s nullglob
+          artifacts=(dashboard/release/*.exe dashboard/release/*.yml dashboard/release/*.blockmap)
+
+          if [[ "${#artifacts[@]}" -eq 0 ]]; then
+            echo "No release artifacts found in dashboard/release"
+            exit 1
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$title" --notes-file SENTINEL_CHANGELOG.md
+            gh release upload "$tag" "${artifacts[@]}" --clobber
+          else
+            gh release create "$tag" "${artifacts[@]}" --title "$title" --notes-file SENTINEL_CHANGELOG.md
+          fi

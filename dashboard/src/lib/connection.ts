@@ -12,6 +12,24 @@ export interface DesktopLifecycleEvent {
   timestamp?: number
 }
 
+export interface DesktopUpdateInfo {
+  version: string
+  releaseName?: string
+  releaseUrl?: string
+  notes?: string
+  assetName?: string
+}
+
+export interface DesktopUpdateEvent {
+  state: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'installing' | 'error'
+  timestamp?: number
+  currentVersion?: string
+  latestVersion?: string
+  update?: DesktopUpdateInfo
+  progress?: number
+  message?: string
+}
+
 interface DesktopBridge {
   loadConnectionSettings: () => Promise<ConnectionSettings | null>
   saveConnectionSettings: (settings: ConnectionSettings) => Promise<ConnectionSettings>
@@ -20,8 +38,12 @@ interface DesktopBridge {
     status: number
     data: unknown
   }>
+  getAppVersion: () => Promise<string>
+  checkForUpdates: (input?: { silent?: boolean }) => Promise<DesktopUpdateEvent>
+  installUpdate: () => Promise<DesktopUpdateEvent>
   openExternal: (url: string) => Promise<void>
   notify: (payload: { title: string; body: string }) => Promise<boolean>
+  onUpdateEvent: (listener: (event: DesktopUpdateEvent) => void) => () => void
   onLifecycleEvent: (listener: (event: DesktopLifecycleEvent) => void) => () => void
 }
 
@@ -187,6 +209,27 @@ export function getResponseError(data: unknown, fallback: string): string {
 export async function showDesktopNotification(title: string, body: string): Promise<boolean> {
   if (!isDesktopPanel()) return false
   return (await window.mahoragaDesktop?.notify({ title, body })) ?? false
+}
+
+export async function getDesktopAppVersion(): Promise<string | null> {
+  if (!isDesktopPanel()) return null
+  return (await window.mahoragaDesktop?.getAppVersion()) ?? null
+}
+
+export async function checkDesktopUpdate(silent = false): Promise<DesktopUpdateEvent | null> {
+  if (!isDesktopPanel()) return null
+  return (await window.mahoragaDesktop?.checkForUpdates({ silent })) ?? null
+}
+
+export async function installDesktopUpdate(): Promise<DesktopUpdateEvent | null> {
+  if (!isDesktopPanel()) return null
+  return (await window.mahoragaDesktop?.installUpdate()) ?? null
+}
+
+export function subscribeDesktopUpdate(
+  listener: (event: DesktopUpdateEvent) => void,
+): (() => void) | undefined {
+  return window.mahoragaDesktop?.onUpdateEvent(listener)
 }
 
 export function subscribeDesktopLifecycle(
