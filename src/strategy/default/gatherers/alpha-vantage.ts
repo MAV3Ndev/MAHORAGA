@@ -13,6 +13,7 @@ const ALPHA_VANTAGE_CACHE_KEY = "alphaVantageNewsCache";
 const ALPHA_VANTAGE_COOLDOWN_KEY = "alphaVantageNewsCooldownUntil";
 const ALPHA_VANTAGE_CACHE_TTL_MS = 30 * 60_000;
 const ALPHA_VANTAGE_ERROR_COOLDOWN_MS = 30 * 60_000;
+const ALPHA_VANTAGE_NEWS_TOPICS = "financial_markets,earnings,mergers_and_acquisitions,technology";
 
 interface AlphaVantageTickerSentiment {
   ticker?: string;
@@ -71,6 +72,7 @@ async function fetchAlphaVantageNews(ctx: StrategyContext, apiKey: string): Prom
 
   const params = new URLSearchParams({
     function: "NEWS_SENTIMENT",
+    topics: ALPHA_VANTAGE_NEWS_TOPICS,
     sort: "LATEST",
     limit: "100",
     apikey: apiKey,
@@ -95,10 +97,13 @@ async function fetchAlphaVantageNews(ctx: StrategyContext, apiKey: string): Prom
       message: apiMessage.slice(0, 240),
     });
     ctx.state.set(ALPHA_VANTAGE_COOLDOWN_KEY, Date.now() + ALPHA_VANTAGE_ERROR_COOLDOWN_MS);
+    return [];
   }
 
   const feed = data.feed || [];
-  ctx.state.set<AlphaVantageNewsCache>(ALPHA_VANTAGE_CACHE_KEY, { timestamp: Date.now(), feed });
+  if (feed.length > 0) {
+    ctx.state.set<AlphaVantageNewsCache>(ALPHA_VANTAGE_CACHE_KEY, { timestamp: Date.now(), feed });
+  }
   ctx.log("AlphaVantage", "news_fetched", { articles: feed.length });
   return feed;
 }
@@ -123,24 +128,49 @@ async function gatherAlphaVantage(ctx: StrategyContext): Promise<Signal[]> {
         latestPublished: number;
       }
     >();
+    const filterStats = {
+      ticker_mentions: 0,
+      malformed_ticker: 0,
+      blacklisted: 0,
+      weak_relevance_or_sentiment: 0,
+      invalid_ticker: 0,
+      accepted_mentions: 0,
+    };
 
     for (const item of feed) {
       const published = parseAlphaVantageTime(item.time_published);
       for (const tickerSentiment of item.ticker_sentiment || []) {
+        filterStats.ticker_mentions += 1;
         const ticker = tickerSentiment.ticker?.trim().toUpperCase();
-        if (!ticker || ticker.includes(":") || ticker.includes(".")) continue;
-        if (ctx.config.ticker_blacklist?.includes(ticker)) continue;
+        if (!ticker || ticker.includes(":") || ticker.includes(".")) {
+          filterStats.malformed_ticker += 1;
+          continue;
+        }
+        if (ctx.config.ticker_blacklist?.includes(ticker)) {
+          filterStats.blacklisted += 1;
+          continue;
+        }
 
         const relevance = Number(tickerSentiment.relevance_score || 0);
         const rawSentiment = Number(tickerSentiment.ticker_sentiment_score ?? item.overall_sentiment_score ?? 0) || 0;
-        if (relevance < 0.08 || Math.abs(rawSentiment) < 0.05) continue;
+        if (relevance < 0.08 || Math.abs(rawSentiment) < 0.05) {
+          filterStats.weak_relevance_or_sentiment += 1;
+          continue;
+        }
 
         const cached = tickerCache.getCachedValidation(ticker);
-        if (cached === false) continue;
+        if (cached === false) {
+          filterStats.invalid_ticker += 1;
+          continue;
+        }
         if (cached === undefined) {
           const isValid = await tickerCache.validateWithAlpaca(ticker, alpaca);
-          if (!isValid) continue;
+          if (!isValid) {
+            filterStats.invalid_ticker += 1;
+            continue;
+          }
         }
+        filterStats.accepted_mentions += 1;
 
         const freshness = calculateTimeDecay(Math.floor(published / 1000));
         const weight = relevance * freshness;
@@ -184,7 +214,7 @@ async function gatherAlphaVantage(ctx: StrategyContext): Promise<Signal[]> {
       });
     }
 
-    ctx.log("AlphaVantage", "gathered_signals", { count: signals.length, articles: feed.length });
+    ctx.log("AlphaVantage", "gathered_signals", { count: signals.length, articles: feed.length, ...filterStats });
     return signals.slice(0, 20);
   } catch (error) {
     ctx.log("AlphaVantage", "error", { message: String(error).slice(0, 240) });
