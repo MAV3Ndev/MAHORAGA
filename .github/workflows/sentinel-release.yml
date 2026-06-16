@@ -83,10 +83,7 @@ jobs:
             tag_commit="$(git rev-list -n 1 "$tag")"
             head_commit="$(git rev-parse HEAD)"
             if [[ "$tag_commit" != "$head_commit" ]]; then
-              echo "$tag already exists but does not point to the workflow commit."
-              echo "Tag commit: $tag_commit"
-              echo "Workflow commit: $head_commit"
-              exit 1
+              echo "$tag already exists at $tag_commit; keeping the tag in place and refreshing release assets from $head_commit."
             fi
           fi
 
