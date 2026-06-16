@@ -3,10 +3,6 @@ export interface ConnectionSettings {
   bearerToken: string
 }
 
-interface CapacitorBridge {
-  isNativePlatform?: () => boolean
-}
-
 export interface DesktopLifecycleEvent {
   type: string
   timestamp?: number
@@ -47,6 +43,27 @@ interface DesktopBridge {
   onLifecycleEvent: (listener: (event: DesktopLifecycleEvent) => void) => () => void
 }
 
+interface NativeUpdateListenerHandle {
+  remove: () => Promise<void>
+}
+
+interface NativeUpdatePlugin {
+  getAppVersion: () => Promise<{ version?: string }>
+  checkForUpdates: (input?: { silent?: boolean }) => Promise<DesktopUpdateEvent>
+  installUpdate: () => Promise<DesktopUpdateEvent>
+  addListener?: (
+    eventName: 'update',
+    listener: (event: DesktopUpdateEvent) => void,
+  ) => Promise<NativeUpdateListenerHandle>
+}
+
+interface CapacitorBridge {
+  isNativePlatform?: () => boolean
+  Plugins?: {
+    SentinelUpdate?: NativeUpdatePlugin
+  }
+}
+
 declare global {
   interface Window {
     Capacitor?: CapacitorBridge
@@ -66,6 +83,11 @@ export function isNativeShell(): boolean {
   if (isDesktopPanel()) return false
   if (window.Capacitor?.isNativePlatform?.()) return true
   return window.location.protocol === 'capacitor:'
+}
+
+function getNativeUpdatePlugin(): NativeUpdatePlugin | undefined {
+  if (typeof window === 'undefined') return undefined
+  return window.Capacitor?.Plugins?.SentinelUpdate
 }
 
 export function getDefaultApiUrl(): string {
@@ -212,16 +234,29 @@ export async function showDesktopNotification(title: string, body: string): Prom
 }
 
 export async function getDesktopAppVersion(): Promise<string | null> {
+  const nativeUpdate = getNativeUpdatePlugin()
+  if (nativeUpdate) {
+    const result = await nativeUpdate.getAppVersion()
+    return result.version || null
+  }
   if (!isDesktopPanel()) return null
   return (await window.mahoragaDesktop?.getAppVersion()) ?? null
 }
 
 export async function checkDesktopUpdate(silent = false): Promise<DesktopUpdateEvent | null> {
+  const nativeUpdate = getNativeUpdatePlugin()
+  if (nativeUpdate) {
+    return (await nativeUpdate.checkForUpdates({ silent })) ?? null
+  }
   if (!isDesktopPanel()) return null
   return (await window.mahoragaDesktop?.checkForUpdates({ silent })) ?? null
 }
 
 export async function installDesktopUpdate(): Promise<DesktopUpdateEvent | null> {
+  const nativeUpdate = getNativeUpdatePlugin()
+  if (nativeUpdate) {
+    return (await nativeUpdate.installUpdate()) ?? null
+  }
   if (!isDesktopPanel()) return null
   return (await window.mahoragaDesktop?.installUpdate()) ?? null
 }
@@ -229,6 +264,22 @@ export async function installDesktopUpdate(): Promise<DesktopUpdateEvent | null>
 export function subscribeDesktopUpdate(
   listener: (event: DesktopUpdateEvent) => void,
 ): (() => void) | undefined {
+  const nativeUpdate = getNativeUpdatePlugin()
+  if (nativeUpdate?.addListener) {
+    let active = true
+    let handle: NativeUpdateListenerHandle | null = null
+    void nativeUpdate.addListener('update', listener).then((registeredHandle) => {
+      if (!active) {
+        void registeredHandle.remove()
+        return
+      }
+      handle = registeredHandle
+    })
+    return () => {
+      active = false
+      void handle?.remove()
+    }
+  }
   return window.mahoragaDesktop?.onUpdateEvent(listener)
 }
 

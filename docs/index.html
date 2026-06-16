@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MAHORAGA — Open Source AI Trading Agent | LLM-Powered Autonomous Trading</title>
-  <meta name="description" content="Open-source autonomous trading agent powered by LLMs. Monitor social sentiment from StockTwits and Reddit, execute trades via Alpaca, run 24/7 on Cloudflare Workers.">
+  <meta name="description" content="Open-source autonomous trading agent powered by LLMs with MAHORAGA SENTINEL for Windows and Android. Monitor social, news, filing, and crypto signals, execute via Alpaca, run 24/7 on Cloudflare Workers.">
   <link rel="canonical" href="https://mahoraga.dev/">
   <link rel="icon" type="image/svg+xml" href="/mahoraga.svg">
 
@@ -28,7 +28,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "MAHORAGA",
-    "description": "Open-source autonomous trading agent powered by LLMs. Monitors social sentiment from StockTwits and Reddit, executes trades via Alpaca, runs 24/7 on Cloudflare Workers.",
+    "description": "Open-source autonomous trading agent powered by LLMs with MAHORAGA SENTINEL for Windows and Android. Monitors social, news, filing, and crypto signals, executes trades via Alpaca, runs 24/7 on Cloudflare Workers.",
     "url": "https://mahoraga.dev/",
     "applicationCategory": "FinanceApplication",
     "operatingSystem": "Cloudflare Workers",
@@ -43,7 +43,7 @@
       "url": "https://x.com/burcs"
     },
     "license": "https://opensource.org/licenses/MIT",
-    "codeRepository": "https://github.com/ygwyg/MAHORAGA"
+    "codeRepository": "https://github.com/MAV3Ndev/MAHORAGA"
   }
   </script>
 
@@ -82,7 +82,7 @@
         "name": "How does sentiment analysis work?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Monitors StockTwits and Reddit for trending tickers. Each signal is researched by the LLM before returning a confidence score."
+          "text": "Monitors StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum for trade candidates. Each signal is researched by the LLM before returning a confidence score."
         }
       },
       {
@@ -901,7 +901,8 @@
       <a href="./" class="logo"><img src="./mahoraga.svg" alt="MAHORAGA logo">MAHORAGA</a>
       <nav>
         <a href="./getting-started.html">Docs</a>
-        <a href="https://github.com/ygwyg/MAHORAGA">GitHub</a>
+        <a href="./sentinel.html">Sentinel</a>
+        <a href="https://github.com/MAV3Ndev/MAHORAGA">GitHub</a>
         <a href="https://discord.gg/vMFnHe2YBh">Discord</a>
         <a href="./getting-started.html" class="nav-cta">Get Started</a>
       </nav>
@@ -913,12 +914,12 @@
       <div class="container">
         <div class="hero-badge hero-animate" style="--d: 0.1s">
           <span class="dot"></span>
-          Open Source
+          Sentinel v1.0.0
         </div>
         <h1 class="hero-animate" style="--d: 0.25s">Autonomous trading agent that <em>adapts</em> to the market.</h1>
-        <p class="hero-sub hero-animate" style="--d: 0.4s">Monitors social sentiment. Researches with LLMs. Executes via Alpaca. Runs 24/7.</p>
-        <a href="./getting-started.html" class="hero-cta hero-animate" style="--d: 0.55s">Deploy in 5 minutes →</a>
-        <p class="hero-note hero-animate" style="--d: 0.65s">Free & open source · MIT License</p>
+        <p class="hero-sub hero-animate" style="--d: 0.4s">Monitor market signals. Research with LLMs. Execute via Alpaca. Operate through Sentinel on Windows or Android.</p>
+        <a href="./sentinel.html" class="hero-cta hero-animate" style="--d: 0.55s">Install Sentinel →</a>
+        <p class="hero-note hero-animate" style="--d: 0.65s">Free & open source · MIT License · Cloudflare Workers</p>
       </div>
     </section>
 
@@ -947,7 +948,7 @@
           <div class="card wide">
             <div class="card-label">How it works</div>
             <h3 class="card-title">Monitor. Analyze. Execute.</h3>
-            <p class="card-desc">The agent monitors StockTwits and Reddit for trending tickers. Each signal is researched by the LLM — analyzing sentiment, timing, catalysts, and red flags. If confidence is high enough, it executes via Alpaca and monitors the position.</p>
+            <p class="card-desc">The agent monitors StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum. Each candidate is researched by the LLM, scored against risk gates, executed via Alpaca, and recorded for review.</p>
             <div class="card-visual">
               <div class="flow" id="signal-flow">
                 <span class="flow-item" data-step="0"><span class="flow-ticker">$NVDA</span> trending</span>
@@ -1045,21 +1046,21 @@
           </div>
 
           <div class="card">
-            <div class="card-label">Fully customizable</div>
-            <h3 class="card-title">Make it yours</h3>
-            <p class="card-desc">Pluggable strategy system. Create your own strategy with custom gatherers, prompts, and trading rules.</p>
+            <div class="card-label">Sentinel operations</div>
+            <h3 class="card-title">Configure and review</h3>
+            <p class="card-desc">Use MAHORAGA SENTINEL to connect to your Worker, tune runtime config, test Reddit/Twitter cookies, export trade-review logs, and install app updates.</p>
             <div class="card-visual">
               <span class="ticker marker">
-                Gatherers
-                <span class="marker-tooltip">Add custom data sources</span>
+                Settings
+                <span class="marker-tooltip">Tune runtime config</span>
               </span>
               <span class="ticker marker">
-                Prompts
-                <span class="marker-tooltip">Customize LLM research prompts</span>
+                Source tests
+                <span class="marker-tooltip">Validate cookie accounts</span>
               </span>
               <span class="ticker marker">
-                Rules
-                <span class="marker-tooltip">Define entry/exit logic</span>
+                Updates
+                <span class="marker-tooltip">Install Sentinel releases</span>
               </span>
             </div>
           </div>
@@ -1088,7 +1089,7 @@
           </div>
           <div class="faq-item">
             <div class="faq-q">How does sentiment analysis work?</div>
-            <div class="faq-a">Monitors StockTwits and Reddit for trending tickers. Each signal is researched by the LLM before returning a confidence score.</div>
+            <div class="faq-a">It aggregates social, news, SEC, Alpha Vantage, GDELT, and crypto momentum signals, then scores candidates before LLM research and risk validation.</div>
           </div>
           <div class="faq-item">
             <div class="faq-q">Can I customize the strategy?</div>
@@ -1117,8 +1118,9 @@
   <footer>
     <div class="container footer-inner">
       <div class="footer-links">
-        <a href="https://github.com/ygwyg/MAHORAGA">GitHub</a>
+        <a href="https://github.com/MAV3Ndev/MAHORAGA">GitHub</a>
         <a href="./getting-started.html">Documentation</a>
+        <a href="./sentinel.html">Sentinel</a>
         <a href="./architecture.html">Architecture</a>
         <a href="https://discord.gg/vMFnHe2YBh">Discord</a>
       </div>

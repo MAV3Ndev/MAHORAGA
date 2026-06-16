@@ -143,7 +143,7 @@
       <span>Mahoraga</span>
     </a>
     <nav class="header-links">
-      <a href="https://github.com/ygwyg/MAHORAGA">
+      <a href="https://github.com/MAV3Ndev/MAHORAGA">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
         GitHub
       </a>
@@ -161,6 +161,7 @@
         <a href="./getting-started.html">Getting Started</a>
         <a href="./architecture.html">Architecture</a>
         <a href="./configuration.html" class="active">Configuration</a>
+        <a href="./sentinel.html">Sentinel</a>
         <a href="./harness.html">Strategies</a>
         <a href="./extending.html">Extending</a>
       </nav>
@@ -329,6 +330,36 @@
         </tr>
       </table>
 
+      <h2>Data Source Credentials</h2>
+      <p>Sentinel Settings is the preferred place to manage source credentials because it supports account rotation and connection tests. Worker secrets are useful as fallback defaults.</p>
+      <table>
+        <tr>
+          <th>Setting</th>
+          <th>Secret fallback</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>twitter_cookie_accounts</code></td>
+          <td><code>TWITTER_COOKIES</code></td>
+          <td>Multiple Twitter/X cookie accounts rotated for confirmation searches</td>
+        </tr>
+        <tr>
+          <td><code>reddit_cookie_accounts</code></td>
+          <td><code>REDDIT_COOKIES</code></td>
+          <td>Multiple Reddit cookie accounts rotated by the Reddit gatherer</td>
+        </tr>
+        <tr>
+          <td><code>reddit_user_agent</code></td>
+          <td><code>REDDIT_USER_AGENT</code></td>
+          <td>User-agent used for Reddit requests</td>
+        </tr>
+        <tr>
+          <td><code>alpha_vantage_api_key</code></td>
+          <td><code>ALPHA_VANTAGE_API_KEY</code></td>
+          <td>Enables Alpha Vantage news sentiment catalyst signals</td>
+        </tr>
+      </table>
+
       <h2>Environment Variables</h2>
       <p>Set in <code>.dev.vars</code> (local) or via <code>wrangler secret put</code> (production):</p>
 
@@ -376,7 +407,22 @@
         <tr>
           <td><code>TWITTER_BEARER_TOKEN</code></td>
           <td>No</td>
-          <td>Enable Twitter sentiment confirmation</td>
+          <td>Optional fallback for Twitter confirmation if cookies are not configured</td>
+        </tr>
+        <tr>
+          <td><code>TWITTER_COOKIES</code></td>
+          <td>No</td>
+          <td>Optional single-account fallback; Sentinel config supports multiple accounts</td>
+        </tr>
+        <tr>
+          <td><code>REDDIT_COOKIES</code></td>
+          <td>No</td>
+          <td>Optional single-account fallback; Sentinel config supports multiple accounts</td>
+        </tr>
+        <tr>
+          <td><code>ALPHA_VANTAGE_API_KEY</code></td>
+          <td>No</td>
+          <td>Optional news sentiment source; can also be stored in runtime config</td>
         </tr>
       </table>
 
@@ -453,6 +499,18 @@
         <tr>
           <td><code>GET /agent/logs</code></td>
           <td>Recent activity logs</td>
+        </tr>
+        <tr>
+          <td><code>GET /agent/trade-review</code></td>
+          <td>Indexed trade decisions with optional R2 snapshots for analysis</td>
+        </tr>
+        <tr>
+          <td><code>POST /agent/twitter/test</code></td>
+          <td>Test Twitter/X cookie accounts from Sentinel Settings</td>
+        </tr>
+        <tr>
+          <td><code>POST /agent/reddit/test</code></td>
+          <td>Test Reddit cookie accounts from Sentinel Settings</td>
         </tr>
         <tr>
           <td><code>GET /agent/costs</code></td>

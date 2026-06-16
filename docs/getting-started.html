@@ -50,7 +50,7 @@
       {
         "@type": "HowToStep",
         "name": "Clone and Install",
-        "text": "Clone the repository and install dependencies: git clone https://github.com/ygwyg/MAHORAGA.git && cd MAHORAGA && npm install",
+        "text": "Clone the repository and install dependencies: git clone https://github.com/MAV3Ndev/MAHORAGA.git && cd MAHORAGA && npm install",
         "url": "https://mahoraga.dev/getting-started.html#1-clone-and-install"
       },
       {
@@ -67,8 +67,8 @@
       },
       {
         "@type": "HowToStep",
-        "name": "Start the MCP Server",
-        "text": "Run npm run dev to start the server at http://localhost:8787",
+        "name": "Start the Worker dev server",
+        "text": "Run npm run dev to start the local Worker at http://localhost:8787",
         "url": "https://mahoraga.dev/getting-started.html#4-start-the-mcp-server"
       },
       {
@@ -254,16 +254,16 @@
       margin-bottom: 8px; letter-spacing: -0.01em;
     }
     .subtitle { color: var(--subtle); font-size: 13px; margin-bottom: 48px; }
-    
+
     h2 {
       font-size: 11px; font-weight: 500; text-transform: uppercase;
       letter-spacing: 2px; color: var(--muted);
       margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
     }
     h2:first-of-type { margin-top: 0; }
-    
+
     p { margin-bottom: 16px; font-size: 13px; }
-    
+
     pre {
       background: var(--bg-subtle); border: 1px solid var(--border);
       padding: 16px 20px; margin: 16px 0; overflow-x: auto;
@@ -273,10 +273,10 @@
       background: var(--bg-subtle); padding: 2px 6px; font-size: 12px;
     }
     pre code { background: none; padding: 0; }
-    
+
     ul, ol { margin: 16px 0; padding-left: 24px; font-size: 13px; }
     li { margin-bottom: 8px; }
-    
+
     .note {
       background: rgba(122, 155, 168, 0.1); border: 1px solid rgba(122, 155, 168, 0.3);
       padding: 12px 16px; font-size: 12px; color: var(--bright);
@@ -287,7 +287,7 @@
       padding: 12px 16px; font-size: 12px; color: #b89848;
       margin: 16px 0;
     }
-    
+
     table {
       width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px;
     }
@@ -295,7 +295,7 @@
       text-align: left; padding: 10px 12px; border: 1px solid var(--border);
     }
     th { background: var(--bg-subtle); font-weight: 500; color: var(--bright); }
-    
+
     a { color: var(--gold-dim); transition: color 0.2s; }
     a:hover { color: var(--gold); text-decoration: none; }
 
@@ -325,7 +325,7 @@
       <span>Mahoraga</span>
     </a>
     <nav class="header-links">
-      <a href="https://github.com/ygwyg/MAHORAGA">
+      <a href="https://github.com/MAV3Ndev/MAHORAGA">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
         GitHub
       </a>
@@ -343,6 +343,7 @@
         <a href="./getting-started.html" class="active">Getting Started</a>
         <a href="./architecture.html">Architecture</a>
         <a href="./configuration.html">Configuration</a>
+        <a href="./sentinel.html">Sentinel</a>
         <a href="./harness.html">Strategies</a>
         <a href="./extending.html">Extending</a>
       </nav>
@@ -350,30 +351,35 @@
 
     <main class="main-content">
       <h1>Getting Started</h1>
-      <p class="subtitle">Get Mahoraga running in 10 minutes.</p>
+      <p class="subtitle">Deploy the Worker, connect Sentinel, and start with paper trading.</p>
 
       <h2>Prerequisites</h2>
       <ul>
         <li>Node.js 18 or higher</li>
         <li>Alpaca account (free, supports paper trading)</li>
-        <li>OpenAI API key (for LLM analysis)</li>
+        <li>LLM API key or Cloudflare AI Gateway credentials</li>
+        <li>Optional: Alpha Vantage API key, Reddit cookies, Twitter/X cookies</li>
       </ul>
 
+      <h2>Recommended Path: Sentinel</h2>
+      <p>For normal operation, use <a href="./sentinel.html">MAHORAGA SENTINEL</a>. Deploy the Worker, install Sentinel from GitHub Releases, then enter your Worker URL and <code>MAHORAGA_API_TOKEN</code>. Sentinel can edit runtime config, test Reddit/Twitter/X cookie accounts, set Alpha Vantage, download trade-review logs, and install future app updates.</p>
+
       <h2>1. Clone and Install</h2>
-      <pre>git clone https://github.com/ygwyg/MAHORAGA.git
+      <pre>git clone https://github.com/MAV3Ndev/MAHORAGA.git
 cd MAHORAGA
 npm install
 cd dashboard && npm install && cd ..</pre>
 
       <h2>2. Configure API Keys</h2>
-      <p>Create a <code>.dev.vars</code> file in the project root:</p>
-      <pre>ALPACA_API_KEY=your_alpaca_key
-ALPACA_API_SECRET=your_alpaca_secret
-ALPACA_PAPER=true
-OPENAI_API_KEY=your_openai_key
-OPENAI_BASE_URL=https://api.openai.com/v1  # optional (OpenAI-compatible proxy)
-MAHORAGA_API_TOKEN=generate_a_secure_random_token
-KILL_SWITCH_SECRET=another_secure_random_token</pre>
+      <p>For production, use <code>wrangler secret put</code>. For local development, the same names can be stored in <code>.dev.vars</code>.</p>
+      <pre>npx wrangler secret put ALPACA_API_KEY
+npx wrangler secret put ALPACA_API_SECRET
+npx wrangler secret put ALPACA_PAPER
+npx wrangler secret put MAHORAGA_API_TOKEN
+npx wrangler secret put KILL_SWITCH_SECRET
+npx wrangler secret put LLM_PROVIDER
+npx wrangler secret put LLM_MODEL
+npx wrangler secret put OPENAI_API_KEY</pre>
 
       <p>Generate secure tokens with: <code>openssl rand -base64 48</code></p>
 
@@ -385,10 +391,13 @@ KILL_SWITCH_SECRET=another_secure_random_token</pre>
         <tr><th>Secret</th><th>Purpose</th></tr>
         <tr><td><code>MAHORAGA_API_TOKEN</code></td><td>Required for all API access (dashboard, curl commands)</td></tr>
         <tr><td><code>KILL_SWITCH_SECRET</code></td><td>Emergency shutdown + approval token signing</td></tr>
+        <tr><td><code>ALPHA_VANTAGE_API_KEY</code></td><td>Optional news sentiment source; can also be set in Sentinel config</td></tr>
+        <tr><td><code>REDDIT_COOKIES</code></td><td>Optional fallback; Sentinel supports multiple rotated accounts</td></tr>
+        <tr><td><code>TWITTER_COOKIES</code></td><td>Optional fallback; Sentinel supports multiple rotated accounts</td></tr>
       </table>
 
       <h2>3. Get Your API Keys</h2>
-      
+
       <p><strong>Alpaca (Required)</strong></p>
       <ol>
         <li>Create a free account at <a href="https://alpaca.markets">alpaca.markets</a></li>
@@ -426,31 +435,32 @@ curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
 # Check status
 curl -H "Authorization: Bearer $MAHORAGA_TOKEN" \
   http://localhost:8787/agent/status</pre>
-      <p>The agent will start monitoring StockTwits and Reddit for trading signals.</p>
+      <p>The agent will start monitoring configured signal sources. By default this includes StockTwits, Reddit, SEC, GDELT, Alpha Vantage when configured, and crypto momentum.</p>
 
       <h2>6. Open the Dashboard (Optional)</h2>
       <p>In another terminal:</p>
       <pre>cd dashboard
 npm run dev</pre>
       <p>Open <code>http://localhost:5173</code> in your browser.</p>
-      
+
       <div class="note">
         <strong>First time setup:</strong> Click the Settings icon and enter your <code>MAHORAGA_API_TOKEN</code> to authenticate.
       </div>
-      
-      <p>The dashboard shows:</p>
+
+      <p>The dashboard/Sentinel shows:</p>
       <ul>
         <li>Account balance and positions</li>
         <li>Current signals and research</li>
         <li>Agent activity logs</li>
-        <li>LLM cost tracking</li>
+        <li>Runtime config and credential connection tests</li>
+        <li>Trade-review log export with optional R2 snapshots</li>
       </ul>
 
       <h2>What Happens Next</h2>
       <p>The agent runs in a loop:</p>
       <ol>
-        <li><strong>Data gathering (24/7)</strong> — Fetches trending stocks from StockTwits</li>
-        <li><strong>LLM research</strong> — Analyzes top signals for red flags and catalysts</li>
+        <li><strong>Data gathering (24/7)</strong> — Fetches social, news, filing, and crypto signals</li>
+        <li><strong>LLM research</strong> — Analyzes top candidates for red flags and catalysts</li>
         <li><strong>Trading (market hours)</strong> — Executes buy/sell based on LLM decisions</li>
         <li><strong>Position management</strong> — Monitors held positions for exit signals</li>
       </ol>
@@ -458,6 +468,7 @@ npm run dev</pre>
       <h2>Next Steps</h2>
       <ul>
         <li><a href="./configuration.html">Configuration</a> — Customize trading parameters</li>
+        <li><a href="./sentinel.html">Sentinel</a> — Desktop and Android app operations</li>
         <li><a href="./architecture.html">Architecture</a> — How the system works</li>
         <li><a href="./extending.html">Extending</a> — Add your own data sources</li>
       </ul>

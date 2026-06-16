@@ -860,6 +860,7 @@ export default function App() {
   const nativeShell = isNativeShell();
   const desktopPanel = isDesktopPanel();
   const desktopShell = !nativeShell;
+  const appUpdateShell = desktopPanel || nativeShell;
   const viewportLockedShell = nativeShell || desktopPanel;
   const [connection, setConnection] = useState<ConnectionSettings>({ apiUrl: "", bearerToken: "" });
   const [connectionLoaded, setConnectionLoaded] = useState(false);
@@ -920,7 +921,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!desktopPanel) return;
+    if (!appUpdateShell) return;
 
     let cancelled = false;
     void getDesktopAppVersion().then((version) => {
@@ -935,7 +936,7 @@ export default function App() {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [desktopPanel]);
+  }, [appUpdateShell]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -2125,6 +2126,31 @@ export default function App() {
 
                           {nativeShell && (
                             <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
+                              {updateAvailable ? (
+                                <button
+                                  type="button"
+                                  className={remoteLinkActionClass}
+                                  onClick={() => {
+                                    void handleInstallUpdate();
+                                  }}
+                                  disabled={updateBusy || updateStatus?.state === "installing"}
+                                >
+                                  {updateBusy || updateStatus?.state === "downloading"
+                                    ? "DOWNLOADING..."
+                                    : "Install Update"}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={remoteLinkActionClass}
+                                  onClick={() => {
+                                    void handleCheckUpdate();
+                                  }}
+                                  disabled={updateBusy || updateStatus?.state === "checking"}
+                                >
+                                  {updateBusy || updateStatus?.state === "checking" ? "CHECKING..." : "Check Update"}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className={remoteLinkActionClass}
@@ -2159,7 +2185,7 @@ export default function App() {
                         </div>
 
                         <div
-                          className={clsx("grid gap-3", desktopShell ? "md:grid-cols-3" : "grid-cols-1 sm:grid-cols-3")}
+                          className={clsx("grid gap-3", desktopShell ? "md:grid-cols-3" : "grid-cols-1 sm:grid-cols-2")}
                         >
                           <div className="rounded-xl border border-hud-line bg-hud-bg/60 px-4 py-4">
                             <div className="hud-label text-hud-primary mb-2">AGENT</div>
@@ -2176,6 +2202,21 @@ export default function App() {
                           <div className="rounded-xl border border-hud-line bg-hud-bg/60 px-4 py-4">
                             <div className="hud-label text-hud-primary mb-2">LATENCY</div>
                             <div className="hud-value-sm">{error ? "DEGRADED" : "STABLE"}</div>
+                          </div>
+                          <div className="rounded-xl border border-hud-line bg-hud-bg/60 px-4 py-4">
+                            <div className="hud-label text-hud-primary mb-2">VERSION</div>
+                            <div
+                              className={clsx(
+                                "hud-value-sm",
+                                updateStatus?.state === "error"
+                                  ? "text-hud-warning"
+                                  : updateAvailable
+                                    ? "text-hud-success"
+                                    : "text-hud-primary"
+                              )}
+                            >
+                              {updateStateLabel}
+                            </div>
                           </div>
                         </div>
                       </div>

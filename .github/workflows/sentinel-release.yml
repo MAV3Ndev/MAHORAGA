@@ -17,6 +17,11 @@ permissions:
 jobs:
   release-windows:
     runs-on: windows-latest
+    env:
+      SENTINEL_ANDROID_KEYSTORE_BASE64: ${{ secrets.SENTINEL_ANDROID_KEYSTORE_BASE64 }}
+      SENTINEL_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SENTINEL_ANDROID_KEYSTORE_PASSWORD }}
+      SENTINEL_ANDROID_KEY_ALIAS: ${{ secrets.SENTINEL_ANDROID_KEY_ALIAS }}
+      SENTINEL_ANDROID_KEY_PASSWORD: ${{ secrets.SENTINEL_ANDROID_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -91,6 +96,51 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:win
 
+      - name: Setup Java for Android
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Validate Android signing secrets
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        shell: bash
+        run: |
+          if [[ -z "$SENTINEL_ANDROID_KEYSTORE_PASSWORD" || -z "$SENTINEL_ANDROID_KEY_ALIAS" || -z "$SENTINEL_ANDROID_KEY_PASSWORD" ]]; then
+            echo "Android signing requires SENTINEL_ANDROID_KEYSTORE_PASSWORD, SENTINEL_ANDROID_KEY_ALIAS, and SENTINEL_ANDROID_KEY_PASSWORD."
+            exit 1
+          fi
+
+      - name: Install Android build dependencies
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        working-directory: dashboard
+        run: npm install --no-save @capacitor/core@^7 @capacitor/cli@^7 @capacitor/android@^7
+
+      - name: Sync Sentinel Android app
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        working-directory: dashboard
+        run: npx cap sync android
+
+      - name: Prepare Android signing key
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        shell: bash
+        run: |
+          echo "$SENTINEL_ANDROID_KEYSTORE_BASE64" | base64 -d > dashboard/android/sentinel-release.jks
+
+      - name: Build Sentinel Android APK
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        working-directory: dashboard/android
+        env:
+          SENTINEL_ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/dashboard/android/sentinel-release.jks
+        run: .\gradlew.bat assembleRelease
+
+      - name: Collect Sentinel Android APK
+        if: env.SENTINEL_ANDROID_KEYSTORE_BASE64 != ''
+        shell: bash
+        run: |
+          cp dashboard/android/app/build/outputs/apk/release/app-release.apk "dashboard/release/MAHORAGA.SENTINEL-${{ steps.release.outputs.version }}-android.apk"
+
       - name: Generate changelog
         id: changelog
         shell: bash
@@ -112,6 +162,7 @@ jobs:
             echo "### Artifacts"
             echo "- Windows installer: MAHORAGA SENTINEL setup executable"
             echo "- Windows portable executable"
+            echo "- Android APK: MAHORAGA SENTINEL signed APK, when Android signing secrets are configured"
           } > SENTINEL_CHANGELOG.md
 
       - name: Publish GitHub Release
@@ -122,7 +173,7 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           title="MAHORAGA SENTINEL ${{ steps.release.outputs.version }}"
           shopt -s nullglob
-          artifacts=(dashboard/release/*.exe dashboard/release/latest.yml dashboard/release/*.blockmap)
+          artifacts=(dashboard/release/*.exe dashboard/release/*.apk dashboard/release/latest.yml dashboard/release/*.blockmap)
 
           if [[ "${#artifacts[@]}" -eq 0 ]]; then
             echo "No release artifacts found in dashboard/release"

@@ -3,12 +3,19 @@ apply plugin: 'com.android.application'
 android {
     namespace "dev.mahoraga.sentinel"
     compileSdk rootProject.ext.compileSdkVersion
+
+    def sentinelKeystorePath = System.getenv("SENTINEL_ANDROID_KEYSTORE_PATH")
+    def sentinelKeystorePassword = System.getenv("SENTINEL_ANDROID_KEYSTORE_PASSWORD")
+    def sentinelKeyAlias = System.getenv("SENTINEL_ANDROID_KEY_ALIAS")
+    def sentinelKeyPassword = System.getenv("SENTINEL_ANDROID_KEY_PASSWORD")
+    def hasSentinelSigning = sentinelKeystorePath && sentinelKeystorePassword && sentinelKeyAlias && sentinelKeyPassword
+
     defaultConfig {
         applicationId "dev.mahoraga.sentinel"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 10000
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,9 +23,24 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    signingConfigs {
+        if (hasSentinelSigning) {
+            sentinelRelease {
+                storeFile file(sentinelKeystorePath)
+                storePassword sentinelKeystorePassword
+                keyAlias sentinelKeyAlias
+                keyPassword sentinelKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (hasSentinelSigning) {
+                signingConfig signingConfigs.sentinelRelease
+            }
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }

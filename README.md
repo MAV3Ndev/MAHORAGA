@@ -9,7 +9,7 @@ An autonomous, LLM-powered trading agent that runs 24/7 on Cloudflare Workers.
 
 MAHORAGA monitors market/social signals from StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, decision audit logs, and 24/7 crypto trading support.
 
-The Windows desktop control panel, **MAHORAGA SENTINEL**, is available from the [v1.0.0 release](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
+The Windows and Android control app, **MAHORAGA SENTINEL**, is available from the [v1.0.0 release](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
 
 ## Fork Notice
 
@@ -19,9 +19,9 @@ The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribu
 
 ### Main changes from upstream
 
-- **MAHORAGA SENTINEL v1.0.0** — Adds a released Windows desktop app with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, trade-review export, and GitHub Release based update checks.
-- **Release automation** — Adds GitHub Actions packaging for Sentinel, automatic changelog generation from `sentinel-v*` tags, and release artifact publishing.
-- **Desktop and mobile packaging** — Adds Electron support for Windows desktop builds and Capacitor/Android project files for mobile shells.
+- **MAHORAGA SENTINEL v1.0.0** — Adds released Windows and Android app builds with authenticated remote connection setup, status monitoring, portfolio views, settings, notifications, trade-review export, and GitHub Release based update checks.
+- **Release automation** — Adds GitHub Actions packaging for Sentinel, automatic changelog generation from `sentinel-v*` tags, Windows artifact publishing, and signed Android APK publishing when signing secrets are configured.
+- **Desktop and mobile packaging** — Adds Electron support for Windows desktop builds and Capacitor/Android project files for mobile shells with native update handling.
 - **Decision audit logs** — Adds D1-backed trade decision rows plus optional R2 snapshots, exposed through `/agent/trade-review` for reviewing why the agent bought, sold, skipped, or blocked a trade.
 - **Expanded data sources** — Adds StockTwits, Reddit cookie access, Twitter/X cookie confirmation, SEC EDGAR, GDELT news, Alpha Vantage news sentiment, and crypto momentum gatherers.
 - **Configurable source credentials** — Supports Twitter/X and Reddit cookie accounts with rotation and Dashboard connection tests, plus Dashboard/secret configuration for Alpha Vantage.
@@ -44,7 +44,7 @@ The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribu
 - **Discord Notifications** — Get alerts on BUY signals
 - **Pluggable Strategy System** — Create custom strategies without touching core files
 - **Trade Review Export** — Download indexed decision logs and R2 snapshots for post-trade analysis
-- **Sentinel Desktop App** — Use the released Windows app to monitor, configure, test credentials, export logs, and install app updates
+- **Sentinel App** — Use the released Windows or Android app to monitor, configure, test credentials, export logs, and install app updates
 - **Browser/Mobile Dashboard** — Run the dashboard in the browser, Electron, or Android shell
 
 ## Requirements
@@ -59,14 +59,14 @@ The fork is maintained independently under `MAV3Ndev/MAHORAGA`. Upstream attribu
 
 ### Option A. Use MAHORAGA SENTINEL
 
-For normal operation, install the desktop app from the latest Sentinel release:
+For normal operation, install Sentinel from the latest Sentinel release:
 
-1. Download `MAHORAGA.SENTINEL-1.0.0-x64-setup.exe` from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0).
+1. Download the Windows setup executable, or the Android APK if it is attached, from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0).
 2. Deploy the Worker using the steps below.
 3. Open Sentinel and enter your Worker URL plus `MAHORAGA_API_TOKEN`.
 4. Use **Settings** to edit runtime config, set Twitter/X or Reddit cookie accounts, set the Alpha Vantage key, and run credential connection tests.
 
-Sentinel checks GitHub Releases for future `sentinel-v*` versions and can download/install updates from the app.
+Sentinel checks GitHub Releases for future `sentinel-v*` versions and can download/install updates from the app. Android updates require APKs signed with the same release key and the user's permission to install APKs from Sentinel.
 
 ### Option B. Run from source
 

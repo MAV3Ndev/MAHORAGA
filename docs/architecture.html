@@ -143,7 +143,7 @@
       <span>Mahoraga</span>
     </a>
     <nav class="header-links">
-      <a href="https://github.com/ygwyg/MAHORAGA">
+      <a href="https://github.com/MAV3Ndev/MAHORAGA">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
         GitHub
       </a>
@@ -161,6 +161,7 @@
         <a href="./getting-started.html">Getting Started</a>
         <a href="./architecture.html" class="active">Architecture</a>
         <a href="./configuration.html">Configuration</a>
+        <a href="./sentinel.html">Sentinel</a>
         <a href="./harness.html">Strategies</a>
         <a href="./extending.html">Extending</a>
       </nav>
@@ -181,8 +182,8 @@
 │   │                          │       │  PolicyEngine.evaluate() │   │
 │   │  ┌────────────────────┐  │       └────────────┬─────────────┘   │
 │   │  │  Gatherers         │  │                    │                  │
-│   │  │  StockTwits, Reddit│  │                    ▼                  │
-│   │  │  SEC, Crypto, X    │  │           ┌──────────────┐           │
+│   │  │  Social, news, SEC │  │                    ▼                  │
+│   │  │  crypto momentum   │  │           ┌──────────────┐           │
 │   │  └────────┬───────────┘  │           │    Alpaca    │           │
 │   │           │              │           │    Broker    │           │
 │   │           ▼              │           └──────────────┘           │
@@ -202,27 +203,28 @@
 └──────────────────────────────────────────────────────────────────────┘
       </pre>
 
-      <p>The Harness is a thin orchestrator (~1,400 lines) running on Cloudflare Workers with persistent state in Durable Object storage. It delegates data gathering, prompt construction, and trade rules to pluggable <strong>strategy modules</strong> via a strategy pattern, and routes all trade execution through the <strong>PolicyBroker</strong> which wraps PolicyEngine validation before hitting Alpaca. It executes via an alarm every 30 seconds and survives restarts.</p>
+      <p>The Harness is a thin orchestrator running on Cloudflare Workers with persistent state in Durable Object storage. It delegates data gathering, prompt construction, and trade rules to pluggable <strong>strategy modules</strong>, routes trade execution through the <strong>PolicyBroker</strong>, and writes decision rows to D1 with optional R2 snapshots for review. It executes via alarms and cron schedules and survives restarts.</p>
 
-      <p>The MCP server provides tools for external integrations if needed.</p>
+      <p>MAHORAGA SENTINEL operates the same agent through authenticated <code>/agent/*</code> endpoints. The MCP server remains available for external tool integrations.</p>
 
       <h2>Agent Loop</h2>
       <p>The agent runs continuously with two main phases:</p>
 
       <h3>Data Gathering (24/7)</h3>
       <ol>
-        <li>Fetch trending stocks from StockTwits API</li>
-        <li>Calculate sentiment scores (bullish vs bearish messages)</li>
-        <li>Filter by minimum sentiment and volume thresholds</li>
-        <li>Send top signals to LLM for research</li>
+        <li>Fetch signals from StockTwits, Reddit, SEC EDGAR, GDELT, Alpha Vantage, and crypto momentum</li>
+        <li>Use Twitter/X as confirmation for existing candidates when cookies or bearer auth are configured</li>
+        <li>Score freshness, quality, source diversity, and sentiment direction</li>
+        <li>Send top candidates to LLM research</li>
       </ol>
 
       <h3>Trading (Market Hours Only)</h3>
       <ol>
         <li>Check existing positions for stop-loss/take-profit</li>
         <li>Ask LLM to analyze each position (HOLD/SELL)</li>
-        <li>Look for buy opportunities from researched signals</li>
-        <li>Execute trades via PolicyBroker (PolicyEngine validation → Alpaca)</li>
+        <li>Look for buy opportunities from researched, scored candidates</li>
+        <li>Execute trades via PolicyBroker (PolicyEngine validation to Alpaca)</li>
+        <li>Record buy, sell, skip, and blocked decisions for trade-review export</li>
       </ol>
 
       <h2>LLM Decision Making</h2>
@@ -232,7 +234,7 @@
       <ul>
         <li>Symbol and current price</li>
         <li>Sentiment score and volume</li>
-        <li>Source breakdown (bullish/bearish counts)</li>
+        <li>Source breakdown, quality score, catalysts, and freshness</li>
       </ul>
       <p>It returns:</p>
       <pre>{
@@ -307,7 +309,7 @@
           <td><code>risk-status</code>, <code>killswitch-enable</code>, <code>killswitch-disable</code></td>
         </tr>
       </table>
-      <p>For daily operation, use the <code>/agent/*</code> HTTP endpoints instead (see <a href="./configuration.html">Configuration</a>).</p>
+      <p>For daily operation, use Sentinel or the <code>/agent/*</code> HTTP endpoints instead (see <a href="./sentinel.html">Sentinel</a> and <a href="./configuration.html">Configuration</a>).</p>
 
       <h2>Project Structure</h2>
       <pre>
@@ -325,7 +327,7 @@ mahoraga/
 │   │   ├── types.ts            # Strategy interface contract
 │   │   ├── index.ts            # Active strategy selector
 │   │   └── default/            # Default strategy
-│   │       ├── gatherers/      # StockTwits, Reddit, SEC, crypto, Twitter
+│   │       ├── gatherers/      # StockTwits, Reddit, SEC, GDELT, Alpha Vantage, crypto, Twitter/X
 │   │       ├── prompts/        # LLM prompt templates
 │   │       ├── rules/          # Entry/exit/staleness/options rules
 │   │       └── helpers/        # Ticker extraction, sentiment
@@ -334,7 +336,7 @@ mahoraga/
 │   ├── providers/              # Alpaca, LLM providers
 │   ├── storage/                # D1 and KV storage
 │   └── schemas/                # Config schemas (Zod)
-├── dashboard/                  # React dashboard
+├── dashboard/                  # React dashboard, Electron app, Capacitor Android shell
 ├── docs/                       # Documentation
 └── migrations/                 # D1 database migrations
       </pre>

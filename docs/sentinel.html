@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentinel — MAHORAGA Desktop and Android App</title>
+  <meta name="description" content="Install, configure, update, and release MAHORAGA SENTINEL for Windows and Android.">
+  <link rel="canonical" href="https://mahoraga.dev/sentinel.html">
+  <link rel="icon" type="image/svg+xml" href="/mahoraga.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/og-image.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #080a0c; --bg-subtle: #0c0f13; --surface: #0c0f13;
+      --border: rgba(122, 155, 168, 0.1); --muted: #4a5d68; --subtle: #6a7a82;
+      --text: #7a9ba8; --bright: #c8dce4; --white: #e4edf2; --gold: #CFB97D; --gold-dim: #94814C;
+      --sidebar-width: 210px;
+    }
+    html { font-size: 14px; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: radial-gradient(circle at 1px 1px, rgba(122, 155, 168, 0.03) 1px, transparent 0);
+      background-size: 28px 28px; pointer-events: none;
+    }
+    body > * { position: relative; z-index: 1; }
+    .disclaimer { background: var(--surface); color: #999; text-align: center; padding: 10px 16px; font-size: 11px; }
+    .site-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; background: rgba(8, 10, 12, 0.85);
+      backdrop-filter: blur(20px); z-index: 100;
+    }
+    .site-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--white); }
+    .site-logo img { width: 18px; height: 18px; }
+    .site-logo span { font-size: 12px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; }
+    .header-links { display: flex; gap: 24px; }
+    .header-links a { color: var(--muted); text-decoration: none; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+    .header-links a:hover { color: var(--bright); }
+    .docs-layout { display: flex; min-height: calc(100vh - 100px); }
+    .sidebar { width: var(--sidebar-width); border-right: 1px solid var(--border); padding: 32px 24px; position: sticky; top: 57px; height: calc(100vh - 57px); overflow-y: auto; flex-shrink: 0; }
+    .sidebar-title { font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 16px; }
+    .sidebar-nav { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-nav a { color: var(--subtle); text-decoration: none; font-size: 12px; padding: 8px 12px; border-radius: 4px; border-left: 2px solid transparent; }
+    .sidebar-nav a:hover { color: var(--bright); background: var(--bg-subtle); border-left-color: rgba(122, 155, 168, 0.2); }
+    .sidebar-nav a.active { color: var(--white); background: var(--bg-subtle); border-left-color: var(--gold); font-weight: 500; }
+    .main-content { flex: 1; max-width: 760px; padding: 52px 52px 120px; margin: 0 auto; }
+    h1 { font-family: 'Instrument Serif', serif; font-size: 26px; font-weight: 600; color: var(--white); margin-bottom: 8px; }
+    .subtitle { color: var(--subtle); font-size: 13px; margin-bottom: 48px; }
+    h2 { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h2:first-of-type { margin-top: 0; }
+    p { margin-bottom: 16px; font-size: 13px; }
+    ul, ol { margin: 16px 0; padding-left: 24px; font-size: 13px; }
+    li { margin-bottom: 8px; }
+    pre { background: var(--bg-subtle); border: 1px solid var(--border); padding: 16px 20px; margin: 16px 0; overflow-x: auto; font-size: 12px; line-height: 1.6; }
+    code { background: var(--bg-subtle); padding: 2px 6px; font-size: 12px; }
+    pre code { background: none; padding: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px; }
+    th, td { text-align: left; padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+    th { background: var(--bg-subtle); font-weight: 500; color: var(--bright); }
+    .note { background: rgba(122, 155, 168, 0.1); border: 1px solid rgba(122, 155, 168, 0.3); padding: 12px 16px; font-size: 12px; color: var(--bright); margin: 16px 0; }
+    .warning { background: rgba(184, 152, 72, 0.1); border: 1px solid rgba(184, 152, 72, 0.3); padding: 12px 16px; font-size: 12px; color: #b89848; margin: 16px 0; }
+    a { color: var(--gold-dim); }
+    a:hover { color: var(--gold); text-decoration: none; }
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main-content { padding: 32px 24px 80px; }
+      .site-header { padding: 12px 16px; }
+      .header-links { gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="disclaimer">For educational purposes only. Trading involves substantial risk of loss. Not financial advice.</div>
+
+  <header class="site-header">
+    <a href="./index.html" class="site-logo">
+      <img src="./mahoraga.svg" alt="Mahoraga">
+      <span>Mahoraga</span>
+    </a>
+    <nav class="header-links">
+      <a href="https://github.com/MAV3Ndev/MAHORAGA">GitHub</a>
+      <a href="https://discord.gg/vMFnHe2YBh">Discord</a>
+    </nav>
+  </header>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Documentation</div>
+      <nav class="sidebar-nav">
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./architecture.html">Architecture</a>
+        <a href="./configuration.html">Configuration</a>
+        <a href="./sentinel.html" class="active">Sentinel</a>
+        <a href="./harness.html">Strategies</a>
+        <a href="./extending.html">Extending</a>
+      </nav>
+    </aside>
+
+    <main class="main-content">
+      <h1>MAHORAGA SENTINEL</h1>
+      <p class="subtitle">Desktop and Android control app for operating a deployed MAHORAGA Worker.</p>
+
+      <h2>What Sentinel Does</h2>
+      <p>Sentinel is the operational control panel for a remote MAHORAGA agent. It connects to your Worker using <code>MAHORAGA_API_TOKEN</code>, then lets you monitor account state, positions, signals, logs, runtime config, source credentials, and trade-review exports.</p>
+      <ul>
+        <li>Windows desktop app built with Electron</li>
+        <li>Android shell built with Capacitor</li>
+        <li>Browser dashboard for local or hosted use</li>
+        <li>GitHub Release based update checks for packaged Sentinel apps</li>
+      </ul>
+
+      <h2>Install</h2>
+      <table>
+        <tr><th>Platform</th><th>Artifact</th><th>Notes</th></tr>
+        <tr>
+          <td>Windows</td>
+          <td><code>MAHORAGA.SENTINEL-*-x64-setup.exe</code></td>
+          <td>Recommended. Used by the in-app updater.</td>
+        </tr>
+        <tr>
+          <td>Windows portable</td>
+          <td><code>MAHORAGA.SENTINEL-*-x64-portable.exe</code></td>
+          <td>Manual launch, not the primary updater target.</td>
+        </tr>
+        <tr>
+          <td>Android</td>
+          <td><code>MAHORAGA.SENTINEL-*-android.apk</code></td>
+          <td>Published only when Android signing secrets are configured.</td>
+        </tr>
+      </table>
+      <p>Current release: <a href="https://github.com/MAV3Ndev/MAHORAGA/releases/tag/sentinel-v1.0.0">Sentinel v1.0.0</a>.</p>
+
+      <h2>First Connection</h2>
+      <ol>
+        <li>Deploy the Worker with Alpaca, LLM, D1, KV, R2, and authentication secrets configured.</li>
+        <li>Open Sentinel.</li>
+        <li>Enter the public Worker URL, for example <code>https://mahoraga.example.workers.dev</code>.</li>
+        <li>Enter the same token stored in <code>MAHORAGA_API_TOKEN</code>.</li>
+        <li>Open Settings to configure source credentials and risk parameters.</li>
+      </ol>
+
+      <h2>Runtime Configuration</h2>
+      <p>Sentinel writes runtime config through <code>/agent/config</code>. This is the preferred place to manage settings that change during operation.</p>
+      <ul>
+        <li>Trading limits: max positions, max position value, risk per trade, entry gates</li>
+        <li>Crypto trading: enabled flag, symbols, max crypto position value, take-profit and stop-loss</li>
+        <li>LLM routing: provider, research model, analyst model, OpenAI-compatible base URL</li>
+        <li>Source credentials: Twitter/X cookie accounts, Reddit cookie accounts, Reddit user-agent, Alpha Vantage API key</li>
+        <li>Notifications: Discord webhook test and daily report options</li>
+      </ul>
+
+      <h2>Source Credential Tests</h2>
+      <p>Twitter/X and Reddit support multiple cookie accounts. Sentinel rotates accounts during gatherer execution and includes connection tests in Settings.</p>
+      <div class="note">Cookie-based access is best treated as operationally fragile. Use multiple accounts, keep cookies fresh, and watch source logs in trade-review exports.</div>
+
+      <h2>Updates</h2>
+      <p>Packaged apps check GitHub Releases for non-draft, non-prerelease tags named <code>sentinel-vX.Y.Z</code>.</p>
+      <ul>
+        <li>Windows selects the setup executable.</li>
+        <li>Android selects the APK.</li>
+        <li>The app compares the release tag version with the installed app version.</li>
+        <li>If a newer version is found, Sentinel downloads the artifact and opens the platform installer.</li>
+      </ul>
+      <div class="warning">Android updates require the new APK to be signed with the same signing key as the installed app.</div>
+
+      <h2>Release Workflow</h2>
+      <p>The GitHub Actions workflow runs when a <code>sentinel-v*</code> tag is pushed. It verifies <code>dashboard/package.json</code>, builds Windows artifacts, optionally builds Android APK, generates a changelog, and publishes the release.</p>
+      <pre>cd dashboard
+npm version 1.0.1 --no-git-tag-version
+cd ..
+git add dashboard/package.json dashboard/package-lock.json dashboard/android/app/build.gradle
+git commit -m "Bump Sentinel to 1.0.1"
+git tag sentinel-v1.0.1
+git push origin main sentinel-v1.0.1</pre>
+
+      <h2>Android Signing Secrets</h2>
+      <p>Set these GitHub Secrets to publish updateable Android APKs:</p>
+      <table>
+        <tr><th>Secret</th><th>Description</th></tr>
+        <tr><td><code>SENTINEL_ANDROID_KEYSTORE_BASE64</code></td><td>Base64-encoded release keystore file</td></tr>
+        <tr><td><code>SENTINEL_ANDROID_KEYSTORE_PASSWORD</code></td><td>Keystore password</td></tr>
+        <tr><td><code>SENTINEL_ANDROID_KEY_ALIAS</code></td><td>Release key alias</td></tr>
+        <tr><td><code>SENTINEL_ANDROID_KEY_PASSWORD</code></td><td>Release key password</td></tr>
+      </table>
+      <pre>base64 -w 0 sentinel-release.jks</pre>
+
+      <h2>Local Android Build</h2>
+      <pre>cd dashboard
+npm install --no-save @capacitor/core@^7 @capacitor/cli@^7 @capacitor/android@^7
+npm run android:sync
+cd android
+./gradlew assembleDebug</pre>
+    </main>
+  </div>
+</body>
+</html>
