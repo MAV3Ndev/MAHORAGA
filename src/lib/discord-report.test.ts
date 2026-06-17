@@ -9,6 +9,7 @@ import {
   pruneDailyReportBuckets,
   shouldSendDailyReport,
   summarizeDailyActivity,
+  summarizeDailyActivityWindow,
 } from "./discord-report";
 
 describe("discord report helpers", () => {
@@ -134,12 +135,28 @@ describe("discord report helpers", () => {
     researchBucket.symbol_counts.NVDA = 1;
     researchBucket.symbol_counts.AMD = 1;
 
-    const summary = summarizeDailyActivity(
-      {
-        [String(tradeBucketStart)]: tradeBucket,
-        [String(researchBucketStart)]: researchBucket,
-      },
-      now
+    const previousBucketStart = getDailyReportBucketStart(Date.parse("2026-04-21T11:40:00.000Z"));
+    const previousBucket = createDailyReportBucket(previousBucketStart);
+    previousBucket.total_events = 4;
+    previousBucket.data_gather_cycles = 2;
+    previousBucket.analyst_runs = 1;
+    previousBucket.executed_buys = 2;
+    previousBucket.executed_buy_notional = 2000;
+    previousBucket.buy_verdicts = 2;
+    previousBucket.skip_verdicts = 1;
+    previousBucket.wait_verdicts = 1;
+    previousBucket.researched_signals = 4;
+
+    const buckets = {
+      [String(tradeBucketStart)]: tradeBucket,
+      [String(researchBucketStart)]: researchBucket,
+      [String(previousBucketStart)]: previousBucket,
+    };
+    const summary = summarizeDailyActivity(buckets, now);
+    const previousSummary = summarizeDailyActivityWindow(
+      buckets,
+      Date.parse("2026-04-20T12:00:00.000Z"),
+      Date.parse("2026-04-21T12:00:00.000Z")
     );
 
     expect(summary.totalEvents).toBe(8);
@@ -149,9 +166,14 @@ describe("discord report helpers", () => {
     expect(summary.errors).toBe(1);
     expect(summary.topSymbols[0]).toEqual({ symbol: "NVDA", count: 3 });
 
-    const embed = formatDailyReportEmbed(summary, createAccount(), [createPosition()]);
+    const embed = formatDailyReportEmbed(summary, createAccount(), [createPosition()], previousSummary);
     expect(embed.title).toBe("📊 MAHORAGA Daily Report");
     expect(embed.fields.some((field) => field.name === "Executed Trades")).toBe(true);
     expect(embed.fields.some((field) => field.name === "Recent Trades")).toBe(true);
+    expect(embed.fields.find((field) => field.name === "Executed Trades")?.value).toContain("Δ BUY -1 / SELL +1");
+    expect(embed.fields.find((field) => field.name === "Live Portfolio")?.value).toContain(
+      "Day change +$1,000 / +0.81%"
+    );
+    expect(embed.fields.find((field) => field.name === "Bot Activity")?.value).toContain("Data cycles 1 (Δ -1)");
   });
 });

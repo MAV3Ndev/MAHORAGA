@@ -64,6 +64,7 @@ import {
   pruneDailyReportBuckets,
   shouldSendDailyReport,
   summarizeDailyActivity,
+  summarizeDailyActivityWindow,
 } from "../lib/discord-report";
 import { generateId } from "../lib/utils";
 import { getDefaultPolicyConfig } from "../policy/config";
@@ -3052,7 +3053,12 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     try {
       const summary = summarizeDailyActivity(this.state.dailyReportBuckets, nowMs);
-      const embed = formatDailyReportEmbed(summary, account, positions);
+      const previousSummary = summarizeDailyActivityWindow(
+        this.state.dailyReportBuckets,
+        summary.periodStartMs - (summary.periodEndMs - summary.periodStartMs),
+        summary.periodStartMs
+      );
+      const embed = formatDailyReportEmbed(summary, account, positions, previousSummary);
       const sent = await this.postDiscordEmbed("daily_report", null, embed);
       if (sent) {
         this.state.lastDailyReportSentAt = nowMs;

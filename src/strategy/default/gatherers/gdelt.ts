@@ -12,7 +12,7 @@ import { extractTickers, tickerCache } from "../helpers/ticker";
 const GDELT_CACHE_KEY = "gdeltNewsCache";
 const GDELT_COOLDOWN_KEY = "gdeltNewsCooldownUntil";
 const GDELT_CACHE_TTL_MS = 30 * 60_000;
-const GDELT_RATE_LIMIT_COOLDOWN_MS = 10 * 60_000;
+const GDELT_RATE_LIMIT_COOLDOWN_MS = 30 * 60_000;
 const GDELT_ERROR_COOLDOWN_MS = 15 * 60_000;
 
 interface GdeltArticle {
@@ -51,6 +51,19 @@ const MARKET_MOVING_TERMS = [
   "partnership",
   "recall",
   "short seller",
+];
+
+const GDELT_QUERY_TERMS = [
+  "earnings",
+  "guidance",
+  "upgrade",
+  "downgrade",
+  "merger",
+  "acquisition",
+  "approval",
+  "lawsuit",
+  "layoffs",
+  "bankruptcy",
 ];
 
 const COMPANY_TICKER_ALIASES: Array<{ symbol: string; patterns: RegExp[] }> = [
@@ -133,19 +146,19 @@ function extractGdeltTickers(title: string, customBlacklist: string[] = []): str
 }
 
 async function fetchGdeltArticles(ctx: StrategyContext): Promise<GdeltArticle[]> {
-  const cooldownUntil = ctx.state.get<number>(GDELT_COOLDOWN_KEY) ?? 0;
-  if (Date.now() < cooldownUntil) {
-    ctx.log("GDELT", "cooldown_active", { retry_after_ms: cooldownUntil - Date.now() });
-    return [];
-  }
-
   const cached = ctx.state.get<GdeltCache>(GDELT_CACHE_KEY);
   if (cached && Date.now() - cached.timestamp < GDELT_CACHE_TTL_MS) {
     ctx.log("GDELT", "news_cache_hit", { articles: cached.articles.length });
     return cached.articles;
   }
 
-  const query = `sourcecountry:US (${MARKET_MOVING_TERMS.map((term) => `"${term}"`).join(" OR ")})`;
+  const cooldownUntil = ctx.state.get<number>(GDELT_COOLDOWN_KEY) ?? 0;
+  if (Date.now() < cooldownUntil) {
+    ctx.log("GDELT", "cooldown_active", { retry_after_ms: cooldownUntil - Date.now() });
+    return [];
+  }
+
+  const query = `(${GDELT_QUERY_TERMS.join(" OR ")})`;
   const params = new URLSearchParams({
     query,
     mode: "artlist",
@@ -155,6 +168,7 @@ async function fetchGdeltArticles(ctx: StrategyContext): Promise<GdeltArticle[]>
     timespan: "24h",
   });
 
+  ctx.state.set(GDELT_COOLDOWN_KEY, Date.now() + GDELT_CACHE_TTL_MS);
   const response = await fetch(`https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`, {
     headers: { Accept: "application/json" },
   });
@@ -171,9 +185,7 @@ async function fetchGdeltArticles(ctx: StrategyContext): Promise<GdeltArticle[]>
 
   const data = (await response.json()) as GdeltResponse;
   const articles = data.articles || [];
-  if (articles.length > 0) {
-    ctx.state.set<GdeltCache>(GDELT_CACHE_KEY, { timestamp: Date.now(), articles });
-  }
+  ctx.state.set<GdeltCache>(GDELT_CACHE_KEY, { timestamp: Date.now(), articles });
   ctx.log("GDELT", "news_fetched", { articles: articles.length });
   return articles;
 }

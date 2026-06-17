@@ -146,11 +146,11 @@ export function shouldSendDailyReport(
   return true;
 }
 
-export function summarizeDailyActivity(
+export function summarizeDailyActivityWindow(
   buckets: Record<string, DailyReportBucket>,
-  nowMs = Date.now()
+  periodStartMs: number,
+  periodEndMs: number
 ): DailyReportSummary {
-  const periodStartMs = nowMs - DAILY_REPORT_WINDOW_MS;
   const symbolCounts = new Map<string, number>();
   const recentTrades: DailyReportTrade[] = [];
   let totalEvents = 0;
@@ -168,7 +168,7 @@ export function summarizeDailyActivity(
   let executedBuyNotional = 0;
 
   for (const bucket of Object.values(buckets)) {
-    if (!bucket || bucket.bucket_start_ms < periodStartMs || bucket.bucket_start_ms > nowMs) {
+    if (!bucket || bucket.bucket_start_ms < periodStartMs || bucket.bucket_start_ms >= periodEndMs) {
       continue;
     }
 
@@ -192,7 +192,7 @@ export function summarizeDailyActivity(
 
     if (Array.isArray(bucket.recent_trades)) {
       recentTrades.push(
-        ...bucket.recent_trades.filter((trade) => trade.timestamp >= periodStartMs && trade.timestamp <= nowMs)
+        ...bucket.recent_trades.filter((trade) => trade.timestamp >= periodStartMs && trade.timestamp < periodEndMs)
       );
     }
   }
@@ -206,7 +206,7 @@ export function summarizeDailyActivity(
 
   return {
     periodStartMs,
-    periodEndMs: nowMs,
+    periodEndMs,
     totalEvents,
     dataGatherCycles,
     analystRuns,
@@ -231,13 +231,53 @@ export function summarizeDailyActivity(
   };
 }
 
-export function formatDailyReportEmbed(summary: DailyReportSummary, account: Account | null, positions: Position[]) {
+export function summarizeDailyActivity(
+  buckets: Record<string, DailyReportBucket>,
+  nowMs = Date.now()
+): DailyReportSummary {
+  return summarizeDailyActivityWindow(buckets, nowMs - DAILY_REPORT_WINDOW_MS, nowMs);
+}
+
+export function formatDailyReportEmbed(
+  summary: DailyReportSummary,
+  account: Account | null,
+  positions: Position[],
+  previousSummary?: DailyReportSummary
+) {
   const formatCurrency = (value: number) =>
     new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
       maximumFractionDigits: 0,
     }).format(value);
+  const formatDeltaNumber = (current: number, previous?: number) => {
+    if (typeof previous !== "number") return null;
+    const delta = current - previous;
+    return `${delta >= 0 ? "+" : ""}${delta}`;
+  };
+  const formatDeltaCurrency = (current: number, previous?: number) => {
+    if (typeof previous !== "number") return null;
+    const delta = current - previous;
+    if (delta === 0) return "$0";
+    return `${delta > 0 ? "+" : "-"}${formatCurrency(Math.abs(delta))}`;
+  };
+  const formatDeltaPercent = (current: number, previous?: number) => {
+    if (typeof previous !== "number" || previous <= 0) return null;
+    const delta = ((current - previous) / previous) * 100;
+    if (delta === 0) return "0.00%";
+    return `${delta > 0 ? "+" : ""}${delta.toFixed(2)}%`;
+  };
+  const withDelta = (label: string, current: number, previous?: number) => {
+    const delta = formatDeltaNumber(current, previous);
+    return delta == null ? `${label} ${current}` : `${label} ${current} (Δ ${delta})`;
+  };
+  const portfolioDayChange =
+    account && account.last_equity > 0
+      ? `\nDay change ${formatDeltaCurrency(account.equity, account.last_equity)} / ${formatDeltaPercent(
+          account.equity,
+          account.last_equity
+        )}`
+      : "";
 
   const topSymbolsText =
     summary.topSymbols.length > 0
@@ -265,29 +305,57 @@ export function formatDailyReportEmbed(summary: DailyReportSummary, account: Acc
         name: "Executed Trades",
         value:
           `BUY ${summary.executedBuys} / SELL ${summary.executedSells}` +
-          (summary.executedBuyNotional > 0 ? `\nBuy notional ${formatCurrency(summary.executedBuyNotional)}` : ""),
+          (previousSummary
+            ? `\nΔ BUY ${formatDeltaNumber(summary.executedBuys, previousSummary.executedBuys)} / SELL ${formatDeltaNumber(
+                summary.executedSells,
+                previousSummary.executedSells
+              )}`
+            : "") +
+          (summary.executedBuyNotional > 0 || previousSummary
+            ? `\nBuy notional ${formatCurrency(summary.executedBuyNotional)}${
+                previousSummary
+                  ? ` (Δ ${formatDeltaCurrency(summary.executedBuyNotional, previousSummary.executedBuyNotional)})`
+                  : ""
+              }`
+            : ""),
         inline: true,
       },
       {
         name: "Research Outcomes",
-        value: `BUY ${summary.buyVerdicts} / SKIP ${summary.skipVerdicts} / WAIT ${summary.waitVerdicts}`,
+        value:
+          `BUY ${summary.buyVerdicts} / SKIP ${summary.skipVerdicts} / WAIT ${summary.waitVerdicts}` +
+          (previousSummary
+            ? `\nΔ BUY ${formatDeltaNumber(summary.buyVerdicts, previousSummary.buyVerdicts)} / SKIP ${formatDeltaNumber(
+                summary.skipVerdicts,
+                previousSummary.skipVerdicts
+              )} / WAIT ${formatDeltaNumber(summary.waitVerdicts, previousSummary.waitVerdicts)}`
+            : "") +
+          `\n${withDelta("Researched", summary.researchedSignals, previousSummary?.researchedSignals)}`,
         inline: true,
       },
       {
         name: "Live Portfolio",
         value: account
-          ? `${positions.length} positions\nEquity ${formatCurrency(account.equity)}\nCash ${formatCurrency(account.cash)}`
+          ? `${positions.length} positions\nEquity ${formatCurrency(account.equity)}${portfolioDayChange}\nCash ${formatCurrency(account.cash)}`
           : `${positions.length} positions\nAccount snapshot unavailable`,
         inline: true,
       },
       {
         name: "Bot Activity",
-        value: `Data cycles ${summary.dataGatherCycles}\nAnalyst runs ${summary.analystRuns}\nPremarket plans ${summary.premarketPlans}`,
+        value: `${withDelta("Data cycles", summary.dataGatherCycles, previousSummary?.dataGatherCycles)}\n${withDelta(
+          "Analyst runs",
+          summary.analystRuns,
+          previousSummary?.analystRuns
+        )}\n${withDelta("Premarket plans", summary.premarketPlans, previousSummary?.premarketPlans)}`,
         inline: true,
       },
       {
         name: "Alerts",
-        value: `Breaking news ${summary.breakingNewsAlerts}\nErrors ${summary.errors}\nTracked events ${summary.totalEvents}`,
+        value: `${withDelta("Breaking news", summary.breakingNewsAlerts, previousSummary?.breakingNewsAlerts)}\n${withDelta(
+          "Errors",
+          summary.errors,
+          previousSummary?.errors
+        )}\n${withDelta("Tracked events", summary.totalEvents, previousSummary?.totalEvents)}`,
         inline: true,
       },
       {

@@ -11,8 +11,9 @@ import { tickerCache } from "../helpers/ticker";
 
 const ALPHA_VANTAGE_CACHE_KEY = "alphaVantageNewsCache";
 const ALPHA_VANTAGE_COOLDOWN_KEY = "alphaVantageNewsCooldownUntil";
-const ALPHA_VANTAGE_CACHE_TTL_MS = 30 * 60_000;
-const ALPHA_VANTAGE_ERROR_COOLDOWN_MS = 30 * 60_000;
+const ALPHA_VANTAGE_CACHE_TTL_MS = 60 * 60_000;
+const ALPHA_VANTAGE_ERROR_COOLDOWN_MS = 60 * 60_000;
+const ALPHA_VANTAGE_API_MESSAGE_COOLDOWN_MS = 24 * 60 * 60_000;
 const ALPHA_VANTAGE_NEWS_TOPICS = "financial_markets,earnings,mergers_and_acquisitions,technology";
 
 interface AlphaVantageTickerSentiment {
@@ -58,16 +59,16 @@ function parseAlphaVantageTime(value?: string): number {
 }
 
 async function fetchAlphaVantageNews(ctx: StrategyContext, apiKey: string): Promise<AlphaVantageNewsItem[]> {
-  const cooldownUntil = ctx.state.get<number>(ALPHA_VANTAGE_COOLDOWN_KEY) ?? 0;
-  if (Date.now() < cooldownUntil) {
-    ctx.log("AlphaVantage", "cooldown_active", { retry_after_ms: cooldownUntil - Date.now() });
-    return [];
-  }
-
   const cached = ctx.state.get<AlphaVantageNewsCache>(ALPHA_VANTAGE_CACHE_KEY);
   if (cached && Date.now() - cached.timestamp < ALPHA_VANTAGE_CACHE_TTL_MS) {
     ctx.log("AlphaVantage", "news_cache_hit", { articles: cached.feed.length });
     return cached.feed;
+  }
+
+  const cooldownUntil = ctx.state.get<number>(ALPHA_VANTAGE_COOLDOWN_KEY) ?? 0;
+  if (Date.now() < cooldownUntil) {
+    ctx.log("AlphaVantage", "cooldown_active", { retry_after_ms: cooldownUntil - Date.now() });
+    return [];
   }
 
   const params = new URLSearchParams({
@@ -78,6 +79,7 @@ async function fetchAlphaVantageNews(ctx: StrategyContext, apiKey: string): Prom
     apikey: apiKey,
   });
 
+  ctx.state.set(ALPHA_VANTAGE_COOLDOWN_KEY, Date.now() + ALPHA_VANTAGE_CACHE_TTL_MS);
   const response = await fetch(`https://www.alphavantage.co/query?${params.toString()}`, {
     headers: { Accept: "application/json" },
   });
@@ -96,14 +98,12 @@ async function fetchAlphaVantageNews(ctx: StrategyContext, apiKey: string): Prom
     ctx.log("AlphaVantage", "api_message", {
       message: apiMessage.slice(0, 240),
     });
-    ctx.state.set(ALPHA_VANTAGE_COOLDOWN_KEY, Date.now() + ALPHA_VANTAGE_ERROR_COOLDOWN_MS);
+    ctx.state.set(ALPHA_VANTAGE_COOLDOWN_KEY, Date.now() + ALPHA_VANTAGE_API_MESSAGE_COOLDOWN_MS);
     return [];
   }
 
   const feed = data.feed || [];
-  if (feed.length > 0) {
-    ctx.state.set<AlphaVantageNewsCache>(ALPHA_VANTAGE_CACHE_KEY, { timestamp: Date.now(), feed });
-  }
+  ctx.state.set<AlphaVantageNewsCache>(ALPHA_VANTAGE_CACHE_KEY, { timestamp: Date.now(), feed });
   ctx.log("AlphaVantage", "news_fetched", { articles: feed.length });
   return feed;
 }
