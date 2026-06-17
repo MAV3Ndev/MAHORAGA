@@ -1,4 +1,17 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
+
+def dashboardPackage = new JsonSlurper().parse(file('../../package.json'))
+def sentinelVersionName = dashboardPackage.version as String
+def sentinelVersionParts = sentinelVersionName.tokenize('.').take(3).collect { part ->
+    def matcher = part =~ /\d+/
+    matcher.find() ? (matcher[0] as int) : 0
+}
+while (sentinelVersionParts.size() < 3) {
+    sentinelVersionParts.add(0)
+}
+def sentinelVersionCode = sentinelVersionParts[0] * 10000 + sentinelVersionParts[1] * 100 + sentinelVersionParts[2]
 
 android {
     namespace "dev.mahoraga.sentinel"
@@ -14,8 +27,8 @@ android {
         applicationId "dev.mahoraga.sentinel"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10000
-        versionName "1.0.0"
+        versionCode sentinelVersionCode
+        versionName sentinelVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
