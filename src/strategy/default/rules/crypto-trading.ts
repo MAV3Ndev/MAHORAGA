@@ -13,6 +13,38 @@ import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from ".
 import { buildCryptoFallbackResearch } from "../helpers/research-fallback";
 import { computeRiskSizedNotional } from "./risk-sizing";
 
+const MAX_RETRIES = 3;
+const CRYPTO_PENDING_BUY_TTL_MS = 15 * 60 * 1000;
+
+function getPendingCryptoBuys(ctx: StrategyContext): Record<string, number> {
+  return ctx.state.get<Record<string, number>>("cryptoPendingBuys") ?? {};
+}
+
+function prunePendingCryptoBuys(ctx: StrategyContext, pendingBuys: Record<string, number>, now: number): Set<string> {
+  const activeAliases = new Set<string>();
+  const nextPendingBuys: Record<string, number> = {};
+
+  for (const [symbol, timestamp] of Object.entries(pendingBuys)) {
+    if (!Number.isFinite(timestamp) || now - timestamp >= CRYPTO_PENDING_BUY_TTL_MS) continue;
+
+    nextPendingBuys[symbol] = timestamp;
+    for (const alias of getCryptoSymbolAliases(symbol)) {
+      activeAliases.add(alias);
+    }
+  }
+
+  ctx.state.set("cryptoPendingBuys", nextPendingBuys);
+  return activeAliases;
+}
+
+function rememberPendingCryptoBuy(ctx: StrategyContext, symbol: string, now: number): void {
+  const pendingBuys = getPendingCryptoBuys(ctx);
+  for (const alias of getCryptoSymbolAliases(symbol)) {
+    pendingBuys[alias] = now;
+  }
+  ctx.state.set("cryptoPendingBuys", pendingBuys);
+}
+
 function stripJsonCodeFences(content: string): string {
   return content
     .replace(/```json\s*/gi, "")
@@ -174,7 +206,6 @@ JSON response:
   "catalysts": ["positive factors"]
 }`;
 
-  const MAX_RETRIES = 3;
   let lastError: string | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -312,6 +343,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
 
   const cryptoPositions = positions.filter((p) => isCryptoSymbol(p.symbol, ctx.config.crypto_symbols || []));
   const heldCrypto = new Set(cryptoPositions.flatMap((p) => getCryptoSymbolAliases(p.symbol)));
+  const pendingCrypto = prunePendingCryptoBuys(ctx, getPendingCryptoBuys(ctx), Date.now());
 
   // Check exits
   for (const pos of cryptoPositions) {
@@ -336,6 +368,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
   const cryptoSignals = ctx.signals
     .filter((s) => s.isCrypto)
     .filter((s) => !heldCrypto.has(s.symbol))
+    .filter((s) => !pendingCrypto.has(s.symbol))
     .filter((s) => s.sentiment > 0)
     .sort((a, b) => (b.momentum || 0) - (a.momentum || 0));
 
@@ -343,6 +376,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
     total_signals: ctx.signals.length,
     crypto_signals: cryptoSignals.length,
     held_crypto: Array.from(heldCrypto),
+    pending_crypto: Array.from(pendingCrypto),
     has_llm: !!ctx.llm,
     crypto_enabled: ctx.config.crypto_enabled,
   });
@@ -424,6 +458,7 @@ export async function runCryptoTrading(ctx: StrategyContext, positions: Position
       : `Crypto momentum: ${research.reasoning}`;
     const result = await ctx.broker.buy(signal.symbol, positionSize, tradeReason);
     if (result) {
+      rememberPendingCryptoBuy(ctx, signal.symbol, Date.now());
       trackCryptoPositionEntry(ctx, signal, research, tradeReason);
       for (const alias of getCryptoSymbolAliases(signal.symbol)) {
         heldCrypto.add(alias);

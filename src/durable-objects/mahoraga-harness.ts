@@ -2993,6 +2993,8 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const color = side === "BUY" ? 0x22c55e : 0xef4444;
     const icon = side === "BUY" ? "🟢" : "🔴";
+    const status = "status" in trade ? trade.status.toLowerCase() : "submitted";
+    const eventLabel = status === "filled" ? "EXECUTED" : "SUBMITTED";
     const fields: Array<{ name: string; value: string; inline: boolean }> = [
       { name: "Action", value: side, inline: true },
       { name: "Symbol", value: `$${trade.symbol}`, inline: true },
@@ -3020,11 +3022,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     await this.postDiscordEmbed("trade", trade.symbol, {
-      title: `${icon} ${side} EXECUTED: $${trade.symbol}`,
+      title: `${icon} ${side} ${eventLabel}: $${trade.symbol}`,
       color,
       fields,
       timestamp: new Date().toISOString(),
-      footer: { text: "MAHORAGA • Executed trade notification" },
+      footer: { text: `MAHORAGA • ${eventLabel.toLowerCase()} trade notification` },
     });
   }
 

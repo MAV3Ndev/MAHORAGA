@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getDefaultPolicyConfig } from "../policy/config";
 import {
   computeCappedBuyNotional,
   computeHaltLimitPrice,
@@ -34,8 +35,10 @@ function createDeps(overrides?: {
 }) {
   const trading = {
     getAccount: vi.fn(async () => ({
+      cash: 10_000,
       buying_power: 10_000,
       daytrading_buying_power: 10_000,
+      equity: 10_000,
     })),
     getPositions: vi.fn(async () => []),
     getClock: vi.fn(async () => ({
@@ -81,7 +84,7 @@ function createDeps(overrides?: {
     options: {},
     deps: {
       alpaca: { trading, marketData, options: {} } as never,
-      policyConfig: {} as never,
+      policyConfig: getDefaultPolicyConfig({} as never),
       db: null,
       log: vi.fn(),
       cryptoSymbols: ["BTC/USD", "ETH/USD", "SOL/USD"],
@@ -89,6 +92,7 @@ function createDeps(overrides?: {
       equityEntryCutoffMinutesBeforeClose: 15,
       afterHoursExitLimitBufferPct: 0.25,
       defaultStopLossPct: 5,
+      onBuy: vi.fn(),
       onSell: vi.fn(),
     },
   };
@@ -157,6 +161,70 @@ describe("policy broker helpers", () => {
 });
 
 describe("createPolicyBroker", () => {
+  it("does not submit another buy when a buy order is already open", async () => {
+    const { deps, trading } = createDeps({
+      openOrders: [
+        {
+          id: "order-1",
+          symbol: "BTC/USD",
+          side: "buy",
+          qty: "0",
+          client_order_id: "alpaca-order",
+          order_type: "market",
+          status: "accepted",
+        },
+      ],
+    });
+    const broker = createPolicyBroker(deps);
+
+    const result = await broker.buy("BTC/USD", 1000, "Crypto momentum");
+
+    expect(result).toBe(false);
+    expect(trading.createOrder).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(
+      "PolicyBroker",
+      "buy_order_open",
+      expect.objectContaining({
+        symbol: "BTC/USD",
+        status: "accepted",
+        order_type: "market",
+      })
+    );
+    expect(deps.onBuy).not.toHaveBeenCalled();
+  });
+
+  it("logs accepted buy orders as submitted unless filled", async () => {
+    const { deps, trading } = createDeps();
+    const broker = createPolicyBroker(deps);
+
+    const result = await broker.buy("BTC/USD", 1000, "Crypto momentum");
+
+    expect(result).toBe(true);
+    expect(trading.createOrder).toHaveBeenCalledWith({
+      symbol: "BTC/USD",
+      notional: 1000,
+      side: "buy",
+      type: "market",
+      time_in_force: "gtc",
+    });
+    expect(deps.log).toHaveBeenCalledWith(
+      "PolicyBroker",
+      "buy_submitted",
+      expect.objectContaining({
+        symbol: "BTC/USD",
+        status: "accepted",
+      })
+    );
+    expect(deps.onBuy).toHaveBeenCalledWith({
+      symbol: "BTC/USD",
+      notional: 1000,
+      reason: "Crypto momentum",
+      isCrypto: true,
+      status: "accepted",
+      orderType: "market",
+    });
+  });
+
   it("submits an extended-hours limit exit for equities after the close", async () => {
     const { deps, trading, marketData } = createDeps();
     const broker = createPolicyBroker(deps);

@@ -161,6 +161,65 @@ describe("crypto trading", () => {
     expect(buy).not.toHaveBeenCalled();
   });
 
+  it("does not rebuy crypto while a submitted buy is still pending", async () => {
+    const buy = vi.fn(async () => true);
+    const cachedResearch: ResearchResult = {
+      symbol: "POL/USD",
+      verdict: "BUY",
+      confidence: 0.75,
+      entry_quality: "good",
+      reasoning: "Momentum is constructive.",
+      red_flags: [],
+      catalysts: ["Trend strength"],
+      timestamp: Date.now(),
+    };
+    const state: Record<string, unknown> = {
+      cryptoPendingBuys: { POLUSD: Date.now() },
+      "cryptoResearch_POL/USD": cachedResearch,
+    };
+
+    const ctx = {
+      config: {
+        crypto_enabled: true,
+        crypto_symbols: ["POL/USD"],
+        crypto_take_profit_pct: 10,
+        crypto_stop_loss_pct: 5,
+        min_analyst_confidence: 0.6,
+        position_size_pct_of_cash: 25,
+        risk_per_trade_pct: 0.75,
+        crypto_max_position_value: 5000,
+      },
+      signals: [
+        {
+          symbol: "POL/USD",
+          isCrypto: true,
+          sentiment: 0.4,
+          momentum: 3,
+        },
+      ],
+      llm: null,
+      log: () => {},
+      trackLLMCost: () => 0,
+      sleep: async () => {},
+      broker: {
+        buy,
+        sell: vi.fn(async () => true),
+        getAccount: vi.fn(async () => ({ cash: 10000 })),
+      },
+      state: {
+        get: (key: string) => state[key],
+        set: (key: string, value: unknown) => {
+          state[key] = value;
+        },
+      },
+      positionEntries: {},
+    } as never;
+
+    await runCryptoTrading(ctx, [] as never);
+
+    expect(buy).not.toHaveBeenCalled();
+  });
+
   it("promotes cached WAIT crypto research when confidence is actionable", async () => {
     const buy = vi.fn(async () => true);
     const positionEntries: Record<string, ResearchResult | unknown> = {};

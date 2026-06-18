@@ -19,7 +19,7 @@ import type { D1Client } from "../storage/d1/client";
 import type { RiskState } from "../storage/d1/queries/risk-state";
 import { getRiskState } from "../storage/d1/queries/risk-state";
 import type { StrategyContext } from "../strategy/types";
-import { isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
+import { areEquivalentAssetSymbols, isCryptoSymbol, normalizeCryptoSymbol } from "./asset-symbols";
 
 export interface PolicyBrokerDeps {
   alpaca: AlpacaProviders;
@@ -176,6 +176,10 @@ function isFilledOrderStatus(status: unknown): boolean {
   return String(status ?? "").toLowerCase() === "filled";
 }
 
+function isOpenBuyOrder(order: Pick<Order, "side">): boolean {
+  return order.side === "buy";
+}
+
 export function isTradingHaltMarketOrderError(error: unknown): boolean {
   const message = String(error).toLowerCase();
   return message.includes("trading halt") && message.includes("limit order instead");
@@ -306,6 +310,15 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
 
   async function listOpenOrdersForSymbol(symbol: string): Promise<Order[]> {
     return alpaca.trading.listOrders({ status: "open", limit: 50, symbols: [symbol] }).catch(() => []);
+  }
+
+  async function listOpenBuyOrdersForSymbol(symbol: string): Promise<Order[]> {
+    return alpaca.trading
+      .listOrders({ status: "open", limit: 50 })
+      .then((orders) =>
+        orders.filter((order) => isOpenBuyOrder(order) && areEquivalentAssetSymbols(order.symbol, symbol))
+      )
+      .catch(() => []);
   }
 
   function isManagedProtectiveStop(order: Order, symbol: string): boolean {
@@ -504,6 +517,17 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         });
       }
 
+      const existingOpenBuy = (await listOpenBuyOrdersForSymbol(orderSymbol))[0];
+      if (existingOpenBuy) {
+        log("PolicyBroker", "buy_order_open", {
+          symbol: orderSymbol,
+          reason,
+          status: existingOpenBuy.status,
+          order_type: existingOpenBuy.order_type ?? existingOpenBuy.type,
+        });
+        return false;
+      }
+
       // Execute
       let alpacaOrder;
       try {
@@ -555,7 +579,7 @@ export function createPolicyBroker(deps: PolicyBrokerDeps): StrategyContext["bro
         }
       }
 
-      log("PolicyBroker", "buy_executed", {
+      log("PolicyBroker", isFilledOrderStatus(alpacaOrder.status) ? "buy_executed" : "buy_submitted", {
         symbol: orderSymbol,
         isCrypto,
         status: alpacaOrder.status,
