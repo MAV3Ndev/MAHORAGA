@@ -17,11 +17,6 @@ let mainWindow = null;
 let latestUpdate = null;
 let updateDownloadInFlight = false;
 
-// Keep Chromium's GPU pipeline enabled for smooth dashboard rendering.
-// Black-screen recovery is handled by the lifecycle reload hooks below.
-app.commandLine.appendSwitch("disable-renderer-backgrounding");
-app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-
 function normalizeApiUrl(raw) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
@@ -345,7 +340,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      backgroundThrottling: false,
+      backgroundThrottling: true,
     },
   });
 
@@ -372,9 +367,33 @@ function createMainWindow() {
     }
   });
 
+  window.on("hide", () => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("mahoraga:lifecycle", { type: "window-hide" });
+    }
+  });
+
   window.on("focus", () => {
     if (!window.isDestroyed()) {
       window.webContents.send("mahoraga:lifecycle", { type: "window-focus" });
+    }
+  });
+
+  window.on("blur", () => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("mahoraga:lifecycle", { type: "window-blur" });
+    }
+  });
+
+  window.on("minimize", () => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("mahoraga:lifecycle", { type: "window-minimize" });
+    }
+  });
+
+  window.on("restore", () => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("mahoraga:lifecycle", { type: "window-restore" });
     }
   });
 

@@ -60,8 +60,19 @@ const ACTIVE_STATUS_POLL_MS = 5000;
 const HIDDEN_STATUS_POLL_MS = 30000;
 const ACTIVE_CLOCK_TICK_MS = 1000;
 const HIDDEN_CLOCK_TICK_MS = 60000;
+const DASHBOARD_IDLE_AFTER_MS = 10 * 60 * 1000;
+const DASHBOARD_LONG_IDLE_RELOAD_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHECK_INITIAL_DELAY_MS = 15000;
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const HIDDEN_DESKTOP_LIFECYCLE_EVENTS = new Set(["window-blur", "window-hide", "window-minimize"]);
+const VISIBLE_DESKTOP_LIFECYCLE_EVENTS = new Set([
+  "renderer-ready",
+  "screen-unlock",
+  "system-resume",
+  "window-focus",
+  "window-restore",
+  "window-show",
+]);
 const marketTimeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: MARKET_TIME_ZONE,
   hour: "2-digit",
@@ -544,6 +555,22 @@ function getActivityLogKey(log: LogEntry): string {
   return `${log.timestamp}|${log.agent}|${log.action}|${String(log.symbol ?? "")}`;
 }
 
+function getSignalRowKey(signal: Signal): string {
+  return [
+    signal.symbol,
+    signal.source,
+    signal.sentiment.toFixed(4),
+    signal.volume,
+    signal.bullish ?? "",
+    signal.bearish ?? "",
+    signal.score ?? "",
+    signal.upvotes ?? "",
+    signal.momentum ?? "",
+    signal.price ?? "",
+    signal.reason,
+  ].join("|");
+}
+
 async function fetchPortfolioHistory(
   connection: ConnectionSettings,
   period: PortfolioPeriod = "1D"
@@ -941,6 +968,7 @@ export default function App() {
   const [showRemoteLinkDetails, setShowRemoteLinkDetails] = useState(false);
   const [showPortfolioDetails, setShowPortfolioDetails] = useState(false);
   const [isWindowVisible, setIsWindowVisible] = useState(() => typeof document === "undefined" || !document.hidden);
+  const [isUserIdle, setIsUserIdle] = useState(false);
   const [resumeSyncToken, setResumeSyncToken] = useState(0);
   const [showStartupSequence, setShowStartupSequence] = useState(() => desktopPanel);
   const seenOrderNotificationKeysRef = useRef<Set<string>>(new Set());
@@ -954,6 +982,7 @@ export default function App() {
   const portfolioHistoryInFlightRef = useRef(false);
   const apyHistoryInFlightRef = useRef(false);
   const positionTimelineInFlightRef = useRef(false);
+  const userIdleTimerRef = useRef<number | null>(null);
   const remoteLinkExpanded = nativeShell ? showRemoteLinkDetails : true;
   const portfolioDetailsExpanded = nativeShell ? showPortfolioDetails : true;
   const periodButtonClass = nativeShell
@@ -1080,6 +1109,37 @@ export default function App() {
   }, [desktopPanel]);
 
   useEffect(() => {
+    const markUserActive = () => {
+      if (userIdleTimerRef.current !== null) {
+        window.clearTimeout(userIdleTimerRef.current);
+      }
+
+      setIsUserIdle(false);
+      userIdleTimerRef.current = window.setTimeout(() => {
+        setIsUserIdle(true);
+      }, DASHBOARD_IDLE_AFTER_MS);
+    };
+
+    markUserActive();
+
+    window.addEventListener("keydown", markUserActive);
+    window.addEventListener("pointerdown", markUserActive);
+    window.addEventListener("touchstart", markUserActive, { passive: true });
+    window.addEventListener("wheel", markUserActive, { passive: true });
+
+    return () => {
+      window.removeEventListener("keydown", markUserActive);
+      window.removeEventListener("pointerdown", markUserActive);
+      window.removeEventListener("touchstart", markUserActive);
+      window.removeEventListener("wheel", markUserActive);
+      if (userIdleTimerRef.current !== null) {
+        window.clearTimeout(userIdleTimerRef.current);
+        userIdleTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const requestResumeRefresh = () => {
       const now = Date.now();
       if (now - lastResumeRefreshAtRef.current < RESUME_REFRESH_THROTTLE_MS) return;
@@ -1090,19 +1150,31 @@ export default function App() {
     const handleVisibilityChange = () => {
       setIsWindowVisible(!document.hidden);
       if (!document.hidden) {
+        setIsUserIdle(false);
         requestResumeRefresh();
       }
     };
 
     const handleWindowFocus = () => {
       setIsWindowVisible(true);
+      setIsUserIdle(false);
       requestResumeRefresh();
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", handleWindowFocus);
-    const unsubscribeDesktopLifecycle = subscribeDesktopLifecycle(() => {
-      requestResumeRefresh();
+    const unsubscribeDesktopLifecycle = subscribeDesktopLifecycle((event) => {
+      if (HIDDEN_DESKTOP_LIFECYCLE_EVENTS.has(event.type)) {
+        setIsWindowVisible(false);
+        setIsUserIdle(true);
+        return;
+      }
+
+      if (VISIBLE_DESKTOP_LIFECYCLE_EVENTS.has(event.type)) {
+        setIsWindowVisible(true);
+        setIsUserIdle(false);
+        requestResumeRefresh();
+      }
     });
 
     return () => {
@@ -1111,6 +1183,18 @@ export default function App() {
       unsubscribeDesktopLifecycle?.();
     };
   }, []);
+
+  const isDashboardActive = isWindowVisible && !isUserIdle;
+
+  useEffect(() => {
+    if (!desktopPanel || isDashboardActive) return;
+
+    const timer = window.setTimeout(() => {
+      window.location.reload();
+    }, DASHBOARD_LONG_IDLE_RELOAD_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [desktopPanel, isDashboardActive]);
 
   useEffect(() => {
     void resumeSyncToken;
@@ -1135,10 +1219,10 @@ export default function App() {
 
     if (connectionLoaded && connection.apiUrl && connection.bearerToken && !showSetup) {
       fetchStatus();
-      const interval = setInterval(fetchStatus, isWindowVisible ? ACTIVE_STATUS_POLL_MS : HIDDEN_STATUS_POLL_MS);
+      const interval = setInterval(fetchStatus, isDashboardActive ? ACTIVE_STATUS_POLL_MS : HIDDEN_STATUS_POLL_MS);
       const timeInterval = setInterval(
         () => setTime(new Date()),
-        isWindowVisible ? ACTIVE_CLOCK_TICK_MS : HIDDEN_CLOCK_TICK_MS
+        isDashboardActive ? ACTIVE_CLOCK_TICK_MS : HIDDEN_CLOCK_TICK_MS
       );
 
       return () => {
@@ -1146,12 +1230,12 @@ export default function App() {
         clearInterval(timeInterval);
       };
     }
-  }, [connection, connectionLoaded, isWindowVisible, showSetup, resumeSyncToken]);
+  }, [connection, connectionLoaded, isDashboardActive, showSetup, resumeSyncToken]);
 
   useEffect(() => {
     void resumeSyncToken;
     if (!connectionLoaded || !connection.apiUrl || !connection.bearerToken || showSetup) return;
-    if (!isWindowVisible) return;
+    if (!isDashboardActive) return;
 
     const loadPortfolioHistory = async () => {
       if (portfolioHistoryInFlightRef.current) return;
@@ -1171,12 +1255,12 @@ export default function App() {
     loadPortfolioHistory();
     const historyInterval = setInterval(loadPortfolioHistory, 60000);
     return () => clearInterval(historyInterval);
-  }, [connection, connectionLoaded, isWindowVisible, showSetup, portfolioPeriod, resumeSyncToken]);
+  }, [connection, connectionLoaded, isDashboardActive, showSetup, portfolioPeriod, resumeSyncToken]);
 
   useEffect(() => {
     void resumeSyncToken;
     if (!connectionLoaded || !connection.apiUrl || !connection.bearerToken || showSetup) return;
-    if (!isWindowVisible) return;
+    if (!isDashboardActive) return;
 
     const loadApyHistory = async () => {
       if (apyHistoryInFlightRef.current) return;
@@ -1196,12 +1280,12 @@ export default function App() {
     loadApyHistory();
     const apyInterval = setInterval(loadApyHistory, 300000);
     return () => clearInterval(apyInterval);
-  }, [connection, connectionLoaded, isWindowVisible, showSetup, resumeSyncToken]);
+  }, [connection, connectionLoaded, isDashboardActive, showSetup, resumeSyncToken]);
 
   useEffect(() => {
     void resumeSyncToken;
     if (!connectionLoaded || !connection.apiUrl || !connection.bearerToken || showSetup) return;
-    if (!isWindowVisible) return;
+    if (!isDashboardActive) return;
 
     const loadPositionTimelineHistory = async () => {
       if (positionTimelineInFlightRef.current) return;
@@ -1219,7 +1303,7 @@ export default function App() {
     loadPositionTimelineHistory();
     const interval = setInterval(loadPositionTimelineHistory, 60000);
     return () => clearInterval(interval);
-  }, [connection, connectionLoaded, isWindowVisible, positionTimelinePeriod, showSetup, resumeSyncToken]);
+  }, [connection, connectionLoaded, isDashboardActive, positionTimelinePeriod, showSetup, resumeSyncToken]);
 
   const handleSaveConfig = async (config: Config) => {
     const response = await requestAgent<AgentEnvelope<Config>>("/config", {
@@ -1589,6 +1673,12 @@ export default function App() {
   useEffect(() => {
     const visibleKeys = visibleLogs.map(getActivityLogKey);
 
+    if (!isDashboardActive) {
+      rememberBoundedKeys(seenActivityFeedKeysRef.current, visibleKeys, ACTIVITY_FEED_KEY_CAP);
+      setNewActivityFeedKeys((current) => (current.size === 0 ? current : new Set()));
+      return;
+    }
+
     if (seenActivityFeedKeysRef.current.size === 0) {
       rememberBoundedKeys(seenActivityFeedKeysRef.current, visibleKeys, ACTIVITY_FEED_KEY_CAP);
       return;
@@ -1605,7 +1695,7 @@ export default function App() {
     }, 1200);
 
     return () => window.clearTimeout(timeoutId);
-  }, [visibleLogs]);
+  }, [isDashboardActive, visibleLogs]);
 
   useEffect(() => {
     let frameId: number | null = null;
@@ -1782,6 +1872,159 @@ export default function App() {
     ? Math.max(0, Math.floor((Date.now() - selectedPositionEntry.entry_time) / 3600000))
     : null;
   const selectedActivityLogDetails = selectedActivityLog ? getLogDetailEntries(selectedActivityLog) : [];
+  const renderSignalRow = (sig: Signal, i: number, animated: boolean) => {
+    const signalKey = getSignalRowKey(sig);
+    const rowClassName = clsx(
+      "hud-list-card hud-list-card--signal flex items-center justify-between cursor-help px-3 py-2 transition-transform duration-200",
+      animated && i === 0 && signalListUpdateToken > 0 && "hud-live-row-hot",
+      sig.isCrypto && "bg-hud-warning/5"
+    );
+    const rowContent = (
+      <>
+        <div className="flex items-center gap-2">
+          {sig.isCrypto && <span className="text-hud-warning text-xs">₿</span>}
+          <span className="hud-value-sm">{sig.symbol}</span>
+          <span className={clsx("hud-label", sig.isCrypto ? "text-hud-warning" : "")}>
+            {sig.source.toUpperCase()}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {sig.isCrypto && sig.momentum !== undefined ? (
+            <span
+              className={clsx(
+                "hud-label hidden sm:inline",
+                sig.momentum >= 0 ? "text-hud-success" : "text-hud-error"
+              )}
+            >
+              {sig.momentum >= 0 ? "+" : ""}
+              {sig.momentum.toFixed(1)}%
+            </span>
+          ) : (
+            <span className="hud-label hidden sm:inline">VOL {sig.volume}</span>
+          )}
+          <span className={clsx("hud-value-sm", getSentimentColor(sig.sentiment))}>
+            {(sig.sentiment * 100).toFixed(0)}%
+          </span>
+        </div>
+      </>
+    );
+
+    return (
+      <Tooltip
+        key={signalKey}
+        position="right"
+        content={
+          <TooltipContent
+            title={`${sig.symbol} - ${sig.source.toUpperCase()}`}
+            items={[
+              {
+                label: "Sentiment",
+                value: `${(sig.sentiment * 100).toFixed(0)}%`,
+                color: getSentimentColor(sig.sentiment),
+              },
+              { label: "Volume", value: sig.volume },
+              ...(sig.bullish !== undefined ? [{ label: "Bullish", value: sig.bullish, color: "text-hud-success" }] : []),
+              ...(sig.bearish !== undefined ? [{ label: "Bearish", value: sig.bearish, color: "text-hud-error" }] : []),
+              ...(sig.score !== undefined ? [{ label: "Score", value: sig.score }] : []),
+              ...(sig.upvotes !== undefined ? [{ label: "Upvotes", value: sig.upvotes }] : []),
+              ...(sig.momentum !== undefined
+                ? [
+                    {
+                      label: "Momentum",
+                      value: `${sig.momentum >= 0 ? "+" : ""}${sig.momentum.toFixed(2)}%`,
+                    },
+                  ]
+                : []),
+              ...(sig.price !== undefined ? [{ label: "Price", value: formatCurrency(sig.price) }] : []),
+            ]}
+            description={sig.reason}
+          />
+        }
+      >
+        {animated ? (
+          <motion.div
+            layout
+            initial={{ opacity: 0, x: -14, filter: "blur(6px)" }}
+            animate={{
+              opacity: 1,
+              x: 0,
+              filter: "blur(0px)",
+              boxShadow:
+                signalListUpdateToken > 0 && i < 2
+                  ? [
+                      "0 0 0 rgba(111,216,255,0)",
+                      "0 0 18px rgba(111,216,255,0.18)",
+                      "0 0 0 rgba(111,216,255,0)",
+                    ]
+                  : "0 0 0 rgba(111,216,255,0)",
+            }}
+            exit={{ opacity: 0, x: 12, filter: "blur(6px)" }}
+            transition={{ delay: i * 0.02 }}
+            className={rowClassName}
+          >
+            {rowContent}
+          </motion.div>
+        ) : (
+          <div className={rowClassName}>{rowContent}</div>
+        )}
+      </Tooltip>
+    );
+  };
+  const renderActivityLogRow = (log: LogEntry, animated: boolean) => {
+    const logKey = getActivityLogKey(log);
+    const isNewLog = animated && newActivityFeedKeys.has(logKey);
+    const rowClassName = clsx(
+      "hud-feed-row hud-list-card hud-list-card--feed min-w-0 flex w-full items-start gap-2 px-3 py-2 text-left",
+      isNewLog && "hud-live-row-hot"
+    );
+    const rowContent = (
+      <>
+        <span className="text-hud-text-dim shrink-0 hidden sm:inline w-[52px]">
+          {new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false })}
+        </span>
+        <span className={clsx("shrink-0 w-[72px] text-right", getAgentColor(log.agent))}>{log.agent}</span>
+        <span className="text-hud-text flex-1 text-right wrap-break-word">
+          {log.action}
+          {log.symbol && <span className="text-hud-primary ml-1">({log.symbol})</span>}
+        </span>
+      </>
+    );
+
+    if (!animated) {
+      return (
+        <button type="button" key={logKey} onClick={() => setSelectedActivityLog(log)} className={rowClassName}>
+          {rowContent}
+        </button>
+      );
+    }
+
+    return (
+      <motion.button
+        type="button"
+        key={logKey}
+        layout
+        initial={false}
+        animate={{
+          opacity: isNewLog ? [0, 1] : 1,
+          x: isNewLog ? [-12, 0] : 0,
+          filter: isNewLog ? ["blur(4px)", "blur(0px)"] : "blur(0px)",
+          boxShadow: isNewLog
+            ? [
+                "0 0 0 rgba(111,216,255,0)",
+                "0 0 18px rgba(111,216,255,0.14)",
+                "0 0 0 rgba(111,216,255,0)",
+              ]
+            : "0 0 0 rgba(111,216,255,0)",
+        }}
+        exit={{ opacity: 0, x: 12, filter: "blur(4px)" }}
+        transition={isNewLog ? { duration: 0.32, ease: [0.22, 1, 0.36, 1] } : { duration: 0.18 }}
+        onClick={() => setSelectedActivityLog(log)}
+        className={rowClassName}
+      >
+        {rowContent}
+      </motion.button>
+    );
+  };
   const positionsPanel = (
     <Panel
       title="POSITIONS"
@@ -2608,7 +2851,7 @@ export default function App() {
                             ]}
                             labels={portfolioChartLabels}
                             updateToken={portfolioChartUpdateToken}
-                            updateEffect="trace"
+                            updateEffect={isDashboardActive ? "trace" : "none"}
                             showArea={true}
                             showGrid={true}
                             showDots={false}
@@ -2855,98 +3098,11 @@ export default function App() {
 
                   {signals.length === 0 ? (
                     <div className="text-hud-text-dim text-sm py-4 text-center">Gathering signals...</div>
+                  ) : !isDashboardActive ? (
+                    visibleSignals.map((sig: Signal, i: number) => renderSignalRow(sig, i, false))
                   ) : (
                     <AnimatePresence initial={false} mode="popLayout">
-                      {visibleSignals.map((sig: Signal, i: number) => (
-                        <Tooltip
-                          key={`${sig.symbol}-${sig.source}-${i}`}
-                          position="right"
-                          content={
-                            <TooltipContent
-                              title={`${sig.symbol} - ${sig.source.toUpperCase()}`}
-                              items={[
-                                {
-                                  label: "Sentiment",
-                                  value: `${(sig.sentiment * 100).toFixed(0)}%`,
-                                  color: getSentimentColor(sig.sentiment),
-                                },
-                                { label: "Volume", value: sig.volume },
-                                ...(sig.bullish !== undefined
-                                  ? [{ label: "Bullish", value: sig.bullish, color: "text-hud-success" }]
-                                  : []),
-                                ...(sig.bearish !== undefined
-                                  ? [{ label: "Bearish", value: sig.bearish, color: "text-hud-error" }]
-                                  : []),
-                                ...(sig.score !== undefined ? [{ label: "Score", value: sig.score }] : []),
-                                ...(sig.upvotes !== undefined ? [{ label: "Upvotes", value: sig.upvotes }] : []),
-                                ...(sig.momentum !== undefined
-                                  ? [
-                                      {
-                                        label: "Momentum",
-                                        value: `${sig.momentum >= 0 ? "+" : ""}${sig.momentum.toFixed(2)}%`,
-                                      },
-                                    ]
-                                  : []),
-                                ...(sig.price !== undefined
-                                  ? [{ label: "Price", value: formatCurrency(sig.price) }]
-                                  : []),
-                              ]}
-                              description={sig.reason}
-                            />
-                          }
-                        >
-                          <motion.div
-                            layout
-                            initial={{ opacity: 0, x: -14, filter: "blur(6px)" }}
-                            animate={{
-                              opacity: 1,
-                              x: 0,
-                              filter: "blur(0px)",
-                              boxShadow:
-                                signalListUpdateToken > 0 && i < 2
-                                  ? [
-                                      "0 0 0 rgba(111,216,255,0)",
-                                      "0 0 18px rgba(111,216,255,0.18)",
-                                      "0 0 0 rgba(111,216,255,0)",
-                                    ]
-                                  : "0 0 0 rgba(111,216,255,0)",
-                            }}
-                            exit={{ opacity: 0, x: 12, filter: "blur(6px)" }}
-                            transition={{ delay: i * 0.02 }}
-                            className={clsx(
-                              "hud-list-card hud-list-card--signal flex items-center justify-between cursor-help px-3 py-2 transition-transform duration-200",
-                              i === 0 && signalListUpdateToken > 0 && "hud-live-row-hot",
-                              sig.isCrypto && "bg-hud-warning/5"
-                            )}
-                          >
-                            <div className="flex items-center gap-2">
-                              {sig.isCrypto && <span className="text-hud-warning text-xs">₿</span>}
-                              <span className="hud-value-sm">{sig.symbol}</span>
-                              <span className={clsx("hud-label", sig.isCrypto ? "text-hud-warning" : "")}>
-                                {sig.source.toUpperCase()}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              {sig.isCrypto && sig.momentum !== undefined ? (
-                                <span
-                                  className={clsx(
-                                    "hud-label hidden sm:inline",
-                                    sig.momentum >= 0 ? "text-hud-success" : "text-hud-error"
-                                  )}
-                                >
-                                  {sig.momentum >= 0 ? "+" : ""}
-                                  {sig.momentum.toFixed(1)}%
-                                </span>
-                              ) : (
-                                <span className="hud-label hidden sm:inline">VOL {sig.volume}</span>
-                              )}
-                              <span className={clsx("hud-value-sm", getSentimentColor(sig.sentiment))}>
-                                {(sig.sentiment * 100).toFixed(0)}%
-                              </span>
-                            </div>
-                          </motion.div>
-                        </Tooltip>
-                      ))}
+                      {visibleSignals.map((sig: Signal, i: number) => renderSignalRow(sig, i, true))}
                     </AnimatePresence>
                   )}
                 </div>
@@ -2974,50 +3130,11 @@ export default function App() {
                 >
                   {logs.length === 0 ? (
                     <div className="text-hud-text-dim py-4 text-center">Waiting for activity...</div>
+                  ) : !isDashboardActive ? (
+                    visibleLogs.map((log: LogEntry) => renderActivityLogRow(log, false))
                   ) : (
                     <AnimatePresence initial={false} mode="popLayout">
-                      {visibleLogs.map((log: LogEntry) => {
-                        const logKey = getActivityLogKey(log);
-                        const isNewLog = newActivityFeedKeys.has(logKey);
-                        return (
-                          <motion.button
-                            type="button"
-                            key={logKey}
-                            layout
-                            initial={false}
-                            animate={{
-                              opacity: isNewLog ? [0, 1] : 1,
-                              x: isNewLog ? [-12, 0] : 0,
-                              filter: isNewLog ? ["blur(4px)", "blur(0px)"] : "blur(0px)",
-                              boxShadow: isNewLog
-                                ? [
-                                    "0 0 0 rgba(111,216,255,0)",
-                                    "0 0 18px rgba(111,216,255,0.14)",
-                                    "0 0 0 rgba(111,216,255,0)",
-                                  ]
-                                : "0 0 0 rgba(111,216,255,0)",
-                            }}
-                            exit={{ opacity: 0, x: 12, filter: "blur(4px)" }}
-                            transition={isNewLog ? { duration: 0.32, ease: [0.22, 1, 0.36, 1] } : { duration: 0.18 }}
-                            onClick={() => setSelectedActivityLog(log)}
-                            className={clsx(
-                              "hud-feed-row hud-list-card hud-list-card--feed min-w-0 flex w-full items-start gap-2 px-3 py-2 text-left",
-                              isNewLog && "hud-live-row-hot"
-                            )}
-                          >
-                            <span className="text-hud-text-dim shrink-0 hidden sm:inline w-[52px]">
-                              {new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false })}
-                            </span>
-                            <span className={clsx("shrink-0 w-[72px] text-right", getAgentColor(log.agent))}>
-                              {log.agent}
-                            </span>
-                            <span className="text-hud-text flex-1 text-right wrap-break-word">
-                              {log.action}
-                              {log.symbol && <span className="text-hud-primary ml-1">({log.symbol})</span>}
-                            </span>
-                          </motion.button>
-                        );
-                      })}
+                      {visibleLogs.map((log: LogEntry) => renderActivityLogRow(log, true))}
                     </AnimatePresence>
                   )}
                 </div>
