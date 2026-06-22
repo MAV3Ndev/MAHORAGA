@@ -6,9 +6,8 @@ import { Panel } from "./Panel";
 import { UpdateControls } from "./UpdateControls";
 
 const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
-  "openai-raw": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"],
+  "openai-raw": ["MiniMax-M3", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"],
   "ai-sdk": [
-    "anthropic/MiniMax-M3",
     "openai/gpt-4o-mini",
     "openai/gpt-4.1-mini",
     "anthropic/claude-3-5-haiku-latest",
@@ -24,9 +23,8 @@ const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
 };
 
 const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
-  "openai-raw": ["gpt-5.2-2025-12-11", "gpt-4.1", "gpt-4o"],
+  "openai-raw": ["MiniMax-M3", "gpt-5.2-2025-12-11", "gpt-4.1", "gpt-4o"],
   "ai-sdk": [
-    "anthropic/MiniMax-M3",
     "openai/gpt-4o",
     "openai/o1",
     "anthropic/claude-sonnet-4-0",
@@ -2335,9 +2333,9 @@ export function SettingsModal({
                     </select>
                     <p className="text-[9px] text-hud-text-dim mt-1">
                       {localConfig.llm_provider === "ai-sdk" &&
-                        "Supports: MiniMax through Anthropic-compatible API, plus OpenAI, Anthropic, Google, xAI, DeepSeek."}
+                        "Supports: OpenAI, Anthropic, Google, xAI, DeepSeek."}
                       {(!localConfig.llm_provider || localConfig.llm_provider === "openai-raw") &&
-                        "Uses the official OpenAI API key. If Base URL Override is set, that endpoint is used instead."}
+                        "Uses OpenAI-compatible Chat Completions. Set Base URL Override for MiniMax or other compatible endpoints."}
                       {localConfig.llm_provider &&
                         !["openai-raw", "ai-sdk", "cloudflare-gateway"].includes(localConfig.llm_provider) &&
                         "Provider is configured in the backend; selection is hidden in the dashboard."}
@@ -2371,7 +2369,7 @@ export function SettingsModal({
                         className="hud-input w-full"
                         value={localConfig.openai_base_url || ""}
                         onChange={(e) => handleChange("openai_base_url", e.target.value)}
-                        placeholder="https://api.openai.com/v1"
+                        placeholder="https://api.minimaxi.com/v1"
                       />
                     </div>
                   )}
@@ -2386,7 +2384,7 @@ export function SettingsModal({
                         className="hud-input w-full"
                         value={localConfig.anthropic_base_url || ""}
                         onChange={(e) => handleChange("anthropic_base_url", e.target.value)}
-                        placeholder="https://api.minimaxi.com/anthropic"
+                        placeholder="https://api.anthropic.com/v1"
                       />
                     </div>
                   )}

@@ -695,10 +695,11 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     if (dynamicConfig.llm_provider === "kimi-coding") {
-      dynamicConfig.llm_provider = "ai-sdk";
-      dynamicConfig.llm_model = "anthropic/MiniMax-M3";
-      dynamicConfig.llm_analyst_model = "anthropic/MiniMax-M3";
-      dynamicConfig.anthropic_base_url = "https://api.minimaxi.com/anthropic";
+      dynamicConfig.llm_provider = "openai-raw";
+      dynamicConfig.llm_model = "MiniMax-M3";
+      dynamicConfig.llm_analyst_model = "MiniMax-M3";
+      dynamicConfig.openai_base_url = "https://api.minimaxi.com/v1";
+      dynamicConfig.anthropic_base_url = "";
       changed = true;
     }
 
