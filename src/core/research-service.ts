@@ -44,29 +44,54 @@ export class ResearchService {
     const config = this.deps.getConfig();
     const preferredModel = prompt.model || config.llm_analyst_model || config.llm_model;
     const fallbackModel = config.llm_model;
-    const { response, model } = await this.completeWithFallback(
-      {
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        max_tokens: prompt.maxTokens || defaultMaxTokens,
-        temperature,
-        response_format: { type: "json_object" },
-      },
-      preferredModel,
-      fallbackModel,
-      logAgent
-    );
+    const maxTokens = prompt.maxTokens || defaultMaxTokens;
+    const request: CompletionParams = {
+      messages: [
+        { role: "system", content: prompt.system },
+        { role: "user", content: prompt.user },
+      ],
+      max_tokens: maxTokens,
+      temperature,
+      response_format: { type: "json_object" },
+    };
+    const { response, model } = await this.completeWithFallback(request, preferredModel, fallbackModel, logAgent);
 
+    this.trackUsage(model, response);
+
+    try {
+      return {
+        analysis: parseLlmJsonObject<T>(response.content || "{}"),
+        model,
+      };
+    } catch (error) {
+      const retryMaxTokens = Math.max(maxTokens * 3, 1200);
+      this.deps.log(logAgent, "json_parse_retry", {
+        model,
+        max_tokens: maxTokens,
+        retry_max_tokens: retryMaxTokens,
+        reason: String(error),
+      });
+
+      const retryResponse = await this.completeOnce(
+        {
+          ...request,
+          max_tokens: retryMaxTokens,
+        },
+        model
+      );
+      this.trackUsage(model, retryResponse);
+
+      return {
+        analysis: parseLlmJsonObject<T>(retryResponse.content || "{}"),
+        model,
+      };
+    }
+  }
+
+  private trackUsage(model: string, response: Awaited<ReturnType<LLMProvider["complete"]>>): void {
     if (response.usage) {
       this.deps.trackLLMCost(model, response.usage.prompt_tokens, response.usage.completion_tokens);
     }
-
-    return {
-      analysis: parseLlmJsonObject<T>(response.content || "{}"),
-      model,
-    };
   }
 
   private async completeWithFallback(
@@ -75,16 +100,8 @@ export class ResearchService {
     fallbackModel: string | undefined,
     logAgent: string
   ) {
-    const llm = this.deps.getLlm();
-    if (!llm) {
-      throw new Error("LLM provider not initialized");
-    }
-
     try {
-      const response = await llm.complete({
-        ...request,
-        model: preferredModel,
-      });
+      const response = await this.completeOnce(request, preferredModel);
       return { response, model: preferredModel };
     } catch (error) {
       const shouldRetryWithFallback = !!fallbackModel && fallbackModel !== preferredModel && isUnknownModelError(error);
@@ -99,11 +116,20 @@ export class ResearchService {
         reason: "unknown_model",
       });
 
-      const response = await llm.complete({
-        ...request,
-        model: fallbackModel,
-      });
+      const response = await this.completeOnce(request, fallbackModel);
       return { response, model: fallbackModel };
     }
+  }
+
+  private async completeOnce(request: CompletionParams, model: string) {
+    const llm = this.deps.getLlm();
+    if (!llm) {
+      throw new Error("LLM provider not initialized");
+    }
+
+    return llm.complete({
+      ...request,
+      model,
+    });
   }
 }
