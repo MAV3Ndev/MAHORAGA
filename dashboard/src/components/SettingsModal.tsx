@@ -2341,7 +2341,7 @@ export function SettingsModal({
                       {localConfig.llm_provider === "cloudflare-gateway" &&
                         "Uses CLOUDFLARE_AI_GATEWAY_* env vars via Cloudflare AI Gateway /compat."}
                       {localConfig.llm_provider === "kimi-coding" &&
-                        "Routes Kimi Coding requests through an HTTP forward proxy."}
+                        "Routes Kimi Coding requests through an HTTP CONNECT proxy."}
                     </p>
                   </div>
                   {showOpenAIBaseUrl && (

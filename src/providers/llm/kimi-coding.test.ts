@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildHttpProxyRequest, createKimiCodingProvider, KimiCodingProvider, parseHttpProxy } from "./kimi-coding";
+import {
+  buildHttpConnectRequest,
+  buildHttpsTunnelRequest,
+  createKimiCodingProvider,
+  KimiCodingProvider,
+  parseHttpProxy,
+} from "./kimi-coding";
 
 describe("Kimi Coding Provider", () => {
   const mockFetch = vi.fn();
@@ -100,24 +106,32 @@ describe("Kimi Coding Provider", () => {
     });
   });
 
-  it("builds an absolute-form HTTP proxy request", () => {
-    const request = buildHttpProxyRequest(
+  it("builds an HTTP CONNECT proxy request", () => {
+    const request = buildHttpConnectRequest(
       new URL("https://api.kimi.com/coding/v1/messages"),
-      parseHttpProxy("user:pass:proxy.example.com:8080"),
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer sk-test",
-          "Content-Type": "application/json",
-        },
-        body: '{"model":"kimi-for-code"}',
-      }
+      parseHttpProxy("user:pass:proxy.example.com:8080")
     );
 
-    expect(request).toContain("POST https://api.kimi.com/coding/v1/messages HTTP/1.1\r\n");
-    expect(request).toContain("Host: api.kimi.com\r\n");
+    expect(request).toContain("CONNECT api.kimi.com:443 HTTP/1.1\r\n");
+    expect(request).toContain("Host: api.kimi.com:443\r\n");
     expect(request).toContain("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n");
+    expect(request).toContain("Proxy-Connection: Keep-Alive\r\n");
+  });
+
+  it("builds an origin-form HTTPS request for the proxy tunnel", () => {
+    const request = buildHttpsTunnelRequest(new URL("https://api.kimi.com/coding/v1/messages"), {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer sk-test",
+        "Content-Type": "application/json",
+      },
+      body: '{"model":"kimi-for-code"}',
+    });
+
+    expect(request).toContain("POST /coding/v1/messages HTTP/1.1\r\n");
+    expect(request).toContain("Host: api.kimi.com\r\n");
     expect(request).toContain("Authorization: Bearer sk-test\r\n");
     expect(request).toContain("Content-Length: 25\r\n");
+    expect(request).not.toContain("Proxy-Authorization");
   });
 });
