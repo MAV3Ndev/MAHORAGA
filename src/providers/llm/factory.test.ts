@@ -430,6 +430,19 @@ describe("LLM Provider Factory", () => {
         expect(provider).not.toBeNull();
       });
 
+      it("creates Kimi Coding provider with HTTP proxy", async () => {
+        const { createLLMProvider } = await import("./factory");
+        const env = {
+          ANTHROPIC_AUTH_TOKEN: "sk-kimi-test",
+          KIMI_CODING_HTTP_PROXY: "user:pass:proxy.example.com:8080",
+          LLM_PROVIDER: "kimi-coding",
+          LLM_MODEL: "kimi-for-code",
+        } as unknown as Env;
+
+        const provider = createLLMProvider(env);
+        expect(provider).not.toBeNull();
+      });
+
       it("returns null when Kimi Coding token is missing", async () => {
         const { createLLMProvider } = await import("./factory");
         const env = {

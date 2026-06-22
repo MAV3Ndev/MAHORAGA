@@ -167,24 +167,6 @@ export class AISDKProvider implements LLMProvider {
   }
 }
 
-/** Legacy config format for backward compatibility */
-export interface LegacyAISDKConfig {
-  model: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-}
-
-export function createAISDKProvider(config: AISDKConfig | LegacyAISDKConfig): AISDKProvider {
-  // Handle legacy config format
-  if ("openaiApiKey" in config || "anthropicApiKey" in config) {
-    const legacyConfig = config as LegacyAISDKConfig;
-    return new AISDKProvider({
-      model: legacyConfig.model,
-      apiKeys: {
-        openai: legacyConfig.openaiApiKey,
-        anthropic: legacyConfig.anthropicApiKey,
-      },
-    });
-  }
-  return new AISDKProvider(config as AISDKConfig);
+export function createAISDKProvider(config: AISDKConfig): AISDKProvider {
+  return new AISDKProvider(config);
 }

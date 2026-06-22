@@ -20,6 +20,7 @@ const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
     "anthropic/claude-haiku-4-5",
     "google-ai-studio/gemini-2.5-flash",
   ],
+  "kimi-coding": ["kimi-for-code"],
 };
 
 const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
@@ -38,6 +39,7 @@ const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
     "anthropic/claude-opus-4-5",
     "google-ai-studio/gemini-2.5-pro",
   ],
+  "kimi-coding": ["kimi-for-code"],
 };
 
 interface SettingsModalProps {
@@ -198,7 +200,10 @@ function getEditableCookieAccounts(
   return parseCookieAccountLines(legacyCookies || "");
 }
 
-function getCookieAccountsForRequest(accounts?: Array<{ cookies: string }>, legacyCookies?: string): Array<{ cookies: string }> {
+function getCookieAccountsForRequest(
+  accounts?: Array<{ cookies: string }>,
+  legacyCookies?: string
+): Array<{ cookies: string }> {
   return sanitizeCookieAccounts(accounts, legacyCookies);
 }
 
@@ -352,6 +357,7 @@ const CONFIG_KEY_TABS: Partial<Record<keyof Config, SettingsTab>> = {
   reddit_cookie_accounts: "system",
   reddit_user_agent: "system",
   alpha_vantage_api_key: "system",
+  kimi_coding_http_proxy: "ai",
 };
 
 export function SettingsModal({
@@ -367,11 +373,7 @@ export function SettingsModal({
   onShowUpdateDetails,
   onClose,
 }: SettingsModalProps) {
-  const [localConfig, setLocalConfig] = useState<Config>(() => ({
-    ...config,
-    llm_provider:
-      (config.llm_provider as string | undefined) === "openai-compatible" ? "openai-raw" : config.llm_provider,
-  }));
+  const [localConfig, setLocalConfig] = useState<Config>(() => ({ ...config }));
   const [activeTab, setActiveTab] = useState<SettingsTab>("strategy");
   const [saving, setSaving] = useState(false);
   const [connectionSaving, setConnectionSaving] = useState(false);
@@ -394,13 +396,11 @@ export function SettingsModal({
   const [redditTestError, setRedditTestError] = useState<string | null>(null);
   const [apiUrl, setApiUrl] = useState(connection.apiUrl);
   const [apiToken, setApiToken] = useState(connection.bearerToken);
-  const llmProvider =
-    ((localConfig.llm_provider as string | undefined) === "openai-compatible"
-      ? "openai-raw"
-      : localConfig.llm_provider) || "openai-raw";
+  const llmProvider = localConfig.llm_provider || "openai-raw";
   const researchModelSuggestions = RESEARCH_MODEL_PRESETS[llmProvider] || [];
   const analystModelSuggestions = ANALYST_MODEL_PRESETS[llmProvider] || [];
   const showOpenAIBaseUrl = ["openai-raw", "ai-sdk"].includes(llmProvider);
+  const showKimiCodingProxy = llmProvider === "kimi-coding";
 
   // Note: We intentionally do NOT sync localConfig with the config prop after initial mount.
   // This prevents the parent's polling (every 5s) from overwriting user's unsaved changes.
@@ -606,7 +606,8 @@ export function SettingsModal({
       const count = response.data?.data?.account_count;
       const passed = response.data?.data?.passed;
       setRedditTestMessage(
-        response.data?.message || `Reddit cookie connection succeeded${count ? ` (${passed ?? count}/${count} accounts)` : ""}`
+        response.data?.message ||
+          `Reddit cookie connection succeeded${count ? ` (${passed ?? count}/${count} accounts)` : ""}`
       );
     } catch (error) {
       setRedditTestError(error instanceof Error ? error.message : "Reddit cookie test failed");
@@ -743,18 +744,20 @@ export function SettingsModal({
   const handleSave = async () => {
     setSaving(true);
     try {
-      const twitterCookieAccounts = sanitizeCookieAccounts(localConfig.twitter_cookie_accounts, localConfig.twitter_cookies);
-      const redditCookieAccounts = sanitizeCookieAccounts(localConfig.reddit_cookie_accounts, localConfig.reddit_cookies);
+      const twitterCookieAccounts = sanitizeCookieAccounts(
+        localConfig.twitter_cookie_accounts,
+        localConfig.twitter_cookies
+      );
+      const redditCookieAccounts = sanitizeCookieAccounts(
+        localConfig.reddit_cookie_accounts,
+        localConfig.reddit_cookies
+      );
       await onSave({
         ...localConfig,
         twitter_cookie_accounts: twitterCookieAccounts,
         twitter_cookies: twitterCookieAccounts[0]?.cookies || "",
         reddit_cookie_accounts: redditCookieAccounts,
         reddit_cookies: redditCookieAccounts[0]?.cookies || "",
-        llm_provider:
-          (localConfig.llm_provider as string | undefined) === "openai-compatible"
-            ? "openai-raw"
-            : localConfig.llm_provider,
       });
       onClose();
     } finally {
@@ -887,7 +890,8 @@ export function SettingsModal({
                       onChange={(e) => handleChange("min_entry_selection_score", Number(e.target.value))}
                     />
                     <p className="text-[9px] text-hud-text-dim mt-1">
-                      confidence、quality、catalysts、source consensus を合成した entry score の最低ラインです。0 で無効化します。
+                      confidence、quality、catalysts、source consensus を合成した entry score の最低ラインです。0
+                      で無効化します。
                     </p>
                   </div>
                   <div className="md:col-span-2">
@@ -1786,9 +1790,7 @@ export function SettingsModal({
                       max="1"
                       className="hud-input w-full"
                       value={localConfig.open_position_loss_guard_min_confidence ?? 0.85}
-                      onChange={(e) =>
-                        handleChange("open_position_loss_guard_min_confidence", Number(e.target.value))
-                      }
+                      onChange={(e) => handleChange("open_position_loss_guard_min_confidence", Number(e.target.value))}
                       disabled={!(localConfig.open_position_loss_entry_guard_enabled ?? true)}
                     />
                   </div>
@@ -2172,9 +2174,7 @@ export function SettingsModal({
                       max="1440"
                       className="hud-input w-full"
                       value={localConfig.options_early_loss_exit_max_hold_minutes ?? 60}
-                      onChange={(e) =>
-                        handleChange("options_early_loss_exit_max_hold_minutes", Number(e.target.value))
-                      }
+                      onChange={(e) => handleChange("options_early_loss_exit_max_hold_minutes", Number(e.target.value))}
                       disabled={!localConfig.options_enabled || !(localConfig.options_early_loss_exit_enabled ?? true)}
                     />
                   </div>
@@ -2243,9 +2243,7 @@ export function SettingsModal({
                       step="1"
                       className="hud-input w-full"
                       value={localConfig.crypto_max_positions ?? 3}
-                      onChange={(e) =>
-                        handleChange("crypto_max_positions", clampNumber(Number(e.target.value), 1, 50))
-                      }
+                      onChange={(e) => handleChange("crypto_max_positions", clampNumber(Number(e.target.value), 1, 50))}
                       disabled={!localConfig.crypto_enabled}
                     />
                     <p className="text-[9px] text-hud-text-dim mt-1">Configured crypto symbols still cap this value.</p>
@@ -2273,7 +2271,9 @@ export function SettingsModal({
                       onChange={(e) => handleChange("crypto_max_momentum_pct", Number(e.target.value))}
                       disabled={!localConfig.crypto_enabled}
                     />
-                    <p className="text-[9px] text-hud-text-dim mt-1">0 で無効化します。過熱した急騰追いかけを止めます。</p>
+                    <p className="text-[9px] text-hud-text-dim mt-1">
+                      0 で無効化します。過熱した急騰追いかけを止めます。
+                    </p>
                   </div>
                   <div>
                     <label className="hud-label block mb-1">Max Position ($)</label>
@@ -2325,10 +2325,11 @@ export function SettingsModal({
                       <option value="openai-raw">OpenAI Official</option>
                       <option value="ai-sdk">AI SDK (5 providers)</option>
                       <option value="cloudflare-gateway">Cloudflare AI Gateway</option>
+                      <option value="kimi-coding">Kimi Coding</option>
                       {localConfig.llm_provider &&
-                        !["openai-raw", "ai-sdk", "cloudflare-gateway"].includes(localConfig.llm_provider) && (
-                          <option value={localConfig.llm_provider}>Custom (backend configured)</option>
-                        )}
+                        !["openai-raw", "ai-sdk", "cloudflare-gateway", "kimi-coding"].includes(
+                          localConfig.llm_provider
+                        ) && <option value={localConfig.llm_provider}>Custom (backend configured)</option>}
                     </select>
                     <p className="text-[9px] text-hud-text-dim mt-1">
                       {localConfig.llm_provider === "ai-sdk" && "Supports: OpenAI, Anthropic, Google, xAI, DeepSeek"}
@@ -2339,6 +2340,8 @@ export function SettingsModal({
                         "Provider is configured in the backend; selection is hidden in the dashboard."}
                       {localConfig.llm_provider === "cloudflare-gateway" &&
                         "Uses CLOUDFLARE_AI_GATEWAY_* env vars via Cloudflare AI Gateway /compat."}
+                      {localConfig.llm_provider === "kimi-coding" &&
+                        "Routes Kimi Coding requests through an HTTP CONNECT proxy."}
                     </p>
                   </div>
                   {showOpenAIBaseUrl && (
@@ -2350,6 +2353,18 @@ export function SettingsModal({
                         value={localConfig.openai_base_url || ""}
                         onChange={(e) => handleChange("openai_base_url", e.target.value)}
                         placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+                  )}
+                  {showKimiCodingProxy && (
+                    <div>
+                      <label className="hud-label block mb-1">Kimi Coding HTTP Proxy</label>
+                      <input
+                        type="password"
+                        className="hud-input w-full"
+                        value={localConfig.kimi_coding_http_proxy || ""}
+                        onChange={(e) => handleChange("kimi_coding_http_proxy", e.target.value)}
+                        placeholder="user:pass:host:port"
                       />
                     </div>
                   )}
@@ -2572,10 +2587,7 @@ export function SettingsModal({
                         title="Entry Quality"
                         buckets={downloadInsights.summary?.buckets?.by_entry_quality}
                       />
-                      <ReviewBucketList
-                        title="Entry Path"
-                        buckets={downloadInsights.summary?.buckets?.by_entry_path}
-                      />
+                      <ReviewBucketList title="Entry Path" buckets={downloadInsights.summary?.buckets?.by_entry_path} />
                       <ReviewBucketList
                         title="Entry Score"
                         buckets={downloadInsights.summary?.buckets?.by_entry_selection_score}
@@ -2671,7 +2683,9 @@ export function SettingsModal({
                                           ? "hud-label text-hud-success"
                                           : "hud-label text-hud-primary hover:text-hud-text"
                                       }
-                                      onClick={() => handleApplyPatchCandidate(item.proposed_config_patch || {}, suggestionId)}
+                                      onClick={() =>
+                                        handleApplyPatchCandidate(item.proposed_config_patch || {}, suggestionId)
+                                      }
                                     >
                                       {applied ? "Applied To Draft" : "Review In Settings"}
                                     </button>
@@ -2884,7 +2898,8 @@ export function SettingsModal({
                       placeholder="Alpha Vantage API key"
                     />
                     <p className="text-[9px] text-hud-text-dim mt-1">
-                      Used for news sentiment catalyst signals. Leave blank to use the Worker secret or disable this source.
+                      Used for news sentiment catalyst signals. Leave blank to use the Worker secret or disable this
+                      source.
                     </p>
                   </div>
                 </div>
@@ -2918,12 +2933,7 @@ export function SettingsModal({
                       onRemove={handleRemoveRedditCookieAccount}
                     />
                     <div className="mt-3 flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        className="hud-button"
-                        onClick={handleTestReddit}
-                        disabled={testingReddit}
-                      >
+                      <button type="button" className="hud-button" onClick={handleTestReddit} disabled={testingReddit}>
                         {testingReddit ? "Testing..." : "Test Reddit Cookies"}
                       </button>
                       {redditTestMessage && <span className="hud-label text-hud-success">{redditTestMessage}</span>}

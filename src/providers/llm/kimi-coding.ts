@@ -2,10 +2,13 @@ import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
 import { getKimiCodingHeaders } from "./openai-compatible";
 
+const MAX_PROXY_RESPONSE_BYTES = 2 * 1024 * 1024;
+
 export interface KimiCodingConfig {
-  apiKey: string;
+  apiKey?: string;
   model?: string;
   baseUrl?: string;
+  httpProxy?: string;
 }
 
 interface KimiCodingResponse {
@@ -26,28 +29,17 @@ export class KimiCodingProvider implements LLMProvider {
   private apiKey: string;
   private model: string;
   private baseUrl: string;
+  private httpProxy: string | null;
 
   constructor(config: KimiCodingConfig) {
-    this.apiKey = config.apiKey;
+    this.apiKey = config.apiKey ?? "";
     this.model = config.model ?? "kimi-for-code";
     this.baseUrl = (config.baseUrl ?? "https://api.kimi.com/coding/v1").trim().replace(/\/+$/, "");
+    this.httpProxy = config.httpProxy?.trim() || null;
   }
 
   async complete(params: CompletionParams): Promise<CompletionResult> {
-    const response = await fetch(`${this.baseUrl}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        "anthropic-version": "2023-06-01",
-        ...getKimiCodingHeaders(),
-      },
-      body: JSON.stringify({
-        model: params.model ?? this.model,
-        max_tokens: params.max_tokens ?? 1024,
-        messages: params.messages,
-      }),
-    });
+    const response = await this.postMessages(params);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -70,8 +62,331 @@ export class KimiCodingProvider implements LLMProvider {
       },
     };
   }
+
+  private async postMessages(params: CompletionParams): Promise<Response> {
+    if (!this.apiKey) {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding requires ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY");
+    }
+
+    const url = `${this.baseUrl}/messages`;
+    const headers = this.buildRequestHeaders();
+    const body = JSON.stringify(this.buildRequestBody(params));
+
+    if (this.httpProxy) {
+      return fetchViaHttpProxy(this.httpProxy, url, {
+        method: "POST",
+        headers,
+        body,
+      });
+    }
+
+    if (this.isCloudflareWorkersRuntime() && new URL(this.baseUrl).hostname.toLowerCase() === "api.kimi.com") {
+      throw createError(
+        ErrorCode.PROVIDER_ERROR,
+        "Kimi Coding direct fetch is blocked from Cloudflare Workers by Kimi's Cloudflare challenge. Configure kimi_coding_http_proxy or KIMI_CODING_HTTP_PROXY."
+      );
+    }
+
+    return fetch(url, {
+      method: "POST",
+      headers,
+      body,
+    });
+  }
+
+  private buildRequestHeaders(): Record<string, string> {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      "anthropic-version": "2023-06-01",
+      ...getKimiCodingHeaders(),
+    };
+  }
+
+  private buildRequestBody(params: CompletionParams): Record<string, unknown> {
+    return {
+      model: params.model ?? this.model,
+      max_tokens: params.max_tokens ?? 1024,
+      messages: params.messages,
+    };
+  }
+
+  private isCloudflareWorkersRuntime(): boolean {
+    return typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers";
+  }
 }
 
 export function createKimiCodingProvider(config: KimiCodingConfig): KimiCodingProvider {
   return new KimiCodingProvider(config);
+}
+
+interface ParsedHttpProxy {
+  hostname: string;
+  port: number;
+  authorization?: string;
+}
+
+export function parseHttpProxy(proxy: string): ParsedHttpProxy {
+  const trimmed = proxy.trim();
+  if (!trimmed) {
+    throw createError(ErrorCode.INVALID_INPUT, "HTTP proxy is empty");
+  }
+
+  if (trimmed.includes("://")) {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:") {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must use http://");
+    }
+    if (!url.hostname || !url.port) {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must include host and port");
+    }
+    return {
+      hostname: url.hostname,
+      port: Number(url.port),
+      authorization:
+        url.username || url.password
+          ? `Basic ${btoa(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`)}`
+          : undefined,
+    };
+  }
+
+  const parts = trimmed.split(":");
+  if (parts.length === 2) {
+    const [hostname, port] = parts;
+    if (!hostname || !port) {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must include host and port");
+    }
+    return {
+      hostname,
+      port: Number(port),
+    };
+  }
+  if (parts.length === 4) {
+    const [username, password, hostname, port] = parts;
+    if (!username || !password || !hostname || !port) {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must include user, password, host, and port");
+    }
+    return {
+      authorization: `Basic ${btoa(`${username}:${password}`)}`,
+      hostname,
+      port: Number(port),
+    };
+  }
+
+  throw createError(
+    ErrorCode.INVALID_INPUT,
+    "Kimi Coding HTTP proxy must be host:port, user:pass:host:port, or http://user:pass@host:port"
+  );
+}
+
+async function fetchViaHttpProxy(
+  proxySpec: string,
+  targetUrl: string,
+  init: { method: string; headers: Record<string, string>; body: string }
+): Promise<Response> {
+  const target = new URL(targetUrl);
+  if (target.protocol !== "https:") {
+    throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding proxy transport only supports HTTPS targets");
+  }
+
+  const proxy = parseHttpProxy(proxySpec);
+  if (!Number.isInteger(proxy.port) || proxy.port <= 0 || proxy.port > 65535) {
+    throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy port is invalid");
+  }
+
+  const { connect } = await import("cloudflare:sockets");
+  const socket = connect(
+    { hostname: proxy.hostname, port: proxy.port },
+    { secureTransport: "starttls", allowHalfOpen: false }
+  );
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+  let tlsSocket: ReturnType<typeof socket.startTls> | null = null;
+  let tlsReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let tlsWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+
+  try {
+    const connectHeaders = [
+      `CONNECT ${target.hostname}:443 HTTP/1.1`,
+      `Host: ${target.hostname}:443`,
+      proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}` : null,
+      "Connection: keep-alive",
+      "",
+      "",
+    ]
+      .filter((line): line is string => line !== null)
+      .join("\r\n");
+    await writer.write(new TextEncoder().encode(connectHeaders));
+    await writer.releaseLock();
+
+    const tunnelResponse = await readHttpHeader(reader);
+    if (!tunnelResponse.header.startsWith("HTTP/1.1 200") && !tunnelResponse.header.startsWith("HTTP/1.0 200")) {
+      throw createError(
+        ErrorCode.PROVIDER_ERROR,
+        `Kimi Coding HTTP proxy CONNECT failed: ${tunnelResponse.header.split("\r\n")[0]}`
+      );
+    }
+    reader.releaseLock();
+
+    tlsSocket = socket.startTls();
+    tlsWriter = tlsSocket.writable.getWriter();
+    tlsReader = tlsSocket.readable.getReader();
+    const requestHeaders = [
+      `${init.method} ${target.pathname}${target.search} HTTP/1.1`,
+      `Host: ${target.hostname}`,
+      ...Object.entries({
+        ...init.headers,
+        "Accept-Encoding": "identity",
+        "Content-Length": String(new TextEncoder().encode(init.body).byteLength),
+        Connection: "close",
+      }).map(([key, value]) => `${key}: ${value}`),
+      "",
+      init.body,
+    ].join("\r\n");
+
+    await tlsWriter.write(new TextEncoder().encode(requestHeaders));
+    await tlsWriter.close();
+
+    const responseBytes = await readAllBytes(tlsReader, MAX_PROXY_RESPONSE_BYTES);
+    return buildResponseFromRawHttp(responseBytes);
+  } finally {
+    await tlsReader?.cancel().catch(() => undefined);
+    await tlsWriter?.abort().catch(() => undefined);
+    await tlsSocket?.close().catch(() => undefined);
+    await reader.cancel().catch(() => undefined);
+    await socket.close().catch(() => undefined);
+  }
+}
+
+async function readHttpHeader(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): Promise<{ header: string; remainder: Uint8Array }> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (total < 16384) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    chunks.push(value);
+    total += value.byteLength;
+    const combined = concatBytes(chunks, total);
+    const headerEnd = findHeaderEnd(combined);
+    if (headerEnd >= 0) {
+      return {
+        header: new TextDecoder().decode(combined.slice(0, headerEnd)),
+        remainder: combined.slice(headerEnd + 4),
+      };
+    }
+  }
+
+  throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy did not return a complete CONNECT response");
+}
+
+async function readAllBytes(reader: ReadableStreamDefaultReader<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy response is too large");
+    }
+    chunks.push(value);
+  }
+
+  return concatBytes(chunks, total);
+}
+
+function buildResponseFromRawHttp(bytes: Uint8Array): Response {
+  const headerEnd = findHeaderEnd(bytes);
+  if (headerEnd < 0) {
+    throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy returned an invalid HTTP response");
+  }
+
+  const headerText = new TextDecoder().decode(bytes.slice(0, headerEnd));
+  const [statusLine, ...headerLines] = headerText.split("\r\n");
+  if (!statusLine) {
+    throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy returned an invalid HTTP status line");
+  }
+  const status = Number(statusLine.split(" ")[1]);
+  const headers = new Headers();
+  for (const line of headerLines) {
+    const separator = line.indexOf(":");
+    if (separator > 0) {
+      headers.append(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+    }
+  }
+
+  let body: Uint8Array = copyBytes(bytes.slice(headerEnd + 4));
+  if (headers.get("transfer-encoding")?.toLowerCase() === "chunked") {
+    body = decodeChunkedBody(body);
+    headers.delete("transfer-encoding");
+  }
+
+  return new Response(toArrayBuffer(body), { status, headers });
+}
+
+function decodeChunkedBody(bytes: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  let total = 0;
+
+  while (offset < bytes.byteLength) {
+    const nextLine = findLineEnd(bytes, offset);
+    if (nextLine < 0) break;
+    const sizeText = new TextDecoder().decode(bytes.slice(offset, nextLine)).split(";", 1)[0]?.trim() || "";
+    const size = Number.parseInt(sizeText, 16);
+    if (!Number.isFinite(size)) break;
+    offset = nextLine + 2;
+    if (size === 0) break;
+    const chunk = bytes.slice(offset, offset + size);
+    chunks.push(chunk);
+    total += chunk.byteLength;
+    offset += size + 2;
+  }
+
+  return concatBytes(chunks, total);
+}
+
+function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function copyBytes(bytes: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function findHeaderEnd(bytes: Uint8Array): number {
+  for (let i = 0; i <= bytes.byteLength - 4; i++) {
+    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function findLineEnd(bytes: Uint8Array, start: number): number {
+  for (let i = start; i <= bytes.byteLength - 2; i++) {
+    if (bytes[i] === 13 && bytes[i + 1] === 10) {
+      return i;
+    }
+  }
+  return -1;
 }

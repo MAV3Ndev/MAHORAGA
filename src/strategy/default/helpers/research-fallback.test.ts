@@ -36,6 +36,7 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     llm_model: "gpt-4o-mini",
     llm_analyst_model: "gpt-4o",
     openai_base_url: "",
+    kimi_coding_http_proxy: "",
     llm_min_hold_minutes: 15,
     llm_force_sell_pnl_pct: 2,
     llm_force_sell_min_confidence: 0.65,

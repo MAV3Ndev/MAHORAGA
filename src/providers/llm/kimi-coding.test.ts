@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createKimiCodingProvider, KimiCodingProvider } from "./kimi-coding";
+import { createKimiCodingProvider, KimiCodingProvider, parseHttpProxy } from "./kimi-coding";
 
 describe("Kimi Coding Provider", () => {
   const mockFetch = vi.fn();
@@ -81,6 +81,22 @@ describe("Kimi Coding Provider", () => {
       prompt_tokens: 8,
       completion_tokens: 1,
       total_tokens: 9,
+    });
+  });
+
+  it("parses user-pass-host-port proxy format", () => {
+    expect(parseHttpProxy("user:pass:proxy.example.com:8080")).toEqual({
+      authorization: "Basic dXNlcjpwYXNz",
+      hostname: "proxy.example.com",
+      port: 8080,
+    });
+  });
+
+  it("parses http proxy URL format", () => {
+    expect(parseHttpProxy("http://user:pass@proxy.example.com:8080")).toEqual({
+      authorization: "Basic dXNlcjpwYXNz",
+      hostname: "proxy.example.com",
+      port: 8080,
     });
   });
 });

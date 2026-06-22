@@ -105,7 +105,7 @@ npx wrangler secret put ALPACA_API_SECRET
 npx wrangler secret put MAHORAGA_API_TOKEN
 
 # LLM Provider (choose one mode)
-npx wrangler secret put LLM_PROVIDER  # "openai-raw" (default), "ai-sdk", or "cloudflare-gateway"
+npx wrangler secret put LLM_PROVIDER  # "openai-raw" (default), "ai-sdk", "cloudflare-gateway", or "kimi-coding"
 npx wrangler secret put LLM_MODEL     # e.g. "gpt-4o-mini" or "anthropic/claude-sonnet-4"
 
 # LLM API Keys (based on provider mode)
@@ -120,6 +120,7 @@ npx wrangler secret put OPENAI_BASE_URL        # Optional: override OpenAI base 
 # npx wrangler secret put CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID  # For cloudflare-gateway
 # npx wrangler secret put CLOUDFLARE_AI_GATEWAY_ID          # For cloudflare-gateway
 # npx wrangler secret put CLOUDFLARE_AI_GATEWAY_TOKEN       # For cloudflare-gateway
+# npx wrangler secret put KIMI_CODING_HTTP_PROXY            # For kimi-coding on Cloudflare Workers
 
 # Optional
 npx wrangler secret put ALPACA_PAPER         # "true" for paper trading (recommended)
@@ -295,13 +296,14 @@ See `docs/harness.html` for the full customization guide.
 
 ### LLM Provider Configuration
 
-MAHORAGA-Next supports multiple LLM providers via three modes:
+MAHORAGA-Next supports multiple LLM providers:
 
 | Mode | Description | Required Env Vars |
 |------|-------------|-------------------|
 | `openai-raw` | Direct OpenAI API (default) | `OPENAI_API_KEY` |
 | `ai-sdk` | Vercel AI SDK with 5 providers | One or more provider keys |
 | `cloudflare-gateway` | Cloudflare AI Gateway (/compat) | `CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID`, `CLOUDFLARE_AI_GATEWAY_ID`, `CLOUDFLARE_AI_GATEWAY_TOKEN` |
+| `kimi-coding` | Kimi Coding API | `ANTHROPIC_AUTH_TOKEN`; on Cloudflare Workers also `KIMI_CODING_HTTP_PROXY` |
 
 **Optional OpenAI Base URL Override:**
 
@@ -312,6 +314,12 @@ MAHORAGA-Next supports multiple LLM providers via three modes:
 - This integration calls Cloudflare's OpenAI-compatible `/compat/chat/completions` endpoint and always sends `cf-aig-authorization`.
 - It is intended for BYOK/Unified Billing setups where upstream provider keys are configured in Cloudflare (so your worker does not send provider API keys).
 - Models use the `{provider}/{model}` format (e.g. `openai/gpt-5-mini`, `google-ai-studio/gemini-2.5-flash`, `anthropic/claude-sonnet-4-5`).
+
+**Kimi Coding Notes:**
+
+- Use `LLM_PROVIDER=kimi-coding`, `LLM_MODEL=kimi-for-code`, `ANTHROPIC_AUTH_TOKEN=<sk-kimi...>`, and `ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1`.
+- Kimi's `/coding` endpoint returns a Cloudflare challenge to Cloudflare Workers direct egress. Configure `KIMI_CODING_HTTP_PROXY` or set the same value in the dashboard AI settings.
+- Proxy formats: `host:port`, `user:pass:host:port`, or `http://user:pass@host:port`.
 
 **AI SDK Supported Providers:**
 

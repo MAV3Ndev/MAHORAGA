@@ -189,24 +189,6 @@ describe("AI SDK Provider", () => {
         })
       ).toThrow();
     });
-
-    it("supports legacy config format with openaiApiKey", () => {
-      const provider = createAISDKProvider({
-        model: "openai/gpt-4o",
-        openaiApiKey: "sk-legacy",
-      });
-      expect(provider).toBeInstanceOf(AISDKProvider);
-      expect(createOpenAI).toHaveBeenCalledWith({ apiKey: "sk-legacy" });
-    });
-
-    it("supports legacy config format with anthropicApiKey", () => {
-      const provider = createAISDKProvider({
-        model: "anthropic/claude-sonnet-4",
-        anthropicApiKey: "sk-ant-legacy",
-      });
-      expect(provider).toBeInstanceOf(AISDKProvider);
-      expect(createAnthropic).toHaveBeenCalledWith({ apiKey: "sk-ant-legacy" });
-    });
   });
 
   describe("getAvailableProviders", () => {

@@ -39,6 +39,7 @@ export const AgentConfigSchema = z
     llm_model: z.string().min(1),
     llm_analyst_model: z.string().min(1),
     openai_base_url: z.string().max(500),
+    kimi_coding_http_proxy: z.string().trim().max(500),
     llm_min_hold_minutes: z.number().min(0).max(1440),
     llm_force_sell_pnl_pct: z.number().min(0).max(50),
     llm_force_sell_min_confidence: z.number().min(0).max(1),

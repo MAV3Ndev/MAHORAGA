@@ -1,7 +1,7 @@
 import type { AgentConfig } from "../schemas/agent-config";
 
 export type AgentConfigUpdate = Partial<Omit<AgentConfig, "llm_provider">> & {
-  llm_provider?: AgentConfig["llm_provider"] | "openai-compatible";
+  llm_provider?: AgentConfig["llm_provider"];
 };
 
 export interface BuildAgentConfigUpdateCandidateParams {
@@ -23,12 +23,12 @@ export function normalizeAgentConfigUpdate(update: AgentConfigUpdate): Partial<A
     }
   }
 
-  if (update.llm_provider !== undefined) {
-    normalized.llm_provider = update.llm_provider === "openai-compatible" ? "openai-raw" : update.llm_provider;
-  }
-
   if (typeof update.openai_base_url === "string") {
     normalized.openai_base_url = update.openai_base_url.trim();
+  }
+
+  if (typeof update.kimi_coding_http_proxy === "string") {
+    normalized.kimi_coding_http_proxy = update.kimi_coding_http_proxy.trim();
   }
 
   if (typeof update.discord_daily_report_time === "string") {

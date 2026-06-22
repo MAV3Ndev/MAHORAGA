@@ -192,16 +192,17 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private initializeLLM() {
-    const rawProvider = (this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw") as string;
-    const provider = rawProvider === "openai-compatible" ? "openai-raw" : rawProvider;
+    const provider = (this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw") as string;
     const model = this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini";
     const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL;
+    const kimiCodingHttpProxy = this.env.KIMI_CODING_HTTP_PROXY || this.state.config.kimi_coding_http_proxy?.trim();
 
     const effectiveEnv: Env = {
       ...this.env,
       LLM_PROVIDER: provider as Env["LLM_PROVIDER"],
       LLM_MODEL: model,
       OPENAI_BASE_URL: openaiBaseUrl || undefined,
+      KIMI_CODING_HTTP_PROXY: kimiCodingHttpProxy || undefined,
     };
 
     this._llm = createLLMProvider(effectiveEnv);
@@ -242,14 +243,13 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private getDashboardConfig(): AgentConfig {
-    const provider = (((this.state.config.llm_provider as string | undefined) === "openai-compatible"
-      ? "openai-raw"
-      : this.state.config.llm_provider) || "openai-raw") as AgentConfig["llm_provider"];
+    const provider = (this.state.config.llm_provider || "openai-raw") as AgentConfig["llm_provider"];
 
     return {
       ...this.state.config,
       llm_provider: provider,
       openai_base_url: this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL || "",
+      kimi_coding_http_proxy: this.state.config.kimi_coding_http_proxy?.trim() || this.env.KIMI_CODING_HTTP_PROXY || "",
     };
   }
 
@@ -621,10 +621,6 @@ export class MahoragaHarness extends DurableObject<Env> {
   private applyStateHygiene(): boolean {
     let changed = false;
 
-    if (this.normalizeLegacyLLMConfig()) {
-      changed = true;
-    }
-
     if (this.pruneTransientResearchState()) {
       changed = true;
     }
@@ -656,42 +652,6 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
 
     return changed;
-  }
-
-  private normalizeLegacyLLMConfig(): boolean {
-    let changed = false;
-    if ((this.state.config.llm_provider as string | undefined) === "openai-compatible") {
-      this.state.config.llm_provider = "openai-raw";
-      changed = true;
-    }
-
-    const currentModel = (this.state.config.llm_model || this.env.LLM_MODEL || "").trim();
-    const analystModel = this.state.config.llm_analyst_model?.trim();
-    const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL?.trim() || "";
-    const hasCompatBaseUrl = !!openaiBaseUrl;
-    const legacyAnalystModels = new Set(["gpt-4o", "gpt-4o-mini"]);
-
-    if (openaiBaseUrl && new URL(openaiBaseUrl).hostname.toLowerCase() === "api.kimi.com") {
-      this.state.config.llm_provider = "kimi-coding";
-      this.state.config.llm_model = "kimi-for-code";
-      this.state.config.llm_analyst_model = "kimi-for-code";
-      this.state.config.openai_base_url = "";
-      return true;
-    }
-
-    if (!currentModel || !analystModel || currentModel === analystModel) {
-      return changed;
-    }
-
-    if (!hasCompatBaseUrl || !legacyAnalystModels.has(analystModel)) {
-      return changed;
-    }
-
-    this.state.config.llm_analyst_model = currentModel;
-    console.warn(
-      `[MahoragaHarness] Synced llm_analyst_model to llm_model for OpenAI base URL override (${currentModel})`
-    );
-    return true;
   }
 
   private pruneTransientResearchState(now = Date.now()): boolean {

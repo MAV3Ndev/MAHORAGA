@@ -3,10 +3,10 @@ import { DEFAULT_CONFIG } from "../strategy/default/config";
 import { buildAgentConfigUpdateCandidate, normalizeAgentConfigUpdate } from "./config-update";
 
 describe("config update", () => {
-  it("normalizes compatibility aliases and dashboard string fields", () => {
+  it("normalizes dashboard string fields", () => {
     expect(
       normalizeAgentConfigUpdate({
-        llm_provider: "openai-compatible",
+        llm_provider: "openai-raw",
         openai_base_url: "  https://example.test/v1  ",
         discord_daily_report_time: " 21:30 ",
         discord_daily_report_timezone: " Asia/Tokyo ",
@@ -58,7 +58,7 @@ describe("config update", () => {
     expect(candidate.llm_analyst_model).toBe("gpt-5.4-mini");
   });
 
-  it("syncs legacy OpenAI analyst defaults when an OpenAI-compatible base URL is configured", () => {
+  it("syncs OpenAI analyst defaults when a base URL is configured", () => {
     const candidate = buildAgentConfigUpdateCandidate({
       currentConfig: {
         ...DEFAULT_CONFIG,
