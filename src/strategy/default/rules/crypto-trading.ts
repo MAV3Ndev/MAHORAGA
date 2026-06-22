@@ -7,6 +7,7 @@
  */
 
 import type { Position, PositionEntry, ResearchResult, Signal, SocialSnapshotCacheEntry } from "../../../core/types";
+import { parseLlmJsonObject } from "../../../lib/llm-json";
 import { createAlpacaProviders } from "../../../providers/alpaca";
 import type { StrategyContext } from "../../types";
 import { getCryptoSymbolAliases, isCryptoSymbol, normalizeCryptoSymbol } from "../helpers/crypto";
@@ -45,65 +46,6 @@ function rememberPendingCryptoBuy(ctx: StrategyContext, symbol: string, now: num
   ctx.state.set("cryptoPendingBuys", pendingBuys);
 }
 
-function stripJsonCodeFences(content: string): string {
-  return content
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*$/gi, "")
-    .replace(/```\s*/gi, "")
-    .replace(/^[\n\r]+/, "")
-    .trim();
-}
-
-function extractFirstJSONObject(content: string): string {
-  const cleaned = stripJsonCodeFences(content);
-  const startIndex = cleaned.indexOf("{");
-
-  if (startIndex === -1) {
-    return cleaned;
-  }
-
-  let depth = 0;
-  let inString = false;
-  let isEscaped = false;
-
-  for (let index = startIndex; index < cleaned.length; index++) {
-    const char = cleaned[index];
-
-    if (isEscaped) {
-      isEscaped = false;
-      continue;
-    }
-
-    if (char === "\\" && inString) {
-      isEscaped = true;
-      continue;
-    }
-
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return cleaned.slice(startIndex, index + 1);
-      }
-    }
-  }
-
-  return cleaned.slice(startIndex);
-}
-
 function parseResearchAnalysis(content: string): {
   verdict: "BUY" | "SKIP" | "WAIT";
   confidence: number;
@@ -112,20 +54,7 @@ function parseResearchAnalysis(content: string): {
   red_flags?: string[];
   catalysts?: string[];
 } {
-  const cleaned = stripJsonCodeFences(content);
-  const extracted = extractFirstJSONObject(content);
-  const candidates = extracted === cleaned ? [cleaned] : [cleaned, extracted];
-  let lastError: unknown = null;
-
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(candidate);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error("Failed to parse crypto research JSON");
+  return parseLlmJsonObject(content);
 }
 
 function trackCryptoPositionEntry(

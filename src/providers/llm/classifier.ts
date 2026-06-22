@@ -1,3 +1,4 @@
+import { parseLlmJsonObject } from "../../lib/llm-json";
 import { nowISO } from "../../lib/utils";
 import type { EventType } from "../../mcp/types";
 import type { LLMProvider } from "../types";
@@ -48,12 +49,12 @@ export async function classifyEvent(
   });
 
   try {
-    const parsed = JSON.parse(result.content) as {
+    const parsed = parseLlmJsonObject<{
       event_type: string;
       symbols: string[];
       summary: string;
       confidence: number;
-    };
+    }>(result.content);
 
     const validEventTypes: EventType[] = [
       "earnings_beat",

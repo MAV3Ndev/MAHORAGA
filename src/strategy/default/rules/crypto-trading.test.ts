@@ -22,7 +22,7 @@ describe("crypto trading", () => {
     const complete = vi
       .fn()
       .mockResolvedValueOnce({
-        content: '{"verdict":"WAIT","confidence":0.6,"entry_quality":"fair","reasoning":"Momentum',
+        content: "<think>Still reasoning without a JSON object.</think>",
         usage: { prompt_tokens: 10, completion_tokens: 20 },
       })
       .mockResolvedValueOnce({
@@ -65,6 +65,54 @@ describe("crypto trading", () => {
     });
   });
 
+  it("parses crypto research JSON after reasoning text", async () => {
+    vi.mocked(createAlpacaProviders).mockReturnValue({
+      marketData: {
+        getCryptoSnapshot: vi.fn(async () => ({
+          latest_trade: { price: 65000 },
+          daily_bar: { c: 66000 },
+          prev_daily_bar: { c: 64000 },
+        })),
+      },
+    } as never);
+
+    const complete = vi.fn(async () => ({
+      content:
+        '<think>The setup is constructive but needs validation.</think>\n{"verdict":"BUY","confidence":0.72,"entry_quality":"good","reasoning":"Momentum is constructive.","red_flags":[],"catalysts":["Trend strength"]}',
+      usage: { prompt_tokens: 10, completion_tokens: 20 },
+    }));
+
+    const result = await researchCrypto(
+      {
+        env: {} as never,
+        config: {
+          llm_model: "MiniMax-M3",
+          min_analyst_confidence: 0.6,
+          crypto_momentum_threshold: 2,
+        },
+        llm: { complete } as never,
+        log: () => {},
+        trackLLMCost: () => 0,
+        sleep: async () => {},
+        broker: {} as never,
+        state: {} as never,
+        signals: [],
+        positionEntries: {},
+      } as never,
+      "BTC/USD",
+      3,
+      0.6
+    );
+
+    expect(result).toMatchObject({
+      symbol: "BTC/USD",
+      verdict: "BUY",
+      confidence: 0.72,
+      entry_quality: "good",
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to heuristic crypto research after repeated parse failures", async () => {
     vi.mocked(createAlpacaProviders).mockReturnValue({
       marketData: {
@@ -82,7 +130,7 @@ describe("crypto trading", () => {
         },
         llm: {
           complete: vi.fn(async () => ({
-            content: '{"verdict":"WAIT","confidence":0.6,"entry_quality":"fair","reasoning":"Broken',
+            content: "<think>Still reasoning without a JSON object.</think>",
             usage: { prompt_tokens: 10, completion_tokens: 20 },
           })),
         } as never,

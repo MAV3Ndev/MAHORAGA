@@ -8,6 +8,14 @@ describe("parseLlmJsonObject", () => {
     });
   });
 
+  it("extracts JSON after reasoning text", () => {
+    expect(
+      parseLlmJsonObject<{ verdict: string }>(
+        '<think>\nThe model reasons before answering.\n</think>\n{"verdict":"BUY"}'
+      )
+    ).toEqual({ verdict: "BUY" });
+  });
+
   it("repairs raw newlines inside strings", () => {
     const parsed = parseLlmJsonObject<{ reasoning: string }>('{\n  "reasoning": "Line 1\nLine 2"\n}');
     expect(parsed.reasoning).toBe("Line 1\nLine 2");

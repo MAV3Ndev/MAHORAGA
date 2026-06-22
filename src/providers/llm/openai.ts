@@ -1,6 +1,6 @@
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
-import { getOpenAICompatibleHeaders, isMiniMaxOpenAICompatibleUrl } from "./openai-compatible";
+import { getOpenAICompatibleHeaders } from "./openai-compatible";
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -30,14 +30,12 @@ export class OpenAIProvider implements LLMProvider {
   private model: string;
   private baseUrl: string;
   private extraHeaders: Record<string, string>;
-  private isMiniMaxCompatible: boolean;
 
   constructor(config: OpenAIConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? "gpt-4o-mini";
     this.baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").trim().replace(/\/+$/, "");
     this.extraHeaders = config.baseUrl !== undefined ? getOpenAICompatibleHeaders(this.baseUrl) : {};
-    this.isMiniMaxCompatible = isMiniMaxOpenAICompatibleUrl(this.baseUrl);
   }
 
   async complete(params: CompletionParams): Promise<CompletionResult> {
@@ -50,10 +48,6 @@ export class OpenAIProvider implements LLMProvider {
 
     if (params.response_format) {
       body.response_format = params.response_format;
-    }
-
-    if (params.response_format?.type === "json_object" && this.isMiniMaxCompatible) {
-      body.thinking = { type: "disabled" };
     }
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
