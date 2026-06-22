@@ -125,7 +125,6 @@ interface ParsedHttpProxy {
   hostname: string;
   port: number;
   authorization?: string;
-  mode: "connect" | "forward";
 }
 
 interface ProxyRequestInit {
@@ -145,13 +144,12 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
     if (!url.hostname || !url.port) {
       throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must include host and port");
     }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must use http:// or https://");
+    if (url.protocol !== "http:") {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must use http://");
     }
     return {
       hostname: url.hostname,
       port: Number(url.port),
-      mode: url.protocol === "https:" ? "forward" : "connect",
       authorization:
         url.username || url.password
           ? `Basic ${btoa(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`)}`
@@ -167,7 +165,6 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
     }
     return {
       hostname,
-      mode: "connect",
       port: Number(port),
     };
   }
@@ -179,14 +176,13 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
     return {
       authorization: `Basic ${btoa(`${username}:${password}`)}`,
       hostname,
-      mode: "connect",
       port: Number(port),
     };
   }
 
   throw createError(
     ErrorCode.INVALID_INPUT,
-    "Kimi Coding HTTP proxy must be host:port, user:pass:host:port, http://user:pass@host:port, or https://user:pass@host:port"
+    "Kimi Coding HTTP proxy must be host:port, user:pass:host:port, or http://user:pass@host:port"
   );
 }
 
@@ -203,36 +199,10 @@ async function fetchViaHttpProxy(proxySpec: string, targetUrl: string, init: Pro
 
   const { connect } = await import("cloudflare:sockets");
 
-  if (proxy.mode === "forward") {
-    return fetchViaHttpsForwardProxy(connect, proxy, target, init);
-  }
-
   return fetchViaHttpConnectProxy(connect, proxy, target, init);
 }
 
 type SocketConnect = typeof import("cloudflare:sockets").connect;
-
-async function fetchViaHttpsForwardProxy(
-  connect: SocketConnect,
-  proxy: ParsedHttpProxy,
-  target: URL,
-  init: ProxyRequestInit
-): Promise<Response> {
-  const socket = connect(
-    { hostname: proxy.hostname, port: proxy.port },
-    { secureTransport: "on", allowHalfOpen: false }
-  );
-
-  try {
-    await waitForSocketOpened(socket, "Kimi Coding HTTPS forward proxy TLS connection failed");
-    await writeSocket(socket, buildHttpsForwardProxyRequest(target, proxy, init), true);
-
-    const responseBytes = await readAllBytesFromSocket(socket, MAX_PROXY_RESPONSE_BYTES);
-    return buildResponseFromRawHttp(responseBytes);
-  } finally {
-    await socket.close().catch(() => undefined);
-  }
-}
 
 async function fetchViaHttpConnectProxy(
   connect: SocketConnect,
@@ -258,7 +228,7 @@ async function fetchViaHttpConnectProxy(
     activeSocket = tcpSocket.startTls({ expectedServerHostname: target.hostname });
     await waitForSocketOpened(
       activeSocket,
-      "Kimi Coding HTTP CONNECT proxy opened the tunnel, but Kimi TLS failed. Use https://user:pass@host:port if the proxy supports HTTPS forward requests."
+      "Kimi Coding HTTP CONNECT proxy opened the tunnel, but Cloudflare Workers failed the Kimi TLS handshake. A standard HTTP proxy cannot move this TLS handshake out of the Worker runtime."
     );
     await writeSocket(activeSocket, buildHttpsTunnelRequest(target, init));
 
@@ -288,24 +258,6 @@ export function buildHttpsTunnelRequest(target: URL, init: ProxyRequestInit): st
   return [
     `${init.method} ${path} HTTP/1.1`,
     `Host: ${target.host}`,
-    ...Object.entries({
-      ...init.headers,
-      "Accept-Encoding": "identity",
-      "Content-Length": String(new TextEncoder().encode(init.body).byteLength),
-      Connection: "close",
-    }).map(([key, value]) => `${key}: ${value}`),
-    "",
-    init.body,
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\r\n");
-}
-
-export function buildHttpsForwardProxyRequest(target: URL, proxy: ParsedHttpProxy, init: ProxyRequestInit): string {
-  return [
-    `${init.method} ${target.href} HTTP/1.1`,
-    `Host: ${target.host}`,
-    proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}` : null,
     ...Object.entries({
       ...init.headers,
       "Accept-Encoding": "identity",

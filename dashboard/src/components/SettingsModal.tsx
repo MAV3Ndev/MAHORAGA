@@ -2341,7 +2341,7 @@ export function SettingsModal({
                       {localConfig.llm_provider === "cloudflare-gateway" &&
                         "Uses CLOUDFLARE_AI_GATEWAY_* env vars via Cloudflare AI Gateway /compat."}
                       {localConfig.llm_provider === "kimi-coding" &&
-                        "Routes Kimi Coding through HTTP CONNECT or an HTTPS forward proxy."}
+                        "Routes Kimi Coding through an HTTP CONNECT proxy."}
                     </p>
                   </div>
                   {showOpenAIBaseUrl && (
@@ -2364,7 +2364,7 @@ export function SettingsModal({
                         className="hud-input w-full"
                         value={localConfig.kimi_coding_http_proxy || ""}
                         onChange={(e) => handleChange("kimi_coding_http_proxy", e.target.value)}
-                        placeholder="https://user:pass@host:port"
+                        placeholder="user:pass:host:port"
                       />
                     </div>
                   )}
