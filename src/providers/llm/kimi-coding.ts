@@ -1,5 +1,3 @@
-import type { Socket } from "node:net";
-import type { TLSSocket } from "node:tls";
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
 import { getKimiCodingHeaders } from "./openai-compatible";
@@ -199,30 +197,31 @@ async function fetchViaHttpProxy(proxySpec: string, targetUrl: string, init: Pro
     throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy port is invalid");
   }
 
-  const { connect: connectTcp } = await import("node:net");
-  const { connect: connectTls } = await import("node:tls");
+  const { connect } = await import("cloudflare:sockets");
 
-  const tcpSocket = connectTcp({ host: proxy.hostname, port: proxy.port });
-  let tlsSocket: TLSSocket | null = null;
+  const tcpSocket = connect(
+    { hostname: proxy.hostname, port: proxy.port },
+    { secureTransport: "starttls", allowHalfOpen: true }
+  );
+  let activeSocket = tcpSocket;
   try {
-    await waitForSocketConnect(tcpSocket, "Kimi Coding HTTP proxy TCP connection timed out");
-    tcpSocket.write(buildHttpConnectRequest(target, proxy));
+    await tcpSocket.opened;
+    await writeSocket(tcpSocket, buildHttpConnectRequest(target, proxy));
 
     const connectResponse = await readHttpHeadersFromSocket(tcpSocket, MAX_PROXY_RESPONSE_BYTES);
     assertConnectAccepted(connectResponse.headers);
     if (connectResponse.leftover.byteLength > 0) {
-      tcpSocket.unshift(Buffer.from(connectResponse.leftover));
+      throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy returned unexpected CONNECT body");
     }
 
-    tlsSocket = connectTls({ socket: tcpSocket, servername: target.hostname });
-    await waitForSocketConnect(tlsSocket, "Kimi Coding HTTP proxy TLS handshake timed out", "secureConnect");
-    tlsSocket.end(buildHttpsTunnelRequest(target, init));
+    activeSocket = tcpSocket.startTls({ expectedServerHostname: target.hostname });
+    await activeSocket.opened;
+    await writeSocket(activeSocket, buildHttpsTunnelRequest(target, init));
 
-    const responseBytes = await readAllBytesFromSocket(tlsSocket, MAX_PROXY_RESPONSE_BYTES);
+    const responseBytes = await readAllBytesFromSocket(activeSocket, MAX_PROXY_RESPONSE_BYTES);
     return buildResponseFromRawHttp(responseBytes);
   } finally {
-    tlsSocket?.destroy();
-    tcpSocket.destroy();
+    await activeSocket.close().catch(() => undefined);
   }
 }
 
@@ -258,37 +257,13 @@ export function buildHttpsTunnelRequest(target: URL, init: ProxyRequestInit): st
     .join("\r\n");
 }
 
-function waitForSocketConnect(
-  socket: Socket | TLSSocket,
-  timeoutMessage: string,
-  eventName: "connect" | "secureConnect" = "connect"
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(createError(ErrorCode.PROVIDER_ERROR, timeoutMessage));
-    }, SOCKET_TIMEOUT_MS);
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off(eventName, onConnect);
-      socket.off("error", onError);
-    };
-
-    const onConnect = () => {
-      cleanup();
-      resolve();
-    };
-
-    const onError = (error: Error) => {
-      cleanup();
-      reject(createError(ErrorCode.PROVIDER_ERROR, `Kimi Coding HTTP proxy socket error: ${error.message}`));
-    };
-
-    socket.once(eventName, onConnect);
-    socket.once("error", onError);
-  });
+async function writeSocket(socket: Socket, request: string): Promise<void> {
+  const writer = socket.writable.getWriter();
+  try {
+    await writer.write(new TextEncoder().encode(request));
+  } finally {
+    writer.releaseLock();
+  }
 }
 
 interface SocketHeaderRead {
@@ -296,57 +271,42 @@ interface SocketHeaderRead {
   leftover: Uint8Array;
 }
 
-function readHttpHeadersFromSocket(socket: Socket, maxBytes: number): Promise<SocketHeaderRead> {
+async function readHttpHeadersFromSocket(socket: Socket, maxBytes: number): Promise<SocketHeaderRead> {
+  const reader = socket.readable.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let total = 0;
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy CONNECT response timed out"));
-    }, SOCKET_TIMEOUT_MS);
+  try {
+    while (true) {
+      const { done, value } = await readSocketChunk(
+        socket,
+        reader,
+        "Kimi Coding HTTP proxy CONNECT response timed out"
+      );
+      if (done) {
+        throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy closed before CONNECT completed");
+      }
+      if (!value) continue;
 
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("error", onError);
-    };
-
-    const onData = (chunk: Uint8Array) => {
+      const chunk = value;
       chunks.push(copyBytes(chunk));
       total += chunk.byteLength;
       if (total > maxBytes) {
-        cleanup();
-        reject(createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy CONNECT response is too large"));
-        return;
+        throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy CONNECT response is too large");
       }
 
       const bytes = concatBytes(chunks, total);
       const headerEnd = findHeaderEnd(bytes);
-      if (headerEnd < 0) return;
+      if (headerEnd < 0) continue;
 
-      cleanup();
-      resolve({
+      return {
         headers: copyBytes(bytes.slice(0, headerEnd)),
         leftover: copyBytes(bytes.slice(headerEnd + 4)),
-      });
-    };
-
-    const onEnd = () => {
-      cleanup();
-      reject(createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy closed before CONNECT completed"));
-    };
-
-    const onError = (error: Error) => {
-      cleanup();
-      reject(createError(ErrorCode.PROVIDER_ERROR, `Kimi Coding HTTP proxy CONNECT failed: ${error.message}`));
-    };
-
-    socket.on("data", onData);
-    socket.once("end", onEnd);
-    socket.once("error", onError);
-  });
+      };
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function assertConnectAccepted(headers: Uint8Array): void {
@@ -362,48 +322,55 @@ function assertConnectAccepted(headers: Uint8Array): void {
   }
 }
 
-function readAllBytesFromSocket(socket: TLSSocket, maxBytes: number): Promise<Uint8Array> {
+async function readAllBytesFromSocket(socket: Socket, maxBytes: number): Promise<Uint8Array> {
+  const reader = socket.readable.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let total = 0;
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy response timed out"));
-    }, SOCKET_TIMEOUT_MS);
+  try {
+    while (true) {
+      const { done, value } = await readSocketChunk(socket, reader, "Kimi Coding HTTP proxy response timed out");
+      if (done) break;
+      if (!value) continue;
 
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("error", onError);
-    };
-
-    const onData = (chunk: Uint8Array) => {
+      const chunk = value;
       chunks.push(copyBytes(chunk));
       total += chunk.byteLength;
       if (total > maxBytes) {
-        cleanup();
-        socket.destroy();
-        reject(createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy response is too large"));
+        throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy response is too large");
       }
-    };
+    }
+    return concatBytes(chunks, total);
+  } finally {
+    reader.releaseLock();
+  }
+}
 
-    const onEnd = () => {
-      cleanup();
-      resolve(concatBytes(chunks, total));
-    };
+async function readSocketChunk(
+  socket: Socket,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMessage: string
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    void socket.close().catch(() => undefined);
+  }, SOCKET_TIMEOUT_MS);
 
-    const onError = (error: Error) => {
-      cleanup();
-      reject(createError(ErrorCode.PROVIDER_ERROR, `Kimi Coding HTTP proxy response failed: ${error.message}`));
-    };
-
-    socket.on("data", onData);
-    socket.once("end", onEnd);
-    socket.once("error", onError);
-  });
+  try {
+    const result = await reader.read();
+    if (timedOut) {
+      throw createError(ErrorCode.PROVIDER_ERROR, timeoutMessage);
+    }
+    return result;
+  } catch (error) {
+    if (timedOut) {
+      throw createError(ErrorCode.PROVIDER_ERROR, timeoutMessage);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildResponseFromRawHttp(bytes: Uint8Array): Response {
