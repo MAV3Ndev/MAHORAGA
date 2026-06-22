@@ -130,12 +130,12 @@ describe("AI SDK Provider", () => {
         model: "anthropic/claude-sonnet-4",
         apiKeys: { anthropic: "unused-when-auth-token-is-set" },
         anthropicAuthToken: "sk-kimi-test",
-        anthropicBaseUrl: "https://api.kimi.com/coding/",
+        anthropicBaseUrl: "https://custom-anthropic.example/v1/",
       });
       expect(provider).toBeInstanceOf(AISDKProvider);
       expect(createAnthropic).toHaveBeenCalledWith({
         authToken: "sk-kimi-test",
-        baseURL: "https://api.kimi.com/coding",
+        baseURL: "https://custom-anthropic.example/v1",
       });
     });
 

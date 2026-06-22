@@ -6,4 +6,5 @@ export { classifyEvent, generateResearchReport, summarizeLearnedRules } from "./
 export { CloudflareGatewayProvider, createCloudflareGatewayProvider } from "./cloudflare-gateway";
 export type { LLMProviderType } from "./factory";
 export { createLLMProvider, isLLMConfigured } from "./factory";
+export { createKimiCodingProvider, KimiCodingProvider } from "./kimi-coding";
 export { createOpenAIProvider, OpenAIProvider } from "./openai";

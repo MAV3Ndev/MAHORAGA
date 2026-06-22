@@ -2,9 +2,10 @@ import type { Env } from "../../env.d";
 import type { LLMProvider } from "../types";
 import { createAISDKProvider, SUPPORTED_PROVIDERS, type SupportedProvider } from "./ai-sdk";
 import { createCloudflareGatewayProvider } from "./cloudflare-gateway";
+import { createKimiCodingProvider } from "./kimi-coding";
 import { createOpenAIProvider } from "./openai";
 
-export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway";
+export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway" | "kimi-coding";
 
 /**
  * Factory function to create LLM provider based on environment configuration.
@@ -13,6 +14,7 @@ export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway";
  * - "openai-raw": Direct OpenAI API calls (default, backward compatible)
  * - "ai-sdk": Vercel AI SDK with 5 providers (OpenAI, Anthropic, Google, xAI, DeepSeek)
  * - "cloudflare-gateway": Cloudflare AI Gateway (/compat) for unified access
+ * - "kimi-coding": Kimi Coding Anthropic Messages API
  *
  * @param env - Environment variables
  * @returns LLMProvider instance or null if no valid configuration
@@ -23,6 +25,9 @@ export function createLLMProvider(env: Env): LLMProvider | null {
   const model = env.LLM_MODEL ?? "gpt-4o-mini";
   const openaiBaseUrlRaw = env.OPENAI_BASE_URL?.trim().replace(/\/+$/, "");
   const openaiBaseUrl = openaiBaseUrlRaw ? openaiBaseUrlRaw : undefined;
+  const isKimiCodingOpenAIBaseUrl = openaiBaseUrl
+    ? new URL(openaiBaseUrl).hostname.toLowerCase() === "api.kimi.com"
+    : false;
 
   switch (providerType) {
     case "cloudflare-gateway": {
@@ -76,8 +81,26 @@ export function createLLMProvider(env: Env): LLMProvider | null {
         anthropicAuthToken: env.ANTHROPIC_AUTH_TOKEN,
       });
     }
+    case "kimi-coding": {
+      const apiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
+        console.warn("LLM_PROVIDER=kimi-coding requires ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY");
+        return null;
+      }
+
+      return createKimiCodingProvider({
+        apiKey,
+        model,
+        baseUrl: env.ANTHROPIC_BASE_URL,
+      });
+    }
     default:
       // Direct OpenAI API, with optional base URL override for OpenAI-compatible backends
+      if (isKimiCodingOpenAIBaseUrl) {
+        throw new Error(
+          "Kimi Coding is not an OpenAI Chat Completions endpoint. Use LLM_PROVIDER=kimi-coding, LLM_MODEL=kimi-for-code, ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1, and ANTHROPIC_AUTH_TOKEN."
+        );
+      }
       if (!env.OPENAI_API_KEY) {
         return null;
       }
@@ -113,6 +136,8 @@ export function isLLMConfigured(env: Env): boolean {
         env.XAI_API_KEY ||
         env.DEEPSEEK_API_KEY
       );
+    case "kimi-coding":
+      return !!(env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY);
     default:
       return !!env.OPENAI_API_KEY;
   }

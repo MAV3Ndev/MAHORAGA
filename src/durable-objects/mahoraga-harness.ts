@@ -69,6 +69,7 @@ import {
 import { generateId } from "../lib/utils";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
+import { getKimiCodingBaseUrl, type LLMEndpointProbeResult, probeLLMEndpoint } from "../providers/llm/diagnostics";
 import { createLLMProvider } from "../providers/llm/factory";
 import { computeTechnicals } from "../providers/technicals";
 import type { Account, LLMProvider, MarketClock, Order, Position } from "../providers/types";
@@ -666,8 +667,17 @@ export class MahoragaHarness extends DurableObject<Env> {
 
     const currentModel = (this.state.config.llm_model || this.env.LLM_MODEL || "").trim();
     const analystModel = this.state.config.llm_analyst_model?.trim();
-    const hasCompatBaseUrl = !!(this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL);
+    const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL?.trim() || "";
+    const hasCompatBaseUrl = !!openaiBaseUrl;
     const legacyAnalystModels = new Set(["gpt-4o", "gpt-4o-mini"]);
+
+    if (openaiBaseUrl && new URL(openaiBaseUrl).hostname.toLowerCase() === "api.kimi.com") {
+      this.state.config.llm_provider = "kimi-coding";
+      this.state.config.llm_model = "kimi-for-code";
+      this.state.config.llm_analyst_model = "kimi-for-code";
+      this.state.config.openai_base_url = "";
+      return true;
+    }
 
     if (!currentModel || !analystModel || currentModel === analystModel) {
       return changed;
@@ -2215,6 +2225,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       "history",
       "position-history",
       "setup/status",
+      "llm-diagnostics",
     ];
     if (protectedActions.includes(action)) {
       if (!this.isAuthorized(request)) return this.unauthorizedResponse();
@@ -2245,6 +2256,8 @@ export class MahoragaHarness extends DurableObject<Env> {
           return this.handleGetHistory(url);
         case "position-history":
           return this.handleGetPositionHistory(url);
+        case "llm-diagnostics":
+          return this.handleLLMDiagnostics();
         case "trigger":
           await this.alarm();
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
@@ -2335,6 +2348,67 @@ export class MahoragaHarness extends DurableObject<Env> {
     await this.persist();
     this.log("System", "agent_disabled", {});
     return this.jsonResponse({ ok: true, enabled: false });
+  }
+
+  private async handleLLMDiagnostics(): Promise<Response> {
+    const model =
+      (this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini").split("/").pop() || "gpt-4o-mini";
+    const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL?.trim();
+    const anthropicBaseUrl = this.env.ANTHROPIC_BASE_URL?.trim();
+    if (!openaiBaseUrl && !anthropicBaseUrl) {
+      return new Response(JSON.stringify({ ok: false, error: "No LLM base URL is configured" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const probes: Promise<LLMEndpointProbeResult>[] = [];
+    if (openaiBaseUrl) {
+      probes.push(
+        probeLLMEndpoint({
+          name: "openai-compatible-chat",
+          baseUrl: openaiBaseUrl,
+          path: "/chat/completions",
+          model,
+          apiKey: this.env.OPENAI_API_KEY,
+          protocol: "openai-chat",
+        })
+      );
+
+      const kimiCodingBaseUrl = getKimiCodingBaseUrl(openaiBaseUrl);
+      if (kimiCodingBaseUrl) {
+        probes.push(
+          probeLLMEndpoint({
+            name: "kimi-anthropic-messages-from-openai-base-url",
+            baseUrl: kimiCodingBaseUrl,
+            path: "/v1/messages",
+            model,
+            apiKey: this.env.ANTHROPIC_AUTH_TOKEN || this.env.OPENAI_API_KEY,
+            protocol: "anthropic-messages",
+          })
+        );
+      }
+    }
+
+    if (anthropicBaseUrl) {
+      probes.push(
+        probeLLMEndpoint({
+          name: "anthropic-compatible-messages",
+          baseUrl: anthropicBaseUrl,
+          path: "/messages",
+          model,
+          apiKey: this.env.ANTHROPIC_AUTH_TOKEN,
+          protocol: "anthropic-messages",
+        })
+      );
+    }
+
+    const results = await Promise.all(probes);
+    return this.jsonResponse({
+      ok: true,
+      source: "cloudflare-worker",
+      results,
+    });
   }
 
   private handleGetLogs(url: URL): Response {
