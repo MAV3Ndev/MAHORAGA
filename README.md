@@ -5,11 +5,11 @@
 An autonomous, LLM-powered trading agent that runs 24/7 on Cloudflare Workers.
 
 [![Discord](https://img.shields.io/discord/1467592472158015553?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/vMFnHe2YBh)
-[![Sentinel](https://img.shields.io/badge/Sentinel-v1.0.5-00d4ff)](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.5)
+[![Sentinel](https://img.shields.io/badge/Sentinel-v1.0.6-00d4ff)](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.6)
 
 MAHORAGA-Next monitors market/social signals from StockTwits, Reddit, Twitter/X confirmation, SEC filings, GDELT, Alpha Vantage, and crypto momentum, uses AI (OpenAI, Anthropic, Google, xAI, DeepSeek via AI SDK or Cloudflare AI Gateway) to analyze signals, and executes trades through Alpaca. It runs as a Cloudflare Durable Object with persistent state, automatic restarts, decision audit logs, and 24/7 crypto trading support.
 
-The Windows and Android control app, **MAHORAGA-Next SENTINEL**, is available from the [v1.0.5 release](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.5). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
+The Windows and Android control app, **MAHORAGA-Next SENTINEL**, is available from the [v1.0.6 release](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.6). Sentinel can connect to a deployed Worker, edit runtime config, test social-source credentials, download trade-review logs, and check/install future Sentinel updates from GitHub Releases.
 
 ## Fork Notice
 
@@ -61,7 +61,7 @@ The fork is maintained independently under `MAV3Ndev/MAHORAGA-Next`. Upstream at
 
 For normal operation, install Sentinel from the latest Sentinel release:
 
-1. Download the Windows setup executable, or the Android APK if it is attached, from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.5).
+1. Download the Windows setup executable, or the Android APK if it is attached, from [GitHub Releases](https://github.com/MAV3Ndev/MAHORAGA-Next/releases/tag/sentinel-v1.0.6).
 2. Deploy the Worker using the steps below.
 3. Open Sentinel and enter your Worker URL plus `MAHORAGA_API_TOKEN`.
 4. Use **Settings** to edit runtime config, set Twitter/X or Reddit cookie accounts, set the Alpha Vantage key, and run credential connection tests.

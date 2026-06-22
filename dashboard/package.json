@@ -1,7 +1,7 @@
 {
   "name": "mahoraga-next-dashboard",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Desktop dashboard for the MAHORAGA-Next autonomous trading agent.",
   "author": "MAHORAGA-Next contributors",
   "type": "module",
