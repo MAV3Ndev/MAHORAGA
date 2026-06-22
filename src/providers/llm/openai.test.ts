@@ -134,6 +134,54 @@ describe("OpenAI Provider", () => {
       expect(body.response_format).toEqual({ type: "json_object" });
     });
 
+    it("splits MiniMax reasoning out of the content field", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "chatcmpl-123",
+          choices: [{ message: { content: '{"ok":true}', reasoning_content: "<think>Reasoning</think>" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      });
+
+      const provider = createOpenAIProvider({
+        apiKey: "sk-test",
+        model: "MiniMax-M3",
+        baseUrl: "https://api.minimaxi.com/v1",
+      });
+      await provider.complete({
+        messages: [{ role: "user", content: "Return JSON" }],
+        response_format: { type: "json_object" },
+      });
+
+      const call = mockFetch.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.reasoning_split).toBe(true);
+      expect(body).not.toHaveProperty("thinking");
+    });
+
+    it("does not send MiniMax reasoning controls to OpenAI", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "chatcmpl-123",
+          choices: [{ message: { content: '{"ok":true}' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      });
+
+      const provider = createOpenAIProvider({ apiKey: "sk-test" });
+      await provider.complete({
+        messages: [{ role: "user", content: "Return JSON" }],
+        response_format: { type: "json_object" },
+      });
+
+      const call = mockFetch.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body).not.toHaveProperty("reasoning_split");
+      expect(body).not.toHaveProperty("thinking");
+    });
+
     it("uses default temperature and max_tokens", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
