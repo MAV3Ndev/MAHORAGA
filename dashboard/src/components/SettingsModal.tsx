@@ -8,6 +8,7 @@ import { UpdateControls } from "./UpdateControls";
 const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
   "openai-raw": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"],
   "ai-sdk": [
+    "anthropic/MiniMax-M3",
     "openai/gpt-4o-mini",
     "openai/gpt-4.1-mini",
     "anthropic/claude-3-5-haiku-latest",
@@ -20,12 +21,12 @@ const RESEARCH_MODEL_PRESETS: Record<string, string[]> = {
     "anthropic/claude-haiku-4-5",
     "google-ai-studio/gemini-2.5-flash",
   ],
-  "kimi-coding": ["kimi-for-code"],
 };
 
 const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
   "openai-raw": ["gpt-5.2-2025-12-11", "gpt-4.1", "gpt-4o"],
   "ai-sdk": [
+    "anthropic/MiniMax-M3",
     "openai/gpt-4o",
     "openai/o1",
     "anthropic/claude-sonnet-4-0",
@@ -39,7 +40,6 @@ const ANALYST_MODEL_PRESETS: Record<string, string[]> = {
     "anthropic/claude-opus-4-5",
     "google-ai-studio/gemini-2.5-pro",
   ],
-  "kimi-coding": ["kimi-for-code"],
 };
 
 interface SettingsModalProps {
@@ -357,7 +357,8 @@ const CONFIG_KEY_TABS: Partial<Record<keyof Config, SettingsTab>> = {
   reddit_cookie_accounts: "system",
   reddit_user_agent: "system",
   alpha_vantage_api_key: "system",
-  kimi_coding_http_proxy: "ai",
+  llm_api_key: "ai",
+  anthropic_base_url: "ai",
 };
 
 export function SettingsModal({
@@ -399,8 +400,10 @@ export function SettingsModal({
   const llmProvider = localConfig.llm_provider || "openai-raw";
   const researchModelSuggestions = RESEARCH_MODEL_PRESETS[llmProvider] || [];
   const analystModelSuggestions = ANALYST_MODEL_PRESETS[llmProvider] || [];
-  const showOpenAIBaseUrl = ["openai-raw", "ai-sdk"].includes(llmProvider);
-  const showKimiCodingProxy = llmProvider === "kimi-coding";
+  const modelProvider = localConfig.llm_model?.split(/[/:]/)[0]?.toLowerCase() || "";
+  const showOpenAIBaseUrl = llmProvider === "openai-raw" || (llmProvider === "ai-sdk" && modelProvider === "openai");
+  const showAnthropicBaseUrl = llmProvider === "ai-sdk" && modelProvider === "anthropic";
+  const showLlmApiKey = llmProvider === "openai-raw" || llmProvider === "ai-sdk";
 
   // Note: We intentionally do NOT sync localConfig with the config prop after initial mount.
   // This prevents the parent's polling (every 5s) from overwriting user's unsaved changes.
@@ -2325,14 +2328,14 @@ export function SettingsModal({
                       <option value="openai-raw">OpenAI Official</option>
                       <option value="ai-sdk">AI SDK (5 providers)</option>
                       <option value="cloudflare-gateway">Cloudflare AI Gateway</option>
-                      <option value="kimi-coding">Kimi Coding</option>
                       {localConfig.llm_provider &&
-                        !["openai-raw", "ai-sdk", "cloudflare-gateway", "kimi-coding"].includes(
-                          localConfig.llm_provider
-                        ) && <option value={localConfig.llm_provider}>Custom (backend configured)</option>}
+                        !["openai-raw", "ai-sdk", "cloudflare-gateway"].includes(localConfig.llm_provider) && (
+                          <option value={localConfig.llm_provider}>Custom (backend configured)</option>
+                        )}
                     </select>
                     <p className="text-[9px] text-hud-text-dim mt-1">
-                      {localConfig.llm_provider === "ai-sdk" && "Supports: OpenAI, Anthropic, Google, xAI, DeepSeek"}
+                      {localConfig.llm_provider === "ai-sdk" &&
+                        "Supports: MiniMax through Anthropic-compatible API, plus OpenAI, Anthropic, Google, xAI, DeepSeek."}
                       {(!localConfig.llm_provider || localConfig.llm_provider === "openai-raw") &&
                         "Uses the official OpenAI API key. If Base URL Override is set, that endpoint is used instead."}
                       {localConfig.llm_provider &&
@@ -2340,14 +2343,30 @@ export function SettingsModal({
                         "Provider is configured in the backend; selection is hidden in the dashboard."}
                       {localConfig.llm_provider === "cloudflare-gateway" &&
                         "Uses CLOUDFLARE_AI_GATEWAY_* env vars via Cloudflare AI Gateway /compat."}
-                      {localConfig.llm_provider === "kimi-coding" &&
-                        "Routes Kimi Coding through an HTTP CONNECT proxy."}
                     </p>
                   </div>
+                  {showLlmApiKey && (
+                    <div>
+                      <label className="hud-label block mb-1" htmlFor="llm-api-key">
+                        LLM API Key
+                      </label>
+                      <input
+                        id="llm-api-key"
+                        type="password"
+                        className="hud-input w-full"
+                        value={localConfig.llm_api_key || ""}
+                        onChange={(e) => handleChange("llm_api_key", e.target.value)}
+                        placeholder="sk-..."
+                      />
+                    </div>
+                  )}
                   {showOpenAIBaseUrl && (
                     <div>
-                      <label className="hud-label block mb-1">OpenAI Base URL Override</label>
+                      <label className="hud-label block mb-1" htmlFor="openai-base-url">
+                        OpenAI Base URL Override
+                      </label>
                       <input
+                        id="openai-base-url"
                         type="text"
                         className="hud-input w-full"
                         value={localConfig.openai_base_url || ""}
@@ -2356,15 +2375,18 @@ export function SettingsModal({
                       />
                     </div>
                   )}
-                  {showKimiCodingProxy && (
+                  {showAnthropicBaseUrl && (
                     <div>
-                      <label className="hud-label block mb-1">Kimi Coding HTTP Proxy</label>
+                      <label className="hud-label block mb-1" htmlFor="anthropic-base-url">
+                        Anthropic-Compatible Base URL
+                      </label>
                       <input
-                        type="password"
+                        id="anthropic-base-url"
+                        type="text"
                         className="hud-input w-full"
-                        value={localConfig.kimi_coding_http_proxy || ""}
-                        onChange={(e) => handleChange("kimi_coding_http_proxy", e.target.value)}
-                        placeholder="user:pass:host:port"
+                        value={localConfig.anthropic_base_url || ""}
+                        onChange={(e) => handleChange("anthropic_base_url", e.target.value)}
+                        placeholder="https://api.minimaxi.com/anthropic"
                       />
                     </div>
                   )}

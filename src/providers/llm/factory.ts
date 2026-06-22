@@ -2,10 +2,9 @@ import type { Env } from "../../env.d";
 import type { LLMProvider } from "../types";
 import { createAISDKProvider, SUPPORTED_PROVIDERS, type SupportedProvider } from "./ai-sdk";
 import { createCloudflareGatewayProvider } from "./cloudflare-gateway";
-import { createKimiCodingProvider } from "./kimi-coding";
 import { createOpenAIProvider } from "./openai";
 
-export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway" | "kimi-coding";
+export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway";
 
 /**
  * Factory function to create LLM provider based on environment configuration.
@@ -14,7 +13,6 @@ export type LLMProviderType = "openai-raw" | "ai-sdk" | "cloudflare-gateway" | "
  * - "openai-raw": Direct OpenAI API calls (default)
  * - "ai-sdk": Vercel AI SDK with 5 providers (OpenAI, Anthropic, Google, xAI, DeepSeek)
  * - "cloudflare-gateway": Cloudflare AI Gateway (/compat) for unified access
- * - "kimi-coding": Kimi Coding Anthropic Messages API
  *
  * @param env - Environment variables
  * @returns LLMProvider instance or null if no valid configuration
@@ -25,9 +23,6 @@ export function createLLMProvider(env: Env): LLMProvider | null {
   const model = env.LLM_MODEL ?? "gpt-4o-mini";
   const openaiBaseUrlRaw = env.OPENAI_BASE_URL?.trim().replace(/\/+$/, "");
   const openaiBaseUrl = openaiBaseUrlRaw ? openaiBaseUrlRaw : undefined;
-  const isKimiCodingOpenAIBaseUrl = openaiBaseUrl
-    ? new URL(openaiBaseUrl).hostname.toLowerCase() === "api.kimi.com"
-    : false;
 
   switch (providerType) {
     case "cloudflare-gateway": {
@@ -53,8 +48,8 @@ export function createLLMProvider(env: Env): LLMProvider | null {
       // Collect all available API keys
       const apiKeys: Partial<Record<SupportedProvider, string>> = {};
       if (env.OPENAI_API_KEY) apiKeys.openai = env.OPENAI_API_KEY;
-      if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) {
-        apiKeys.anthropic = env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN;
+      if (env.ANTHROPIC_API_KEY) {
+        apiKeys.anthropic = env.ANTHROPIC_API_KEY;
       }
       if (env.GOOGLE_GENERATIVE_AI_API_KEY) apiKeys.google = env.GOOGLE_GENERATIVE_AI_API_KEY;
       if (env.XAI_API_KEY) apiKeys.xai = env.XAI_API_KEY;
@@ -78,31 +73,10 @@ export function createLLMProvider(env: Env): LLMProvider | null {
         apiKeys,
         openaiBaseUrl,
         anthropicBaseUrl: env.ANTHROPIC_BASE_URL,
-        anthropicAuthToken: env.ANTHROPIC_AUTH_TOKEN,
-      });
-    }
-    case "kimi-coding": {
-      const apiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
-      const httpProxy = env.KIMI_CODING_HTTP_PROXY?.trim();
-      if (!apiKey) {
-        console.warn("LLM_PROVIDER=kimi-coding requires ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY");
-        return null;
-      }
-
-      return createKimiCodingProvider({
-        apiKey,
-        model,
-        baseUrl: env.ANTHROPIC_BASE_URL,
-        httpProxy,
       });
     }
     default:
       // Direct OpenAI API, with optional base URL override for OpenAI-compatible backends
-      if (isKimiCodingOpenAIBaseUrl) {
-        throw new Error(
-          "Kimi Coding is not an OpenAI Chat Completions endpoint. Use LLM_PROVIDER=kimi-coding with KIMI_CODING_HTTP_PROXY from Cloudflare Workers."
-        );
-      }
       if (!env.OPENAI_API_KEY) {
         return null;
       }
@@ -133,13 +107,10 @@ export function isLLMConfigured(env: Env): boolean {
       return !!(
         env.OPENAI_API_KEY ||
         env.ANTHROPIC_API_KEY ||
-        env.ANTHROPIC_AUTH_TOKEN ||
         env.GOOGLE_GENERATIVE_AI_API_KEY ||
         env.XAI_API_KEY ||
         env.DEEPSEEK_API_KEY
       );
-    case "kimi-coding":
-      return !!(env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY);
     default:
       return !!env.OPENAI_API_KEY;
   }
@@ -151,7 +122,7 @@ export function isLLMConfigured(env: Env): boolean {
 export function getConfiguredProviders(env: Env): SupportedProvider[] {
   const configured: SupportedProvider[] = [];
   if (env.OPENAI_API_KEY) configured.push("openai");
-  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) configured.push("anthropic");
+  if (env.ANTHROPIC_API_KEY) configured.push("anthropic");
   if (env.GOOGLE_GENERATIVE_AI_API_KEY) configured.push("google");
   if (env.XAI_API_KEY) configured.push("xai");
   if (env.DEEPSEEK_API_KEY) configured.push("deepseek");

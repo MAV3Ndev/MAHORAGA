@@ -37,12 +37,10 @@ export interface AISDKConfig {
   model: string;
   /** API keys for each provider */
   apiKeys: Partial<Record<SupportedProvider, string>>;
-  /** Optional OpenAI base URL override (e.g., OpenAI-compatible proxy). */
+  /** Optional OpenAI base URL override. */
   openaiBaseUrl?: string;
-  /** Optional Anthropic base URL override (e.g., Anthropic-compatible proxy). */
+  /** Optional Anthropic base URL override. */
   anthropicBaseUrl?: string;
-  /** Optional Anthropic bearer auth token for Anthropic-compatible proxies. */
-  anthropicAuthToken?: string;
 }
 
 type ProviderFactory =
@@ -79,12 +77,7 @@ export class AISDKProvider implements LLMProvider {
     }
     if (config.apiKeys.anthropic) {
       const rawBaseUrl = config.anthropicBaseUrl?.trim().replace(/\/+$/, "");
-      const anthropicOptions: { apiKey?: string; authToken?: string; baseURL?: string } = {};
-      if (config.anthropicAuthToken) {
-        anthropicOptions.authToken = config.anthropicAuthToken;
-      } else {
-        anthropicOptions.apiKey = config.apiKeys.anthropic;
-      }
+      const anthropicOptions: { apiKey: string; baseURL?: string } = { apiKey: config.apiKeys.anthropic };
       if (rawBaseUrl) {
         anthropicOptions.baseURL = rawBaseUrl;
       }

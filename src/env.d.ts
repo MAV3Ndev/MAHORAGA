@@ -11,16 +11,14 @@ export interface Env {
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   ANTHROPIC_API_KEY?: string;
-  ANTHROPIC_AUTH_TOKEN?: string;
   ANTHROPIC_BASE_URL?: string;
-  KIMI_CODING_HTTP_PROXY?: string;
   GOOGLE_GENERATIVE_AI_API_KEY?: string;
   XAI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
   CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID?: string;
   CLOUDFLARE_AI_GATEWAY_ID?: string;
   CLOUDFLARE_AI_GATEWAY_TOKEN?: string;
-  LLM_PROVIDER?: "openai-raw" | "ai-sdk" | "cloudflare-gateway" | "kimi-coding";
+  LLM_PROVIDER?: "openai-raw" | "ai-sdk" | "cloudflare-gateway";
   LLM_MODEL?: string;
   TWITTER_BEARER_TOKEN?: string;
   TWITTER_COOKIES?: string;

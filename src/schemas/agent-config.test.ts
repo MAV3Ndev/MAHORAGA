@@ -29,8 +29,9 @@ function createValidConfig() {
     llm_provider: "openai-raw" as const,
     llm_model: "gpt-4o-mini",
     llm_analyst_model: "gpt-4o",
+    llm_api_key: "",
     openai_base_url: "",
-    kimi_coding_http_proxy: "",
+    anthropic_base_url: "",
     llm_min_hold_minutes: 15,
     llm_force_sell_pnl_pct: 2,
     llm_force_sell_min_confidence: 0.65,
@@ -95,7 +96,7 @@ describe("AgentConfigSchema", () => {
     });
 
     it("accepts all llm_provider values", () => {
-      const providers = ["openai-raw", "ai-sdk", "cloudflare-gateway", "kimi-coding"] as const;
+      const providers = ["openai-raw", "ai-sdk", "cloudflare-gateway"] as const;
       for (const provider of providers) {
         const config = { ...createValidConfig(), llm_provider: provider };
         const result = AgentConfigSchema.safeParse(config);

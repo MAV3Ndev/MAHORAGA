@@ -66,10 +66,10 @@ import {
   summarizeDailyActivity,
   summarizeDailyActivityWindow,
 } from "../lib/discord-report";
-import { generateId } from "../lib/utils";
+import { generateId, sanitizeForLog } from "../lib/utils";
 import { getDefaultPolicyConfig } from "../policy/config";
 import { createAlpacaProviders } from "../providers/alpaca";
-import { getKimiCodingBaseUrl, type LLMEndpointProbeResult, probeLLMEndpoint } from "../providers/llm/diagnostics";
+import { type LLMEndpointProbeResult, probeLLMEndpoint } from "../providers/llm/diagnostics";
 import { createLLMProvider } from "../providers/llm/factory";
 import { computeTechnicals } from "../providers/technicals";
 import type { Account, LLMProvider, MarketClock, Order, Position } from "../providers/types";
@@ -144,6 +144,7 @@ export class MahoragaHarness extends DurableObject<Env> {
   private readonly MAX_STATUS_TWITTER_CONFIRMATIONS = 24;
   private readonly LLM_REINIT_COOLDOWN_MS = 60_000;
   private readonly REMOVED_STATE_KEYS = ["secCompanyTickersCache"];
+  private readonly RETIRED_CONFIG_KEYS = ["kimi_coding_http_proxy"];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -195,15 +196,16 @@ export class MahoragaHarness extends DurableObject<Env> {
     const provider = (this.state.config.llm_provider || this.env.LLM_PROVIDER || "openai-raw") as string;
     const model = this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini";
     const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL;
-    const kimiCodingHttpProxy = this.env.KIMI_CODING_HTTP_PROXY || this.state.config.kimi_coding_http_proxy?.trim();
+    const anthropicBaseUrl = this.state.config.anthropic_base_url?.trim() || this.env.ANTHROPIC_BASE_URL;
 
     const effectiveEnv: Env = {
       ...this.env,
       LLM_PROVIDER: provider as Env["LLM_PROVIDER"],
       LLM_MODEL: model,
       OPENAI_BASE_URL: openaiBaseUrl || undefined,
-      KIMI_CODING_HTTP_PROXY: kimiCodingHttpProxy || undefined,
+      ANTHROPIC_BASE_URL: anthropicBaseUrl || undefined,
     };
+    this.applyDashboardLlmApiKey(effectiveEnv, provider, model);
 
     this._llm = createLLMProvider(effectiveEnv);
     if (this._llm) {
@@ -211,6 +213,29 @@ export class MahoragaHarness extends DurableObject<Env> {
     } else {
       console.log("[MahoragaHarness] WARNING: No valid LLM provider configured");
     }
+  }
+
+  private applyDashboardLlmApiKey(env: Env, provider: string, model: string): void {
+    const apiKey = this.state.config.llm_api_key?.trim();
+    if (!apiKey) {
+      return;
+    }
+
+    if (provider === "openai-raw") {
+      env.OPENAI_API_KEY = apiKey;
+      return;
+    }
+
+    if (provider !== "ai-sdk") {
+      return;
+    }
+
+    const providerName = model.split(/[/:]/)[0]?.toLowerCase();
+    if (providerName === "openai") env.OPENAI_API_KEY = apiKey;
+    if (providerName === "anthropic") env.ANTHROPIC_API_KEY = apiKey;
+    if (providerName === "google") env.GOOGLE_GENERATIVE_AI_API_KEY = apiKey;
+    if (providerName === "xai") env.XAI_API_KEY = apiKey;
+    if (providerName === "deepseek") env.DEEPSEEK_API_KEY = apiKey;
   }
 
   private refreshLLMProviderIfNeeded(now = Date.now()): void {
@@ -249,7 +274,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       ...this.state.config,
       llm_provider: provider,
       openai_base_url: this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL || "",
-      kimi_coding_http_proxy: this.state.config.kimi_coding_http_proxy?.trim() || this.env.KIMI_CODING_HTTP_PROXY || "",
+      anthropic_base_url: this.state.config.anthropic_base_url?.trim() || this.env.ANTHROPIC_BASE_URL || "",
     };
   }
 
@@ -633,6 +658,10 @@ export class MahoragaHarness extends DurableObject<Env> {
       changed = true;
     }
 
+    if (this.removeRetiredConfigKeys()) {
+      changed = true;
+    }
+
     if (pruneDailyReportBuckets(this.state.dailyReportBuckets, Date.now(), DAILY_REPORT_RETENTION_MS)) {
       changed = true;
     }
@@ -649,6 +678,28 @@ export class MahoragaHarness extends DurableObject<Env> {
         delete dynamicState[key];
         changed = true;
       }
+    }
+
+    return changed;
+  }
+
+  private removeRetiredConfigKeys(): boolean {
+    let changed = false;
+    const dynamicConfig = this.state.config as unknown as Record<string, unknown>;
+
+    for (const key of this.RETIRED_CONFIG_KEYS) {
+      if (Object.hasOwn(dynamicConfig, key)) {
+        delete dynamicConfig[key];
+        changed = true;
+      }
+    }
+
+    if (dynamicConfig.llm_provider === "kimi-coding") {
+      dynamicConfig.llm_provider = "ai-sdk";
+      dynamicConfig.llm_model = "anthropic/MiniMax-M3";
+      dynamicConfig.llm_analyst_model = "anthropic/MiniMax-M3";
+      dynamicConfig.anthropic_base_url = "https://api.minimaxi.com/anthropic";
+      changed = true;
     }
 
     return changed;
@@ -2278,6 +2329,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       currentConfig: this.state.config,
       update: body,
       envOpenaiBaseUrl: this.env.OPENAI_BASE_URL,
+      envAnthropicBaseUrl: this.env.ANTHROPIC_BASE_URL,
     });
 
     const validation = this.validateAgentConfigCandidate(merged);
@@ -2314,7 +2366,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     const model =
       (this.state.config.llm_model || this.env.LLM_MODEL || "gpt-4o-mini").split("/").pop() || "gpt-4o-mini";
     const openaiBaseUrl = this.state.config.openai_base_url?.trim() || this.env.OPENAI_BASE_URL?.trim();
-    const anthropicBaseUrl = this.env.ANTHROPIC_BASE_URL?.trim();
+    const anthropicBaseUrl = this.state.config.anthropic_base_url?.trim() || this.env.ANTHROPIC_BASE_URL?.trim();
     if (!openaiBaseUrl && !anthropicBaseUrl) {
       return new Response(JSON.stringify({ ok: false, error: "No LLM base URL is configured" }), {
         status: 400,
@@ -2330,24 +2382,10 @@ export class MahoragaHarness extends DurableObject<Env> {
           baseUrl: openaiBaseUrl,
           path: "/chat/completions",
           model,
-          apiKey: this.env.OPENAI_API_KEY,
+          apiKey: this.state.config.llm_api_key?.trim() || this.env.OPENAI_API_KEY,
           protocol: "openai-chat",
         })
       );
-
-      const kimiCodingBaseUrl = getKimiCodingBaseUrl(openaiBaseUrl);
-      if (kimiCodingBaseUrl) {
-        probes.push(
-          probeLLMEndpoint({
-            name: "kimi-anthropic-messages-from-openai-base-url",
-            baseUrl: kimiCodingBaseUrl,
-            path: "/v1/messages",
-            model,
-            apiKey: this.env.ANTHROPIC_AUTH_TOKEN || this.env.OPENAI_API_KEY,
-            protocol: "anthropic-messages",
-          })
-        );
-      }
     }
 
     if (anthropicBaseUrl) {
@@ -2357,7 +2395,7 @@ export class MahoragaHarness extends DurableObject<Env> {
           baseUrl: anthropicBaseUrl,
           path: "/messages",
           model,
-          apiKey: this.env.ANTHROPIC_AUTH_TOKEN,
+          apiKey: this.state.config.llm_api_key?.trim() || this.env.ANTHROPIC_API_KEY,
           protocol: "anthropic-messages",
         })
       );
@@ -2781,7 +2819,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     return {
       strategy: activeStrategy.name,
       symbol,
-      config: this.state.config,
+      config: sanitizeForLog(this.state.config),
       signals: this.state.signalCache.filter((signal) => signal.symbol === symbol).slice(-20),
       signal_research: this.state.signalResearch[symbol] ?? null,
       position_research: this.state.positionResearch[symbol] ?? null,
@@ -2883,13 +2921,14 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   private log(agent: string, action: string, details: Record<string, unknown>): void {
     const nowMs = Date.now();
-    const entry: LogEntry = { timestamp: new Date(nowMs).toISOString(), agent, action, ...details };
+    const sanitizedDetails = sanitizeForLog(details) as Record<string, unknown>;
+    const entry: LogEntry = { timestamp: new Date(nowMs).toISOString(), agent, action, ...sanitizedDetails };
     this.state.logs.push(entry);
     if (this.state.logs.length > this.MAX_LOG_ENTRIES) {
       this.state.logs = this.state.logs.slice(-this.MAX_LOG_ENTRIES);
     }
-    this.recordDailyReportActivity(nowMs, agent, action, details);
-    console.log(`[${entry.timestamp}] [${agent}] ${action}`, JSON.stringify(details));
+    this.recordDailyReportActivity(nowMs, agent, action, sanitizedDetails);
+    console.log(`[${entry.timestamp}] [${agent}] ${action}`, JSON.stringify(sanitizedDetails));
   }
 
   private recordDailyReportActivity(

@@ -129,11 +129,12 @@ export interface Config {
   adaptive_performance_lookback_days?: number;
   adaptive_performance_min_trades?: number;
   adaptive_performance_min_win_rate?: number;
-  llm_provider?: "openai-raw" | "ai-sdk" | "cloudflare-gateway" | "kimi-coding";
+  llm_provider?: "openai-raw" | "ai-sdk" | "cloudflare-gateway";
   llm_model: string;
   llm_analyst_model?: string;
+  llm_api_key?: string;
   openai_base_url?: string;
-  kimi_coding_http_proxy?: string;
+  anthropic_base_url?: string;
   starting_equity?: number;
   llm_min_hold_minutes?: number;
   recent_sell_cooldown_hours?: number;

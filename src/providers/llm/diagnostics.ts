@@ -141,23 +141,3 @@ export async function probeLLMEndpoint(probe: LLMEndpointProbe): Promise<LLMEndp
     challengeDetected: isCloudflareChallenge(response, bodySnippet),
   };
 }
-
-export function getKimiCodingBaseUrl(baseUrl: string): string | null {
-  const url = new URL(baseUrl);
-  if (url.hostname.toLowerCase() !== "api.kimi.com") {
-    return null;
-  }
-
-  const codingIndex = url.pathname.split("/").indexOf("coding");
-  if (codingIndex < 0) {
-    return null;
-  }
-
-  url.pathname = `${url.pathname
-    .split("/")
-    .slice(0, codingIndex + 1)
-    .join("/")}`;
-  url.search = "";
-  url.hash = "";
-  return normalizeBaseUrl(url.toString());
-}

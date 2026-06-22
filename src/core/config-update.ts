@@ -8,6 +8,7 @@ export interface BuildAgentConfigUpdateCandidateParams {
   currentConfig: AgentConfig;
   update: AgentConfigUpdate;
   envOpenaiBaseUrl?: string;
+  envAnthropicBaseUrl?: string;
 }
 
 function hasOwnKey<T extends object>(value: T, key: PropertyKey): boolean {
@@ -27,8 +28,12 @@ export function normalizeAgentConfigUpdate(update: AgentConfigUpdate): Partial<A
     normalized.openai_base_url = update.openai_base_url.trim();
   }
 
-  if (typeof update.kimi_coding_http_proxy === "string") {
-    normalized.kimi_coding_http_proxy = update.kimi_coding_http_proxy.trim();
+  if (typeof update.anthropic_base_url === "string") {
+    normalized.anthropic_base_url = update.anthropic_base_url.trim();
+  }
+
+  if (typeof update.llm_api_key === "string") {
+    normalized.llm_api_key = update.llm_api_key.trim();
   }
 
   if (typeof update.discord_daily_report_time === "string") {
@@ -46,17 +51,23 @@ export function buildAgentConfigUpdateCandidate({
   currentConfig,
   update,
   envOpenaiBaseUrl,
+  envAnthropicBaseUrl,
 }: BuildAgentConfigUpdateCandidateParams): AgentConfig {
   const normalizedUpdate = normalizeAgentConfigUpdate(update);
   const merged = { ...currentConfig, ...normalizedUpdate };
   const updatedLlmModel = typeof update.llm_model === "string" ? update.llm_model.trim() : null;
   const analystModelExplicitlySet = hasOwnKey(update, "llm_analyst_model");
-  const hasOpenaiBaseUrl = !!(merged.openai_base_url?.trim() || envOpenaiBaseUrl);
+  const hasLlmBaseUrl = !!(
+    merged.openai_base_url?.trim() ||
+    envOpenaiBaseUrl ||
+    merged.anthropic_base_url?.trim() ||
+    envAnthropicBaseUrl
+  );
   const shouldSyncAnalystModel =
     !!updatedLlmModel &&
     !analystModelExplicitlySet &&
     (currentConfig.llm_analyst_model === currentConfig.llm_model ||
-      (hasOpenaiBaseUrl && ["gpt-4o", "gpt-4o-mini"].includes(currentConfig.llm_analyst_model)));
+      (hasLlmBaseUrl && ["gpt-4o", "gpt-4o-mini"].includes(currentConfig.llm_analyst_model)));
 
   if (shouldSyncAnalystModel) {
     merged.llm_analyst_model = updatedLlmModel;

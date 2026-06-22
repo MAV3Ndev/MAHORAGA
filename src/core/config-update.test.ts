@@ -7,13 +7,17 @@ describe("config update", () => {
     expect(
       normalizeAgentConfigUpdate({
         llm_provider: "openai-raw",
+        llm_api_key: "  sk-test  ",
         openai_base_url: "  https://example.test/v1  ",
+        anthropic_base_url: "  https://anthropic.example.test  ",
         discord_daily_report_time: " 21:30 ",
         discord_daily_report_timezone: " Asia/Tokyo ",
       })
     ).toMatchObject({
       llm_provider: "openai-raw",
+      llm_api_key: "sk-test",
       openai_base_url: "https://example.test/v1",
+      anthropic_base_url: "https://anthropic.example.test",
       discord_daily_report_time: "21:30",
       discord_daily_report_timezone: "Asia/Tokyo",
     });

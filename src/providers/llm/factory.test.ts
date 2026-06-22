@@ -145,18 +145,6 @@ describe("LLM Provider Factory", () => {
 
         expect(fetchMock).toHaveBeenCalledWith("https://example.com/v1/chat/completions", expect.any(Object));
       });
-
-      it("rejects Kimi Coding as an OpenAI Chat Completions base URL", async () => {
-        const { createLLMProvider } = await import("./factory");
-        const env = {
-          OPENAI_API_KEY: "test",
-          OPENAI_BASE_URL: "https://api.kimi.com/coding/v1/",
-          LLM_PROVIDER: "openai-raw",
-          LLM_MODEL: "kimi-for-code",
-        } as unknown as Env;
-
-        expect(() => createLLMProvider(env)).toThrow("Kimi Coding is not an OpenAI Chat Completions endpoint");
-      });
     });
 
     describe("ai-sdk provider", () => {
@@ -226,7 +214,7 @@ describe("LLM Provider Factory", () => {
         expect(createAnthropicMock).toHaveBeenCalledWith({ apiKey: "sk-ant-test" });
       });
 
-      it("creates AI SDK provider with Anthropic auth token", async () => {
+      it("creates AI SDK provider with Anthropic-compatible base URL", async () => {
         const createOpenAIMock = vi.fn(
           () => ((modelId: string) => ({ modelId })) as unknown as ReturnType<typeof vi.fn>
         );
@@ -249,7 +237,7 @@ describe("LLM Provider Factory", () => {
 
         const { createLLMProvider } = await import("./factory");
         const env = {
-          ANTHROPIC_AUTH_TOKEN: "sk-kimi-test",
+          ANTHROPIC_API_KEY: "sk-ant-test",
           ANTHROPIC_BASE_URL: "https://custom-anthropic.example/v1/",
           LLM_PROVIDER: "ai-sdk",
           LLM_MODEL: "anthropic/claude-sonnet-4",
@@ -258,7 +246,7 @@ describe("LLM Provider Factory", () => {
         const provider = createLLMProvider(env);
         expect(provider).not.toBeNull();
         expect(createAnthropicMock).toHaveBeenCalledWith({
-          authToken: "sk-kimi-test",
+          apiKey: "sk-ant-test",
           baseURL: "https://custom-anthropic.example/v1",
         });
       });
@@ -409,45 +397,6 @@ describe("LLM Provider Factory", () => {
         const env = {
           CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID: "acc-123",
           LLM_PROVIDER: "cloudflare-gateway",
-        } as unknown as Env;
-
-        const provider = createLLMProvider(env);
-        expect(provider).toBeNull();
-      });
-    });
-
-    describe("kimi-coding provider", () => {
-      it("creates Kimi Coding provider with auth token", async () => {
-        const { createLLMProvider } = await import("./factory");
-        const env = {
-          ANTHROPIC_AUTH_TOKEN: "sk-kimi-test",
-          ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/v1/",
-          LLM_PROVIDER: "kimi-coding",
-          LLM_MODEL: "kimi-for-code",
-        } as unknown as Env;
-
-        const provider = createLLMProvider(env);
-        expect(provider).not.toBeNull();
-      });
-
-      it("creates Kimi Coding provider with HTTP proxy", async () => {
-        const { createLLMProvider } = await import("./factory");
-        const env = {
-          ANTHROPIC_AUTH_TOKEN: "sk-kimi-test",
-          KIMI_CODING_HTTP_PROXY: "user:pass:proxy.example.com:8080",
-          LLM_PROVIDER: "kimi-coding",
-          LLM_MODEL: "kimi-for-code",
-        } as unknown as Env;
-
-        const provider = createLLMProvider(env);
-        expect(provider).not.toBeNull();
-      });
-
-      it("returns null when Kimi Coding token is missing", async () => {
-        const { createLLMProvider } = await import("./factory");
-        const env = {
-          LLM_PROVIDER: "kimi-coding",
-          LLM_MODEL: "kimi-for-code",
         } as unknown as Env;
 
         const provider = createLLMProvider(env);
