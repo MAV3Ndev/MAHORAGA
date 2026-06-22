@@ -9,10 +9,11 @@ import { SOURCE_CONFIG } from "../config";
 import { tickerCache } from "../helpers/ticker";
 
 const SEC_FORMS = ["8-K", "4", "13D", "13G", "S-1", "10-Q", "10-K"];
-const SEC_COMPANY_TICKERS_CACHE_KEY = "secCompanyTickersCache";
 const SEC_COMPANY_TICKERS_CACHE_TTL_MS = 24 * 60 * 60_000;
 
 type SecCompanyTickerEntry = { cik_str: number; ticker: string; title: string };
+
+let secCompanyTickersCache: { timestamp: number; entries: SecCompanyTickerEntry[] } | null = null;
 
 // ── XML / feed helpers ───────────────────────────────────────────────────────
 
@@ -99,20 +100,20 @@ function classifySECFilingSentiment(entry: { title: string; form: string; compan
 const companyToTickerCache = new Map<string, string | null>();
 
 async function getSecCompanyTickers(ctx: StrategyContext): Promise<SecCompanyTickerEntry[]> {
-  const cached = ctx.state.get<{ timestamp: number; entries: SecCompanyTickerEntry[] }>(SEC_COMPANY_TICKERS_CACHE_KEY);
-  if (cached && Date.now() - cached.timestamp < SEC_COMPANY_TICKERS_CACHE_TTL_MS) {
-    return cached.entries;
+  if (secCompanyTickersCache && Date.now() - secCompanyTickersCache.timestamp < SEC_COMPANY_TICKERS_CACHE_TTL_MS) {
+    return secCompanyTickersCache.entries;
   }
 
   const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
     headers: { "User-Agent": "Mahoraga Trading Bot contact@example.com" },
   });
 
-  if (!response.ok) return cached?.entries || [];
+  if (!response.ok) return secCompanyTickersCache?.entries || [];
 
   const data = (await response.json()) as Record<string, SecCompanyTickerEntry>;
   const entries = Object.values(data);
-  ctx.state.set(SEC_COMPANY_TICKERS_CACHE_KEY, { timestamp: Date.now(), entries });
+  secCompanyTickersCache = { timestamp: Date.now(), entries };
+  ctx.log("SEC", "company_tickers_cached", { entries: entries.length });
   return entries;
 }
 

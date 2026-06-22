@@ -142,6 +142,7 @@ export class MahoragaHarness extends DurableObject<Env> {
   private readonly MAX_STATUS_SIGNAL_RESEARCH_ENTRIES = 40;
   private readonly MAX_STATUS_TWITTER_CONFIRMATIONS = 24;
   private readonly LLM_REINIT_COOLDOWN_MS = 60_000;
+  private readonly REMOVED_STATE_KEYS = ["secCompanyTickersCache"];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -631,8 +632,26 @@ export class MahoragaHarness extends DurableObject<Env> {
       changed = true;
     }
 
+    if (this.removeRetiredStateKeys()) {
+      changed = true;
+    }
+
     if (pruneDailyReportBuckets(this.state.dailyReportBuckets, Date.now(), DAILY_REPORT_RETENTION_MS)) {
       changed = true;
+    }
+
+    return changed;
+  }
+
+  private removeRetiredStateKeys(): boolean {
+    let changed = false;
+    const dynamicState = this.state as unknown as Record<string, unknown>;
+
+    for (const key of this.REMOVED_STATE_KEYS) {
+      if (Object.hasOwn(dynamicState, key)) {
+        delete dynamicState[key];
+        changed = true;
+      }
     }
 
     return changed;
