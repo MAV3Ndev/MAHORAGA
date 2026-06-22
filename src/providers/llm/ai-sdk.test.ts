@@ -100,6 +100,22 @@ describe("AI SDK Provider", () => {
       });
     });
 
+    it("sends the Kimi Coding agent header to api.kimi.com", () => {
+      const provider = createAISDKProvider({
+        model: "openai/kimi-for-code",
+        apiKeys: { openai: "sk-test" },
+        openaiBaseUrl: "https://api.kimi.com/coding/v1/",
+      });
+      expect(provider).toBeInstanceOf(AISDKProvider);
+      expect(createOpenAI).toHaveBeenCalledWith({
+        apiKey: "sk-test",
+        baseURL: "https://api.kimi.com/coding/v1",
+        headers: {
+          "User-Agent": "claude-code/0.1.0",
+        },
+      });
+    });
+
     it("creates provider with Anthropic API key", () => {
       const provider = createAISDKProvider({
         model: "anthropic/claude-sonnet-4",

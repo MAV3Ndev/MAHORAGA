@@ -228,5 +228,30 @@ describe("OpenAI Provider", () => {
         "User-Agent": "HermesAgent/1.0",
       });
     });
+
+    it("uses the Kimi Coding agent header for api.kimi.com base URLs", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "chatcmpl-123",
+          choices: [{ message: { content: "Response" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      });
+
+      const provider = createOpenAIProvider({
+        apiKey: "sk-test",
+        baseUrl: "https://api.kimi.com/coding/v1/",
+      });
+      await provider.complete({
+        messages: [{ role: "user", content: "Test" }],
+      });
+
+      const call = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(call[0]).toBe("https://api.kimi.com/coding/v1/chat/completions");
+      expect(call[1].headers).toMatchObject({
+        "User-Agent": "claude-code/0.1.0",
+      });
+    });
   });
 });

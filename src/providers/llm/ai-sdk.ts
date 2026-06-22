@@ -6,7 +6,7 @@ import { createXai } from "@ai-sdk/xai";
 import { generateText } from "ai";
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
-import { HERMES_AGENT_HEADERS } from "./openai-compatible";
+import { getOpenAICompatibleHeaders } from "./openai-compatible";
 
 /**
  * Supported AI SDK providers and their environment variable mapping
@@ -73,7 +73,7 @@ export class AISDKProvider implements LLMProvider {
       };
       if (rawBaseUrl) {
         openaiOptions.baseURL = rawBaseUrl;
-        openaiOptions.headers = HERMES_AGENT_HEADERS;
+        openaiOptions.headers = getOpenAICompatibleHeaders(rawBaseUrl);
       }
       this.providers.openai = createOpenAI(openaiOptions);
     }
