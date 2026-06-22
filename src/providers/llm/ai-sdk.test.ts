@@ -84,6 +84,22 @@ describe("AI SDK Provider", () => {
       expect(createOpenAI).toHaveBeenCalledWith({ apiKey: "sk-test" });
     });
 
+    it("sends Hermes Agent headers to an OpenAI-compatible base URL", () => {
+      const provider = createAISDKProvider({
+        model: "openai/custom-model",
+        apiKeys: { openai: "sk-test" },
+        openaiBaseUrl: "https://custom-api.example.com/v1/",
+      });
+      expect(provider).toBeInstanceOf(AISDKProvider);
+      expect(createOpenAI).toHaveBeenCalledWith({
+        apiKey: "sk-test",
+        baseURL: "https://custom-api.example.com/v1",
+        headers: {
+          "User-Agent": "HermesAgent/1.0",
+        },
+      });
+    });
+
     it("creates provider with Anthropic API key", () => {
       const provider = createAISDKProvider({
         model: "anthropic/claude-sonnet-4",

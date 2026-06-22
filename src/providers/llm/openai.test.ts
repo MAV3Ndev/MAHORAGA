@@ -63,6 +63,7 @@ describe("OpenAI Provider", () => {
         "Content-Type": "application/json",
         Authorization: "Bearer sk-test",
       });
+      expect(options.headers).not.toHaveProperty("User-Agent");
 
       const body = JSON.parse(options.body as string);
       expect(body.messages).toEqual([{ role: "user", content: "Hi" }]);
@@ -221,6 +222,11 @@ describe("OpenAI Provider", () => {
 
       const call = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(call[0]).toBe("https://custom-api.example.com/chat/completions");
+      expect(call[1].headers).toMatchObject({
+        "Content-Type": "application/json",
+        Authorization: "Bearer sk-test",
+        "User-Agent": "HermesAgent/1.0",
+      });
     });
   });
 });

@@ -1,5 +1,6 @@
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
+import { HERMES_AGENT_HEADERS } from "./openai-compatible";
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -28,10 +29,12 @@ export class OpenAIProvider implements LLMProvider {
   private apiKey: string;
   private model: string;
   private baseUrl: string;
+  private isOpenAICompatible: boolean;
 
   constructor(config: OpenAIConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? "gpt-4o-mini";
+    this.isOpenAICompatible = config.baseUrl !== undefined;
     this.baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").trim().replace(/\/+$/, "");
   }
 
@@ -52,6 +55,7 @@ export class OpenAIProvider implements LLMProvider {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
+        ...(this.isOpenAICompatible ? HERMES_AGENT_HEADERS : {}),
       },
       body: JSON.stringify(body),
     });

@@ -314,6 +314,9 @@ describe("LLM Provider Factory", () => {
         expect(createOpenAIMock).toHaveBeenCalledWith({
           apiKey: "test",
           baseURL: "https://proxy.example/v1",
+          headers: {
+            "User-Agent": "HermesAgent/1.0",
+          },
         });
       });
 

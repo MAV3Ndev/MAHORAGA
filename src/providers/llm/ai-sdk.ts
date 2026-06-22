@@ -6,6 +6,7 @@ import { createXai } from "@ai-sdk/xai";
 import { generateText } from "ai";
 import { createError, ErrorCode } from "../../lib/errors";
 import type { CompletionParams, CompletionResult, LLMProvider } from "../types";
+import { HERMES_AGENT_HEADERS } from "./openai-compatible";
 
 /**
  * Supported AI SDK providers and their environment variable mapping
@@ -67,9 +68,12 @@ export class AISDKProvider implements LLMProvider {
     // Initialize providers based on available API keys
     if (config.apiKeys.openai) {
       const rawBaseUrl = config.openaiBaseUrl?.trim().replace(/\/+$/, "");
-      const openaiOptions: { apiKey: string; baseURL?: string } = { apiKey: config.apiKeys.openai };
+      const openaiOptions: { apiKey: string; baseURL?: string; headers?: Record<string, string> } = {
+        apiKey: config.apiKeys.openai,
+      };
       if (rawBaseUrl) {
         openaiOptions.baseURL = rawBaseUrl;
+        openaiOptions.headers = HERMES_AGENT_HEADERS;
       }
       this.providers.openai = createOpenAI(openaiOptions);
     }
