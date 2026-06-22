@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createKimiCodingProvider, KimiCodingProvider, parseHttpProxy } from "./kimi-coding";
+import { buildHttpProxyRequest, createKimiCodingProvider, KimiCodingProvider, parseHttpProxy } from "./kimi-coding";
 
 describe("Kimi Coding Provider", () => {
   const mockFetch = vi.fn();
@@ -98,5 +98,26 @@ describe("Kimi Coding Provider", () => {
       hostname: "proxy.example.com",
       port: 8080,
     });
+  });
+
+  it("builds an absolute-form HTTP proxy request", () => {
+    const request = buildHttpProxyRequest(
+      new URL("https://api.kimi.com/coding/v1/messages"),
+      parseHttpProxy("user:pass:proxy.example.com:8080"),
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+        },
+        body: '{"model":"kimi-for-code"}',
+      }
+    );
+
+    expect(request).toContain("POST https://api.kimi.com/coding/v1/messages HTTP/1.1\r\n");
+    expect(request).toContain("Host: api.kimi.com\r\n");
+    expect(request).toContain("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n");
+    expect(request).toContain("Authorization: Bearer sk-test\r\n");
+    expect(request).toContain("Content-Length: 25\r\n");
   });
 });

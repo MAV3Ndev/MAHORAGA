@@ -126,6 +126,12 @@ interface ParsedHttpProxy {
   authorization?: string;
 }
 
+interface ProxyRequestInit {
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
 export function parseHttpProxy(proxy: string): ParsedHttpProxy {
   const trimmed = proxy.trim();
   if (!trimmed) {
@@ -179,11 +185,7 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
   );
 }
 
-async function fetchViaHttpProxy(
-  proxySpec: string,
-  targetUrl: string,
-  init: { method: string; headers: Record<string, string>; body: string }
-): Promise<Response> {
+async function fetchViaHttpProxy(proxySpec: string, targetUrl: string, init: ProxyRequestInit): Promise<Response> {
   const target = new URL(targetUrl);
   if (target.protocol !== "https:") {
     throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding proxy transport only supports HTTPS targets");
@@ -197,89 +199,39 @@ async function fetchViaHttpProxy(
   const { connect } = await import("cloudflare:sockets");
   const socket = connect(
     { hostname: proxy.hostname, port: proxy.port },
-    { secureTransport: "starttls", allowHalfOpen: false }
+    { secureTransport: "off", allowHalfOpen: false }
   );
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
-  let tlsSocket: ReturnType<typeof socket.startTls> | null = null;
-  let tlsReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  let tlsWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 
   try {
-    const connectHeaders = [
-      `CONNECT ${target.hostname}:443 HTTP/1.1`,
-      `Host: ${target.hostname}:443`,
-      proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}` : null,
-      "Connection: keep-alive",
-      "",
-      "",
-    ]
-      .filter((line): line is string => line !== null)
-      .join("\r\n");
-    await writer.write(new TextEncoder().encode(connectHeaders));
-    await writer.releaseLock();
+    await writer.write(new TextEncoder().encode(buildHttpProxyRequest(target, proxy, init)));
+    await writer.close();
 
-    const tunnelResponse = await readHttpHeader(reader);
-    if (!tunnelResponse.header.startsWith("HTTP/1.1 200") && !tunnelResponse.header.startsWith("HTTP/1.0 200")) {
-      throw createError(
-        ErrorCode.PROVIDER_ERROR,
-        `Kimi Coding HTTP proxy CONNECT failed: ${tunnelResponse.header.split("\r\n")[0]}`
-      );
-    }
-    reader.releaseLock();
-
-    tlsSocket = socket.startTls();
-    tlsWriter = tlsSocket.writable.getWriter();
-    tlsReader = tlsSocket.readable.getReader();
-    const requestHeaders = [
-      `${init.method} ${target.pathname}${target.search} HTTP/1.1`,
-      `Host: ${target.hostname}`,
-      ...Object.entries({
-        ...init.headers,
-        "Accept-Encoding": "identity",
-        "Content-Length": String(new TextEncoder().encode(init.body).byteLength),
-        Connection: "close",
-      }).map(([key, value]) => `${key}: ${value}`),
-      "",
-      init.body,
-    ].join("\r\n");
-
-    await tlsWriter.write(new TextEncoder().encode(requestHeaders));
-    await tlsWriter.close();
-
-    const responseBytes = await readAllBytes(tlsReader, MAX_PROXY_RESPONSE_BYTES);
+    const responseBytes = await readAllBytes(reader, MAX_PROXY_RESPONSE_BYTES);
     return buildResponseFromRawHttp(responseBytes);
   } finally {
-    await tlsReader?.cancel().catch(() => undefined);
-    await tlsWriter?.abort().catch(() => undefined);
-    await tlsSocket?.close().catch(() => undefined);
     await reader.cancel().catch(() => undefined);
     await socket.close().catch(() => undefined);
   }
 }
 
-async function readHttpHeader(
-  reader: ReadableStreamDefaultReader<Uint8Array>
-): Promise<{ header: string; remainder: Uint8Array }> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (total < 16384) {
-    const { done, value } = await reader.read();
-    if (done || !value) break;
-    chunks.push(value);
-    total += value.byteLength;
-    const combined = concatBytes(chunks, total);
-    const headerEnd = findHeaderEnd(combined);
-    if (headerEnd >= 0) {
-      return {
-        header: new TextDecoder().decode(combined.slice(0, headerEnd)),
-        remainder: combined.slice(headerEnd + 4),
-      };
-    }
-  }
-
-  throw createError(ErrorCode.PROVIDER_ERROR, "Kimi Coding HTTP proxy did not return a complete CONNECT response");
+export function buildHttpProxyRequest(target: URL, proxy: ParsedHttpProxy, init: ProxyRequestInit): string {
+  return [
+    `${init.method} ${target.href} HTTP/1.1`,
+    `Host: ${target.hostname}`,
+    proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}` : null,
+    ...Object.entries({
+      ...init.headers,
+      "Accept-Encoding": "identity",
+      "Content-Length": String(new TextEncoder().encode(init.body).byteLength),
+      Connection: "close",
+    }).map(([key, value]) => `${key}: ${value}`),
+    "",
+    init.body,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\r\n");
 }
 
 async function readAllBytes(reader: ReadableStreamDefaultReader<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
