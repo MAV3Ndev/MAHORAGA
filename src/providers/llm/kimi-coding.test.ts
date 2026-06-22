@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildHttpConnectRequest,
+  buildHttpsForwardProxyRequest,
   buildHttpsTunnelRequest,
   createKimiCodingProvider,
   KimiCodingProvider,
@@ -94,6 +95,7 @@ describe("Kimi Coding Provider", () => {
     expect(parseHttpProxy("user:pass:proxy.example.com:8080")).toEqual({
       authorization: "Basic dXNlcjpwYXNz",
       hostname: "proxy.example.com",
+      mode: "connect",
       port: 8080,
     });
   });
@@ -102,6 +104,16 @@ describe("Kimi Coding Provider", () => {
     expect(parseHttpProxy("http://user:pass@proxy.example.com:8080")).toEqual({
       authorization: "Basic dXNlcjpwYXNz",
       hostname: "proxy.example.com",
+      mode: "connect",
+      port: 8080,
+    });
+  });
+
+  it("parses https forward proxy URL format", () => {
+    expect(parseHttpProxy("https://user:pass@proxy.example.com:8080")).toEqual({
+      authorization: "Basic dXNlcjpwYXNz",
+      hostname: "proxy.example.com",
+      mode: "forward",
       port: 8080,
     });
   });
@@ -133,5 +145,26 @@ describe("Kimi Coding Provider", () => {
     expect(request).toContain("Authorization: Bearer sk-test\r\n");
     expect(request).toContain("Content-Length: 25\r\n");
     expect(request).not.toContain("Proxy-Authorization");
+  });
+
+  it("builds an absolute-form HTTPS forward proxy request", () => {
+    const request = buildHttpsForwardProxyRequest(
+      new URL("https://api.kimi.com/coding/v1/messages"),
+      parseHttpProxy("https://user:pass@proxy.example.com:8080"),
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+        },
+        body: '{"model":"kimi-for-code"}',
+      }
+    );
+
+    expect(request).toContain("POST https://api.kimi.com/coding/v1/messages HTTP/1.1\r\n");
+    expect(request).toContain("Host: api.kimi.com\r\n");
+    expect(request).toContain("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n");
+    expect(request).toContain("Authorization: Bearer sk-test\r\n");
+    expect(request).toContain("Content-Length: 25\r\n");
   });
 });

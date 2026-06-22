@@ -125,6 +125,7 @@ interface ParsedHttpProxy {
   hostname: string;
   port: number;
   authorization?: string;
+  mode: "connect" | "forward";
 }
 
 interface ProxyRequestInit {
@@ -141,15 +142,16 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
 
   if (trimmed.includes("://")) {
     const url = new URL(trimmed);
-    if (url.protocol !== "http:") {
-      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must use http://");
-    }
     if (!url.hostname || !url.port) {
       throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must include host and port");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw createError(ErrorCode.INVALID_INPUT, "Kimi Coding HTTP proxy must use http:// or https://");
     }
     return {
       hostname: url.hostname,
       port: Number(url.port),
+      mode: url.protocol === "https:" ? "forward" : "connect",
       authorization:
         url.username || url.password
           ? `Basic ${btoa(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`)}`
@@ -165,6 +167,7 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
     }
     return {
       hostname,
+      mode: "connect",
       port: Number(port),
     };
   }
@@ -176,13 +179,14 @@ export function parseHttpProxy(proxy: string): ParsedHttpProxy {
     return {
       authorization: `Basic ${btoa(`${username}:${password}`)}`,
       hostname,
+      mode: "connect",
       port: Number(port),
     };
   }
 
   throw createError(
     ErrorCode.INVALID_INPUT,
-    "Kimi Coding HTTP proxy must be host:port, user:pass:host:port, or http://user:pass@host:port"
+    "Kimi Coding HTTP proxy must be host:port, user:pass:host:port, http://user:pass@host:port, or https://user:pass@host:port"
   );
 }
 
@@ -199,13 +203,50 @@ async function fetchViaHttpProxy(proxySpec: string, targetUrl: string, init: Pro
 
   const { connect } = await import("cloudflare:sockets");
 
+  if (proxy.mode === "forward") {
+    return fetchViaHttpsForwardProxy(connect, proxy, target, init);
+  }
+
+  return fetchViaHttpConnectProxy(connect, proxy, target, init);
+}
+
+type SocketConnect = typeof import("cloudflare:sockets").connect;
+
+async function fetchViaHttpsForwardProxy(
+  connect: SocketConnect,
+  proxy: ParsedHttpProxy,
+  target: URL,
+  init: ProxyRequestInit
+): Promise<Response> {
+  const socket = connect(
+    { hostname: proxy.hostname, port: proxy.port },
+    { secureTransport: "on", allowHalfOpen: false }
+  );
+
+  try {
+    await waitForSocketOpened(socket, "Kimi Coding HTTPS forward proxy TLS connection failed");
+    await writeSocket(socket, buildHttpsForwardProxyRequest(target, proxy, init), true);
+
+    const responseBytes = await readAllBytesFromSocket(socket, MAX_PROXY_RESPONSE_BYTES);
+    return buildResponseFromRawHttp(responseBytes);
+  } finally {
+    await socket.close().catch(() => undefined);
+  }
+}
+
+async function fetchViaHttpConnectProxy(
+  connect: SocketConnect,
+  proxy: ParsedHttpProxy,
+  target: URL,
+  init: ProxyRequestInit
+): Promise<Response> {
   const tcpSocket = connect(
     { hostname: proxy.hostname, port: proxy.port },
     { secureTransport: "starttls", allowHalfOpen: true }
   );
   let activeSocket = tcpSocket;
   try {
-    await tcpSocket.opened;
+    await waitForSocketOpened(tcpSocket, "Kimi Coding HTTP CONNECT proxy TCP connection failed");
     await writeSocket(tcpSocket, buildHttpConnectRequest(target, proxy));
 
     const connectResponse = await readHttpHeadersFromSocket(tcpSocket, MAX_PROXY_RESPONSE_BYTES);
@@ -215,7 +256,10 @@ async function fetchViaHttpProxy(proxySpec: string, targetUrl: string, init: Pro
     }
 
     activeSocket = tcpSocket.startTls({ expectedServerHostname: target.hostname });
-    await activeSocket.opened;
+    await waitForSocketOpened(
+      activeSocket,
+      "Kimi Coding HTTP CONNECT proxy opened the tunnel, but Kimi TLS failed. Use https://user:pass@host:port if the proxy supports HTTPS forward requests."
+    );
     await writeSocket(activeSocket, buildHttpsTunnelRequest(target, init));
 
     const responseBytes = await readAllBytesFromSocket(activeSocket, MAX_PROXY_RESPONSE_BYTES);
@@ -257,10 +301,40 @@ export function buildHttpsTunnelRequest(target: URL, init: ProxyRequestInit): st
     .join("\r\n");
 }
 
-async function writeSocket(socket: Socket, request: string): Promise<void> {
+export function buildHttpsForwardProxyRequest(target: URL, proxy: ParsedHttpProxy, init: ProxyRequestInit): string {
+  return [
+    `${init.method} ${target.href} HTTP/1.1`,
+    `Host: ${target.host}`,
+    proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}` : null,
+    ...Object.entries({
+      ...init.headers,
+      "Accept-Encoding": "identity",
+      "Content-Length": String(new TextEncoder().encode(init.body).byteLength),
+      Connection: "close",
+    }).map(([key, value]) => `${key}: ${value}`),
+    "",
+    init.body,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\r\n");
+}
+
+async function waitForSocketOpened(socket: Socket, message: string): Promise<void> {
+  try {
+    await socket.opened;
+  } catch (error) {
+    const suffix = error instanceof Error && error.message ? `: ${error.message}` : "";
+    throw createError(ErrorCode.PROVIDER_ERROR, `${message}${suffix}`);
+  }
+}
+
+async function writeSocket(socket: Socket, request: string, closeWriter = false): Promise<void> {
   const writer = socket.writable.getWriter();
   try {
     await writer.write(new TextEncoder().encode(request));
+    if (closeWriter) {
+      await writer.close();
+    }
   } finally {
     writer.releaseLock();
   }
